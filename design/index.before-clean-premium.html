@@ -1,0 +1,1231 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>หอพักวังจันทร์ — ระบบจัดการหอพัก</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL@20..48,400,0..1&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f6f8fc;
+    --surface: #ffffff;
+    --border: #e3e9f2;
+    --ink: #0f172a;
+    --ink-2: #475569;
+    --ink-3: #94a3b8;
+    --primary: #2563eb;
+    --primary-deep: #1d4ed8;
+    --primary-soft: #eff6ff;
+    --ok: #059669;
+    --ok-soft: #ecfdf5;
+    --warn: #b45309;
+    --warn-soft: #fffbeb;
+    --err: #dc2626;
+    --err-soft: #fef2f2;
+    --line: #06c755;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: "IBM Plex Sans Thai", "Sarabun", system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  .num { font-variant-numeric: tabular-nums; }
+  .ms { font-family: "Material Symbols Rounded"; font-variation-settings: "FILL" 0, "wght" 400; line-height: 1; user-select: none; }
+  .ms.fill { font-variation-settings: "FILL" 1, "wght" 400; }
+
+  :focus-visible { outline: 2px dashed var(--primary); outline-offset: 2px; border-radius: 4px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
+  .card-hover { transition: box-shadow .15s ease-out, transform .15s ease-out; }
+  .card-hover:hover { box-shadow: 0 4px 16px rgba(15, 23, 42, .07); transform: translateY(-1px); }
+
+  .btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 44px;
+    background: var(--primary); color: #fff; font-weight: 600; font-size: .875rem; border-radius: 10px; padding: 0 1.1rem;
+    transition: background .15s ease-out; }
+  .btn-primary:hover { background: var(--primary-deep); }
+  .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  .btn-ghost { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 44px;
+    background: var(--surface); color: var(--ink-2); font-weight: 500; font-size: .875rem; border-radius: 10px;
+    border: 1px solid var(--border); padding: 0 1.1rem; transition: border-color .15s ease-out, color .15s ease-out; }
+  .btn-ghost:hover { border-color: #93c5fd; color: var(--primary-deep); }
+  .btn-sm { min-height: 36px; padding: 0 .8rem; font-size: .8rem; border-radius: 8px; }
+  .link-action { color: var(--ink-3); font-size: .75rem; padding: .5rem .35rem; margin: -.35rem; border-radius: 6px; transition: color .15s; }
+  .link-action:hover { color: var(--primary-deep); }
+
+  .field-label { font-size: .8125rem; font-weight: 500; color: var(--ink-2); }
+  .field-input { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: .6rem .75rem; font-size: .875rem; background: var(--surface); }
+  .field-input::placeholder { color: var(--ink-3); }
+  .field-input:focus { border-color: var(--primary); }
+  .meter-input { width: 5.5rem; text-align: right; border: 1px solid var(--border); border-radius: 8px; padding: .45rem .5rem; font-size: .875rem; }
+  .meter-input:focus { border-color: var(--primary); }
+  .meter-input.bad { border-color: var(--err); background: var(--err-soft); }
+
+  .badge { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .6rem; border-radius: 999px; font-size: .75rem; font-weight: 500; white-space: nowrap; }
+
+  .th { font-size: .75rem; color: var(--ink-3); font-weight: 500; text-align: left; padding: .55rem .75rem; white-space: nowrap; }
+  .td { padding: .7rem .75rem; font-size: .875rem; border-top: 1px solid #eef2f8; vertical-align: middle; }
+  tbody tr { transition: background .12s ease-out; }
+  tbody tr:hover { background: #fafcff; }
+
+  .nav-item { display: flex; align-items: center; gap: .7rem; padding: .65rem .85rem; border-radius: 10px; color: var(--ink-2);
+    font-weight: 500; font-size: .875rem; cursor: pointer; transition: background .15s ease-out, color .15s ease-out; user-select: none; }
+  .nav-item:hover { background: var(--primary-soft); color: var(--primary-deep); }
+  .nav-item.active { background: var(--primary); color: #fff; }
+  .tab-item { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: .5rem 0 .4rem; color: var(--ink-3);
+    font-size: .625rem; font-weight: 500; cursor: pointer; user-select: none; }
+  .tab-item.active { color: var(--primary-deep); }
+
+  .screen { display: none; }
+  .screen.active { display: block; animation: rise .18s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .bview { display: none; }
+  .bview.active { display: block; }
+
+  #toasts { position: fixed; z-index: 80; left: 50%; transform: translateX(-50%); bottom: 5.5rem; display: flex; flex-direction: column; gap: .5rem; width: max-content; max-width: calc(100vw - 2rem); }
+  @media (min-width: 1024px) { #toasts { bottom: 1.5rem; } }
+  .toast { display: flex; align-items: center; gap: .6rem; background: var(--ink); color: #fff; font-size: .825rem;
+    padding: .7rem 1rem; border-radius: 10px; box-shadow: 0 8px 24px rgba(15,23,42,.25); animation: toast-in .2s ease-out; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .phone { background: #d7dee8; border-radius: 26px; padding: 10px; width: 100%; max-width: 22rem; box-shadow: 0 12px 32px rgba(15,23,42,.14); }
+  .bubble { background: #fff; border-radius: 16px 16px 16px 4px; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+
+  dialog { border: none; border-radius: 16px; padding: 0; width: min(30rem, calc(100vw - 2rem)); box-shadow: 0 24px 64px rgba(15,23,42,.25); }
+  dialog::backdrop { background: rgba(15, 23, 42, .4); }
+
+  .spin { animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .slip-card.leaving { opacity: 0; transform: translateY(-6px); transition: opacity .25s ease-out, transform .25s ease-out; }
+
+  /* invoice */
+  .invoice { background: var(--surface); border: 1.5px solid #cbd5e1; border-radius: 16px; }
+  .inv-row { display: flex; justify-content: space; align-items: baseline; gap: 1rem; padding: .5rem 0; border-bottom: 1px dotted #d9e2ef; font-size: .875rem; }
+  .inv-row:last-child { border-bottom: none; }
+  .inv-total { border-top: 3px double #94a3b8; }
+
+  .charge-chip { display: flex; align-items: center; gap: .35rem; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: .3rem .5rem; }
+  .charge-chip input { border: none; outline: none; font-size: .8rem; background: transparent; }
+  .charge-chip input.amt { width: 4rem; text-align: right; }
+
+  @media (max-width: 639px) {
+    input, select, textarea, .meter-input { font-size: 16px !important; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<a href="#dashboard" class="sr-only focus:not-sr-only focus:absolute focus:z-[100] focus:bg-white focus:p-3 focus:m-2 focus:rounded-lg">ข้ามไปที่เนื้อหา</a>
+
+<div class="lg:flex min-h-screen">
+
+  <!-- ================= Sidebar (desktop) ================= -->
+  <aside class="hidden lg:flex w-64 shrink-0 flex-col bg-white border-r sticky top-0 h-screen p-4 gap-1">
+    <div class="flex items-center gap-3 px-2 pt-1 pb-5">
+      <div class="w-10 h-10 rounded-xl bg-blue-600 text-white grid place-items-center font-bold">วจ</div>
+      <div>
+        <div class="font-bold leading-tight">หอพักวังจันทร์</div>
+        <div class="text-xs" style="color:var(--ink-3)">ระบบจัดการหอพัก</div>
+      </div>
+    </div>
+    <nav class="flex flex-col gap-1" aria-label="เมนูหลัก">
+      <a class="nav-item" href="#dashboard"><span class="ms" style="font-size:20px">space_dashboard</span>แดชบอร์ด</a>
+      <a class="nav-item" href="#rooms"><span class="ms" style="font-size:20px">door_front</span>ห้องพัก</a>
+      <a class="nav-item" href="#tenants"><span class="ms" style="font-size:20px">group</span>ผู้เช่า</a>
+      <a class="nav-item" href="#bills"><span class="ms" style="font-size:20px">receipt_long</span>บิล</a>
+      <a class="nav-item" href="#review"><span class="ms" style="font-size:20px">fact_check</span>รอตรวจ<span data-review-badge class="ml-auto badge" style="background:var(--warn-soft);color:var(--warn)">2</span></a>
+      <a class="nav-item" href="#settings"><span class="ms" style="font-size:20px">settings</span>ตั้งค่า</a>
+    </nav>
+    <div class="mt-auto px-2 text-xs" style="color:var(--ink-3)">เดือนปัจจุบัน: กันยายน 2569</div>
+  </aside>
+
+  <div class="flex-1 min-w-0 flex flex-col">
+
+    <!-- ================= Mobile header ================= -->
+    <header class="lg:hidden sticky top-0 z-40 bg-white/95 backdrop-blur border-b px-4 py-3 flex items-center gap-3" style="border-color:var(--border)">
+      <div class="w-8 h-8 rounded-lg bg-blue-600 text-white grid place-items-center font-bold text-sm">วจ</div>
+      <div class="font-bold" id="mobile-title">แดชบอร์ด</div>
+    </header>
+
+    <main id="main" class="p-4 lg:p-8 pb-28 lg:pb-8 w-full max-w-6xl mx-auto">
+
+      <!-- ================= 1. แดชบอร์ด (Monitor) ================= -->
+      <section id="screen-dashboard" class="screen active space-y-4">
+        <div class="flex items-end justify-between flex-wrap gap-3">
+          <div>
+            <h1 class="text-xl lg:text-2xl font-bold">แดชบอร์ด</h1>
+            <p class="text-sm mt-1" style="color:var(--ink-2)">ภาพรวมเดือน <span id="dash-subtitle">กันยายน 2569</span></p>
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="sr-only" for="dash-month">เลือกเดือน</label>
+            <select id="dash-month" class="field-input !w-auto">
+              <option value="09-2569" selected>กันยายน 2569</option>
+              <option value="08-2569">สิงหาคม 2569</option>
+              <option value="07-2569">กรกฎาคม 2569</option>
+            </select>
+            <a href="#bills" class="btn-primary"><span class="ms" style="font-size:18px">add</span>สร้างบิลเดือนนี้</a>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+          <div class="card p-4 lg:p-5">
+            <div class="text-xs font-medium" style="color:var(--ink-2)">ควรเก็บเดือนนี้</div>
+            <div class="text-xl lg:text-2xl font-bold num mt-1" id="kpi-due">0 <span class="text-xs font-normal" style="color:var(--ink-3)">บาท</span></div>
+            <div class="text-xs mt-1 num" style="color:var(--ink-3)" id="kpi-due-sub"></div>
+          </div>
+          <div class="card p-4 lg:p-5">
+            <div class="text-xs font-medium" style="color:var(--ink-2)">เก็บได้แล้ว</div>
+            <div class="text-xl lg:text-2xl font-bold num mt-1" style="color:var(--ok)" id="kpi-collected">0 <span class="text-xs font-normal" style="color:var(--ink-3)">บาท</span></div>
+            <div class="text-xs mt-1 num" style="color:var(--ink-3)" id="kpi-collected-sub"></div>
+          </div>
+          <div class="card p-4 lg:p-5">
+            <div class="text-xs font-medium" style="color:var(--ink-2)">ค้างชำระ</div>
+            <div class="text-xl lg:text-2xl font-bold num mt-1" style="color:var(--warn)" id="kpi-unpaid">0 <span class="text-xs font-normal" style="color:var(--ink-3)">บาท</span></div>
+            <div class="text-xs mt-1 num" style="color:var(--ink-3)" id="kpi-unpaid-sub"></div>
+          </div>
+          <div class="card p-4 lg:p-5">
+            <div class="text-xs font-medium" style="color:var(--ink-2)">ห้องว่าง</div>
+            <div class="text-xl lg:text-2xl font-bold num mt-1"><span id="kpi-vacant">0</span><span class="text-base font-normal" style="color:var(--ink-3)"> / 18 ห้อง</span></div>
+            <div class="text-xs mt-1" style="color:var(--ink-3)" id="kpi-vacant-sub"></div>
+          </div>
+        </div>
+
+        <div class="grid lg:grid-cols-5 gap-3 lg:gap-4">
+          <div class="card p-4 lg:p-5 lg:col-span-3">
+            <div class="font-semibold text-sm">รายรับรายเดือน</div>
+            <div class="text-xs mt-0.5" style="color:var(--ink-3)">ยอดบิลที่ปิดแล้ว (บาท)</div>
+            <div class="flex items-end gap-2 sm:gap-3 h-40 mt-5" role="img" aria-label="กราฟแท่งรายรับ 6 เดือน ล่าสุด กันยายน 58,200 บาท">
+              <div class="flex-1 flex flex-col items-center gap-1.5"><div class="w-full rounded-t-md num text-center text-[10px] pt-1" style="height:87%;background:#dbe3ef;color:var(--ink-2)">55.4k</div><div class="text-[10px]" style="color:var(--ink-3)">เม.ย.</div></div>
+              <div class="flex-1 flex flex-col items-center gap-1.5"><div class="w-full rounded-t-md num text-center text-[10px] pt-1" style="height:91%;background:#dbe3ef;color:var(--ink-2)">58.1k</div><div class="text-[10px]" style="color:var(--ink-3)">พ.ค.</div></div>
+              <div class="flex-1 flex flex-col items-center gap-1.5"><div class="w-full rounded-t-md num text-center text-[10px] pt-1" style="height:78%;background:#dbe3ef;color:var(--ink-2)">49.9k</div><div class="text-[10px]" style="color:var(--ink-3)">มิ.ย.</div></div>
+              <div class="flex-1 flex flex-col items-center gap-1.5"><div class="w-full rounded-t-md num text-center text-[10px] pt-1" style="height:95%;background:#dbe3ef;color:var(--ink-2)">61.0k</div><div class="text-[10px]" style="color:var(--ink-3)">ก.ค.</div></div>
+              <div class="flex-1 flex flex-col items-center gap-1.5"><div class="w-full rounded-t-md num text-center text-[10px] pt-1" style="height:100%;background:#dbe3ef;color:var(--ink-2)">63.8k</div><div class="text-[10px]" style="color:var(--ink-3)">ส.ค.</div></div>
+              <div class="flex-1 flex flex-col items-center gap-1.5"><div class="w-full rounded-t-md num text-white text-center text-[10px] pt-1" style="height:91%;background:var(--primary)">58.2k</div><div class="text-[10px] font-semibold" style="color:var(--ink-2)">ก.ย.</div></div>
+            </div>
+          </div>
+
+          <div class="card p-4 lg:p-5 lg:col-span-2">
+            <div class="flex justify-between items-center">
+              <div class="font-semibold text-sm">บิลค้างชำระ</div>
+              <a href="#bills" class="text-xs font-medium" style="color:var(--primary-deep)">ดูทั้งหมด</a>
+            </div>
+            <div class="mt-2 divide-y" id="unpaid-list" style="border-color:#eef2f8"></div>
+          </div>
+        </div>
+
+        <div class="card p-4 lg:p-5">
+          <div class="flex justify-between items-end flex-wrap gap-2">
+            <div><div class="font-semibold text-sm">ภาพรวมห้อง</div><div class="text-xs mt-0.5" style="color:var(--ink-3)">สถานะบิลของเดือนที่เลือก</div></div>
+            <div class="flex gap-3 text-xs" style="color:var(--ink-2)">
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded" style="background:var(--ok)"></span>จ่ายแล้ว <span class="num" id="cnt-paid">0</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded" style="background:var(--primary)"></span>ยังไม่จ่าย <span class="num" id="cnt-unpaid">0</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded" style="background:#cbd5e1"></span>ว่าง <span class="num" id="cnt-vacant">0</span></span>
+            </div>
+          </div>
+          <div class="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-9 gap-2 mt-4" id="room-grid"></div>
+        </div>
+      </section>
+
+      <!-- ================= 2. ห้องพัก (Compare) ================= -->
+      <section id="screen-rooms" class="screen space-y-4">
+        <div class="flex items-end justify-between flex-wrap gap-3">
+          <div>
+            <h1 class="text-xl lg:text-2xl font-bold">ห้องพัก</h1>
+            <p class="text-sm mt-1 num" style="color:var(--ink-2)">18 ห้อง · มีผู้เช่า 15 · ว่าง 3</p>
+          </div>
+          <button class="btn-primary" data-open="dlg-room"><span class="ms" style="font-size:18px">add</span>เพิ่มห้องพัก</button>
+        </div>
+
+        <div class="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 lg:gap-4">
+          <div class="card card-hover p-5">
+            <div class="flex justify-between items-start">
+              <div class="text-lg font-bold">A101</div>
+              <span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">มีผู้เช่า</span>
+            </div>
+            <div class="text-sm mt-2" style="color:var(--ink-2)">สมชาย ใจดี</div>
+            <div class="flex gap-4 mt-3 text-xs num" style="color:var(--ink-3)">
+              <span><span class="font-medium" style="color:var(--ink)">ค่าห้อง 3,500</span></span><span>น้ำ 18 · ไฟ 7</span>
+            </div>
+            <div class="flex gap-2 mt-4">
+              <button class="btn-ghost btn-sm">แก้ไขห้อง</button>
+              <a href="#bills" class="btn-ghost btn-sm">ดูบิล</a>
+            </div>
+          </div>
+          <div class="card card-hover p-5">
+            <div class="flex justify-between items-start">
+              <div class="text-lg font-bold">A103</div>
+              <span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">มีผู้เช่า</span>
+            </div>
+            <div class="text-sm mt-2" style="color:var(--ink-2)">ธนา เจริญกิจ</div>
+            <div class="flex gap-4 mt-3 text-xs num" style="color:var(--ink-3)">
+              <span><span class="font-medium" style="color:var(--ink)">ค่าห้อง 4,200</span></span>
+              <span class="font-medium" style="color:var(--primary-deep)">น้ำ 20 · ไฟ 7 (แต่งไว้)</span>
+            </div>
+            <div class="flex gap-2 mt-4">
+              <button class="btn-ghost btn-sm">แก้ไขห้อง</button>
+              <a href="#bills" class="btn-ghost btn-sm">ดูบิล</a>
+            </div>
+          </div>
+          <div class="card card-hover p-5">
+            <div class="flex justify-between items-start">
+              <div class="text-lg font-bold">A110</div>
+              <span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">มีผู้เช่า</span>
+            </div>
+            <div class="text-sm mt-2" style="color:var(--ink-2)">ณัฐพล กล้าหาญ</div>
+            <div class="flex gap-4 mt-3 text-xs num" style="color:var(--ink-3)">
+              <span><span class="font-medium" style="color:var(--ink)">ค่าห้อง 3,800</span></span>
+              <span class="font-medium" style="color:var(--warn)">ไฟเหมาจ่ายรายเดือน</span>
+            </div>
+            <div class="flex gap-2 mt-4">
+              <button class="btn-ghost btn-sm">แก้ไขห้อง</button>
+              <a href="#bills" class="btn-ghost btn-sm">ดูบิล</a>
+            </div>
+          </div>
+          <div class="card card-hover p-5" style="border-style:dashed">
+            <div class="flex justify-between items-start">
+              <div class="text-lg font-bold" style="color:var(--ink-3)">A104</div>
+              <span class="badge" style="background:#f1f5f9;color:var(--ink-2)">ว่าง</span>
+            </div>
+            <div class="text-sm mt-2" style="color:var(--ink-3)">ยังไม่มีผู้เช่า</div>
+            <div class="flex gap-4 mt-3 text-xs num" style="color:var(--ink-3)"><span>ค่าห้อง 4,200</span><span>น้ำ 18 · ไฟ 7</span></div>
+            <div class="flex gap-2 mt-4">
+              <button class="btn-ghost btn-sm">แก้ไขห้อง</button>
+              <button class="btn-ghost btn-sm" data-open="dlg-tenant" style="color:var(--primary-deep)">เพิ่มผู้เช่า</button>
+            </div>
+          </div>
+        </div>
+        <p class="text-xs" style="color:var(--ink-3)">แสดง 4 จาก 18 ห้อง</p>
+      </section>
+
+      <!-- ================= 3. ผู้เช่า (Compare) ================= -->
+      <section id="screen-tenants" class="screen space-y-4">
+        <div class="flex items-end justify-between flex-wrap gap-3">
+          <div>
+            <h1 class="text-xl lg:text-2xl font-bold">ผู้เช่า</h1>
+            <p class="text-sm mt-1 num" style="color:var(--ink-2)">อยู่ปัจจุบัน 15 คน · ย้ายออกแล้ว 6 คน</p>
+          </div>
+          <button class="btn-primary" data-open="dlg-tenant"><span class="ms" style="font-size:18px">person_add</span>เพิ่มผู้เช่า</button>
+        </div>
+
+        <div class="card p-4 lg:p-5 max-w-2xl" style="border-color:#fcd34d;background:rgba(255,251,235,.6)">
+          <div class="flex items-center gap-2 text-sm font-semibold" style="color:var(--warn)">
+            <span class="ms" style="font-size:18px">link</span>แอดบอทมาใหม่ 1 คน ยังจับคู่ไม่ได้
+          </div>
+          <div class="mt-3 flex items-center gap-3 flex-wrap">
+            <div class="flex items-center gap-2 bg-white rounded-lg px-3 py-2 text-sm" style="border:1px solid #fcd34d">
+              <span class="ms fill" style="font-size:16px;color:var(--line)">chat_bubble</span>
+              <div><div class="font-medium">แนน</div><div class="text-xs" style="color:var(--ink-3)">พิมพ์ว่า "ผมเช่าอยู่ครับ" · 12:41</div></div>
+            </div>
+            <select class="field-input !w-auto" aria-label="เลือกผู้เช่าที่จะจับคู่">
+              <option>เลือกผู้เช่า</option><option>วิภา สุขสันต์ · A107</option><option>นพดล อินทร์แปลง · A112</option>
+            </select>
+            <button class="btn-primary btn-sm" data-toast="จับคู่ LINE กับผู้เช่าเรียบร้อย">จับคู่ LINE</button>
+          </div>
+        </div>
+
+        <div class="card overflow-x-auto">
+          <table class="w-full min-w-[680px]">
+            <caption class="sr-only">รายชื่อผู้เช่า</caption>
+            <thead><tr>
+              <th class="th">ชื่อ</th><th class="th">เบอร์โทร</th><th class="th">ห้อง</th><th class="th">LINE</th>
+              <th class="th">วันเข้า</th><th class="th">สถานะ</th><th class="th"><span class="sr-only">การกระทำ</span></th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td class="td font-medium">สมชาย ใจดี</td><td class="td num">081-234-5678</td><td class="td font-bold">A101</td>
+                <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px;color:var(--line)">chat_bubble</span>เชื่อมแล้ว</span></td>
+                <td class="td num">01 มี.ค. 68</td><td class="td"><span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">อยู่</span></td>
+                <td class="td text-right"><button class="link-action">แก้ไข</button></td>
+              </tr>
+              <tr>
+                <td class="td font-medium">ธนา เจริญกิจ</td><td class="td num">089-555-1122</td><td class="td font-bold">A103</td>
+                <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px;color:var(--line)">chat_bubble</span>เชื่อมแล้ว</span></td>
+                <td class="td num">15 ม.ค. 68</td><td class="td"><span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">อยู่</span></td>
+                <td class="td text-right"><button class="link-action">แก้ไข</button></td>
+              </tr>
+              <tr>
+                <td class="td font-medium">ณัฐพล กล้าหาญ</td><td class="td num">095-202-4466</td><td class="td font-bold">A110</td>
+                <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px;color:var(--line)">chat_bubble</span>เชื่อมแล้ว</span></td>
+                <td class="td num">20 ก.พ. 68</td><td class="td"><span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">อยู่</span></td>
+                <td class="td text-right"><button class="link-action">แก้ไข</button></td>
+              </tr>
+              <tr>
+                <td class="td font-medium">นพดล อินทร์แปลง</td><td class="td num">062-888-3301</td><td class="td font-bold">A112</td>
+                <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px;color:var(--line)">chat_bubble</span>เชื่อมแล้ว</span></td>
+                <td class="td num">02 ก.ย. 68</td><td class="td"><span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">อยู่</span></td>
+                <td class="td text-right"><button class="link-action">แก้ไข</button></td>
+              </tr>
+              <tr>
+                <td class="td font-medium">วิภา สุขสันต์</td><td class="td num">090-111-2223</td><td class="td font-bold">A107</td>
+                <td class="td"><span class="badge" style="background:#f1f5f9;color:var(--ink-2)">ยังไม่เชื่อม</span></td>
+                <td class="td num">10 มิ.ย. 68</td><td class="td"><span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">อยู่</span></td>
+                <td class="td text-right"><button class="link-action">แก้ไข</button></td>
+              </tr>
+              <tr style="color:var(--ink-3)">
+                <td class="td font-medium">ปกรณ์ วังทอง</td><td class="td num">084-777-6655</td><td class="td">A104</td>
+                <td class="td"><span class="badge" style="background:#f1f5f9;color:var(--ink-3)">ไม่มี</span></td>
+                <td class="td num">05 พ.ค. 67</td><td class="td"><span class="badge" style="background:#f1f5f9;color:var(--ink-2)">ย้ายออก 30 ส.ค. 68</span></td>
+                <td class="td text-right"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs" style="color:var(--ink-3)">แสดง 6 จาก 21 คน</p>
+
+        <div class="card p-4 lg:p-5 max-w-xl" style="border-style:dashed">
+          <div class="flex items-start gap-3">
+            <span class="ms" style="font-size:20px;color:var(--ink-3)">lightbulb</span>
+            <div class="text-sm" style="color:var(--ink-2)">
+              <span class="font-medium" style="color:var(--ink)">ผู้เช่าที่ยังไม่เชื่อม LINE จะยังไม่ได้รับบิลอัตโนมัติ</span>
+              <span class="block text-xs mt-1">ให้ผู้เช่าแอดบอทของหอแล้วพิมพ์เลขห้อง เช่น A107 ระบบจะเชื่อมให้เอง</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 4. บิล (Operate) ================= -->
+      <section id="screen-bills" class="screen space-y-4">
+
+        <!-- view: list -->
+        <div class="bview active space-y-4" data-bview="list">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h1 class="text-xl lg:text-2xl font-bold">บิล</h1>
+              <p class="text-sm mt-1" style="color:var(--ink-2)">สร้างบิลประจำเดือนทั้งหอ แล้วส่งทาง LINE ในคลิกเดียว</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <select class="field-input !w-auto" aria-label="เลือกเดือน">
+                <option>กันยายน 2569</option><option>สิงหาคม 2569</option><option>กรกฎาคม 2569</option>
+              </select>
+              <button class="btn-primary" data-bills-view="step1"><span class="ms" style="font-size:18px">add</span>สร้างบิลเดือนนี้</button>
+            </div>
+          </div>
+
+          <div class="card overflow-x-auto">
+            <div class="p-4 lg:p-5 pb-0 flex justify-between items-center flex-wrap gap-2">
+              <div class="font-semibold text-sm">บิลเดือน กันยายน 2569</div>
+              <div class="text-xs num" style="color:var(--ink-3)">15 บิล · จ่ายแล้ว 12 · ค้าง 3</div>
+            </div>
+            <table class="w-full min-w-[800px] mt-1">
+              <caption class="sr-only">รายการบิลเดือนกันยายน 2569</caption>
+              <thead><tr>
+                <th class="th">ห้อง · ผู้เช่า</th><th class="th text-right">ค่าห้อง</th><th class="th text-right">ค่าน้ำ</th>
+                <th class="th text-right">ค่าไฟ</th><th class="th text-right">ค่าใช้จ่ายเพิ่ม</th><th class="th text-right">รวม</th><th class="th">สถานะ</th><th class="th">LINE</th><th class="th"><span class="sr-only">การกระทำ</span></th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td class="td"><span class="font-bold">A101</span> <span class="text-xs" style="color:var(--ink-3)">สมชาย ใจดี</span></td>
+                  <td class="td text-right num">3,500</td><td class="td text-right num">774</td><td class="td text-right num">980</td>
+                  <td class="td text-right num" style="color:var(--ink-3)">–</td>
+                  <td class="td text-right font-bold num">5,254</td>
+                  <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px">check_circle</span>จ่ายแล้ว</span></td>
+                  <td class="td text-xs num" style="color:var(--ink-3)">ส่ง 1 ก.ย.</td>
+                  <td class="td text-right"><button class="link-action" data-bills-view="detail">ดูบิล</button></td>
+                </tr>
+                <tr>
+                  <td class="td"><span class="font-bold">A103</span> <span class="text-xs" style="color:var(--ink-3)">ธนา เจริญกิจ</span></td>
+                  <td class="td text-right num">4,200</td><td class="td text-right num">1,040</td><td class="td text-right num">630</td>
+                  <td class="td text-right num">240</td>
+                  <td class="td text-right font-bold num">6,110</td>
+                  <td class="td"><span class="badge" style="background:#f1f5f9;color:var(--ink-2)">ยังไม่จ่าย</span></td>
+                  <td class="td text-xs num" style="color:var(--ink-3)">ส่ง 1 ก.ย.</td>
+                  <td class="td text-right"><button class="link-action" data-bills-view="detail">ดูบิล</button></td>
+                </tr>
+                <tr>
+                  <td class="td"><span class="font-bold">A105</span> <span class="text-xs" style="color:var(--ink-3)">อรุณี แสงทอง</span></td>
+                  <td class="td text-right num">3,500</td><td class="td text-right num">432</td><td class="td text-right num">525</td>
+                  <td class="td text-right num" style="color:var(--ink-3)">–</td>
+                  <td class="td text-right font-bold num">4,457</td>
+                  <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px">check_circle</span>จ่ายแล้ว</span></td>
+                  <td class="td text-xs num" style="color:var(--ink-3)">ส่ง 1 ก.ย.</td>
+                  <td class="td text-right"><button class="link-action" data-bills-view="detail">ดูบิล</button></td>
+                </tr>
+                <tr>
+                  <td class="td"><span class="font-bold">A110</span> <span class="text-xs" style="color:var(--ink-3)">ณัฐพล กล้าหาญ</span> <span class="badge ml-1" style="background:var(--warn-soft);color:var(--warn)">ไฟเหมา</span></td>
+                  <td class="td text-right num">3,800</td><td class="td text-right num">270</td><td class="td text-right num">600</td>
+                  <td class="td text-right num" style="color:var(--ink-3)">–</td>
+                  <td class="td text-right font-bold num">4,670</td>
+                  <td class="td"><span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px">check_circle</span>จ่ายแล้ว</span></td>
+                  <td class="td text-xs num" style="color:var(--ink-3)">ส่ง 1 ก.ย.</td>
+                  <td class="td text-right"><button class="link-action" data-bills-view="detail">ดูบิล</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="p-4 lg:p-5 text-xs" style="color:var(--ink-3)">แสดง 4 จาก 15 บิล</p>
+          </div>
+
+          <a href="#line" class="inline-flex items-center gap-1.5 text-sm font-medium" style="color:var(--primary-deep)">
+            ดูตัวอย่างข้อความที่บอทส่งให้ผู้เช่า<span class="ms" style="font-size:16px">arrow_forward</span>
+          </a>
+        </div>
+
+        <!-- view: wizard step 1 (meter entry) -->
+        <div class="bview space-y-4" data-bview="step1">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h1 class="text-xl lg:text-2xl font-bold">สร้างบิล กันยายน 2569</h1>
+              <p class="text-sm mt-1" style="color:var(--ink-2)">กรอกเลขมิเตอร์ปลายเดือน · ห้องไฟเหมาใส่ยอดเต็ม · เพิ่มค่าใช้จ่ายเสริมได้รายห้อง</p>
+            </div>
+            <button class="btn-ghost" data-bills-view="list"><span class="ms" style="font-size:18px">close</span>ยกเลิก</button>
+          </div>
+
+          <div class="card overflow-x-auto">
+            <table class="w-full min-w-[880px]">
+              <caption class="sr-only">ฟอร์มกรอกเลขมิเตอร์น้ำและไฟรายห้อง</caption>
+              <thead><tr>
+                <th class="th">ห้อง · ผู้เช่า</th>
+                <th class="th">มิเตอร์น้ำ (ก่อนหน้า)</th>
+                <th class="th">มิเตอร์ไฟ (ก่อนหน้า)</th>
+                <th class="th text-right">ค่าน้ำ</th>
+                <th class="th text-right">ค่าไฟ</th>
+                <th class="th text-right">ค่าใช้จ่ายเพิ่ม</th>
+                <th class="th text-right">รวมบิล</th>
+              </tr></thead>
+              <tbody id="meter-body"></tbody>
+            </table>
+            <div class="flex items-center justify-between gap-3 p-4 lg:p-5 flex-wrap" style="border-top:1px solid #eef2f8">
+              <div class="text-xs" style="color:var(--ink-3)">แสดง 4 จาก 15 ห้องที่มีผู้เช่า · อัตราน้ำ 18 บาท/หน่วย ไฟ 7 บาท/หน่วย (ห้องที่ตั้งแต่งไว้ใช้ราคาของห้อง)</div>
+              <div class="flex items-center gap-4">
+                <div class="text-sm" style="color:var(--ink-2)">รวมทั้งหอ <span class="text-lg font-bold num" style="color:var(--primary-deep)" id="grand-total">0</span> บาท</div>
+                <button class="btn-primary" id="btn-next" data-bills-view="step2">ถัดไป: ตรวจทาน</button>
+              </div>
+            </div>
+          </div>
+          <p class="text-xs flex items-center gap-1.5" id="meter-error" style="color:var(--err);display:none">
+            <span class="ms fill" style="font-size:15px">error</span><span>มีห้องที่เลขมิเตอร์น้อยกว่าครั้งก่อน ต้องแก้ก่อนจึงไปต่อได้</span>
+          </p>
+        </div>
+
+        <!-- view: wizard step 2 (review & send) -->
+        <div class="bview space-y-4" data-bview="step2">
+          <div class="flex items-end justify-between flex-wrap gap-3">
+            <div>
+              <h1 class="text-xl lg:text-2xl font-bold">ตรวจทานก่อนส่ง</h1>
+              <p class="text-sm mt-1" style="color:var(--ink-2)">บิล กันยายน 2569 จะถูกสร้างและส่งทาง LINE</p>
+            </div>
+            <button class="btn-ghost" data-bills-view="step1"><span class="ms" style="font-size:18px">arrow_back</span>ย้อนกลับแก้มิเตอร์</button>
+          </div>
+
+          <div class="card p-4 lg:p-5 flex items-start gap-3" style="background:var(--primary-soft);border-color:#bfdbfe">
+            <span class="ms" style="font-size:20px;color:var(--primary-deep)">info</span>
+            <div class="text-sm" style="color:#1e40af">
+              จะสร้าง <b class="num">15 บิล</b> รวม <b class="num">71,480 บาท</b>
+              <span class="block text-xs mt-1 num">ผู้เช่าที่เชื่อม LINE แล้ว 14 คนจะได้รับบิลอัตโนมัติ · A107 ยังไม่เชื่อม ต้องแจ้งเอง</span>
+            </div>
+          </div>
+
+          <div class="flex gap-2 flex-wrap">
+            <button class="btn-primary" id="btn-send-all"><span class="ms fill" style="font-size:17px;color:#a7f3d0">send</span>สร้างบิลและส่ง LINE ทั้งหมด</button>
+            <button class="btn-ghost" data-toast="บันทึกฉบับร่างไว้แล้ว ยังไม่ส่งให้ผู้เช่า">บันทึกฉบับร่าง</button>
+          </div>
+        </div>
+
+        <!-- view: bill detail (invoice) -->
+        <div class="bview" data-bview="detail">
+          <div class="flex items-end justify-between flex-wrap gap-3 mb-4">
+            <div>
+              <h1 class="text-xl lg:text-2xl font-bold">บิลห้อง A103</h1>
+              <p class="text-sm mt-1 num" style="color:var(--ink-2)">ธนา เจริญกิจ · รอบเดือน กันยายน 2569</p>
+            </div>
+            <button class="btn-ghost" data-bills-view="list"><span class="ms" style="font-size:18px">arrow_back</span>กลับไปลิสต์บิล</button>
+          </div>
+
+          <!-- action bar -->
+          <div class="card p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
+            <span class="badge" id="detail-badge" style="background:#f1f5f9;color:var(--ink-2)">ยังไม่จ่าย</span>
+            <div class="flex gap-2 flex-wrap">
+              <button class="btn-primary" id="btn-mark-paid"><span class="ms" style="font-size:17px">check</span>ยืนยันชำระแล้ว</button>
+              <button class="btn-ghost" data-toast="ส่งบิลห้อง A103 ทาง LINE แล้ว"><span class="ms fill" style="font-size:16px;color:var(--line)">send</span>ส่งบิลทาง LINE อีกครั้ง</button>
+            </div>
+          </div>
+
+          <!-- invoice paper -->
+          <article class="invoice max-w-3xl p-6 lg:p-9" aria-label="ใบแจ้งหนี้ค่าเช่าห้อง A103 เดือนกันยายน 2569">
+            <header class="flex justify-between items-start gap-4 flex-wrap">
+              <div class="flex items-center gap-3">
+                <div class="w-11 h-11 rounded-xl bg-blue-600 text-white grid place-items-center font-bold">วจ</div>
+                <div>
+                  <div class="font-bold">หอพักวังจันทร์</div>
+                  <div class="text-xs num mt-0.5" style="color:var(--ink-3)">สมศักดิ์ ใจดี · โทร 081-234-5678</div>
+                  <div class="text-xs num" style="color:var(--ink-3)">พร้อมเพย์ 081-234-5678</div>
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-lg font-bold">ใบแจ้งหนี้ค่าเช่า</div>
+                <div class="text-xs num mt-1" style="color:var(--ink-2)">เลขที่ B2569-09-A103</div>
+                <div class="text-xs num" style="color:var(--ink-3)">วันที่ออก 1 กันยายน 2569</div>
+              </div>
+            </header>
+
+            <div class="mt-5 pt-4 flex justify-between items-baseline flex-wrap gap-2" style="border-top:3px double #cbd5e1">
+              <div class="text-sm">ผู้เช่า <b>ธนา เจริญกิจ</b> · ห้อง <b>A103</b></div>
+              <div class="text-sm num" style="color:var(--ink-3)">โทร 089-555-1122</div>
+            </div>
+
+            <div class="grid md:grid-cols-[230px,1fr] gap-6 mt-4">
+              <!-- LEFT: meter readings -->
+              <aside class="rounded-xl p-4 self-start" style="background:#f8fafc;border:1px solid var(--border)">
+                <div class="text-xs font-semibold" style="color:var(--ink-2)">มิเตอร์ประจำรอบ (ก่อนหน้า → ปัจจุบัน)</div>
+
+                <div class="mt-3">
+                  <div class="text-xs" style="color:var(--ink-3)">ค่าน้ำ · 20 บาท/หน่วย</div>
+                  <div class="flex items-baseline gap-1.5 num mt-0.5">
+                    <span class="text-lg font-bold">1,510</span>
+                    <span class="ms" style="font-size:14px;color:var(--ink-3)">east</span>
+                    <span class="text-lg font-bold">1,562</span>
+                  </div>
+                  <div class="text-xs num" style="color:var(--ink-3)">ใช้ 52 หน่วย</div>
+                </div>
+
+                <div class="mt-4 pt-4" style="border-top:1px dashed #d9e2ef">
+                  <div class="text-xs" style="color:var(--ink-3)">ค่าไฟ · 7 บาท/หน่วย</div>
+                  <div class="flex items-baseline gap-1.5 num mt-0.5">
+                    <span class="text-lg font-bold">4,520</span>
+                    <span class="ms" style="font-size:14px;color:var(--ink-3)">east</span>
+                    <span class="text-lg font-bold">4,610</span>
+                  </div>
+                  <div class="text-xs num" style="color:var(--ink-3)">ใช้ 90 หน่วย</div>
+                </div>
+              </aside>
+
+              <!-- RIGHT: line items -->
+              <div>
+                <div class="inv-row"><span style="color:var(--ink-2)">ค่าห้อง</span><span class="num font-medium">4,200</span></div>
+                <div class="inv-row"><span style="color:var(--ink-2)">ค่าน้ำ <span class="text-xs num" style="color:var(--ink-3)">(52 × 20)</span></span><span class="num font-medium">1,040</span></div>
+                <div class="inv-row"><span style="color:var(--ink-2)">ค่าไฟ <span class="text-xs num" style="color:var(--ink-3)">(90 × 7)</span></span><span class="num font-medium">630</span></div>
+                <div class="inv-row"><span style="color:var(--ink-2)">ค่าอินเทอร์เน็ต (wifi)</span><span class="num font-medium">200</span></div>
+                <div class="inv-row"><span style="color:var(--ink-2)">ค่าจัดการขยะ</span><span class="num font-medium">40</span></div>
+                <div class="inv-row inv-total !items-center pt-3">
+                  <span class="font-bold text-base">รวมทั้งสิ้น</span>
+                  <span class="font-bold text-xl num" style="color:var(--primary-deep)">6,110</span>
+                </div>
+
+                <div class="mt-5 flex items-end justify-between gap-4 flex-wrap">
+                  <div class="text-xs leading-5" style="color:var(--ink-3)">
+                    ชำระด้วย QR พร้อมเพย์ยอดตรงตามใบแจ้งหนี้<br />
+                    หรือโอนเข้าพร้อมเพย์ 081-234-5678 (สมศักดิ์ ใจดี)<br />
+                    จ่ายเสร็จส่งรูปสลิปกลับทาง LINE ได้เลย
+                  </div>
+                  <div class="text-center">
+                    <div class="w-32 h-32 rounded-xl grid place-items-center" style="border:2px solid #bfdbfe;background:#fff">
+                      <div class="grid grid-cols-8 gap-[3px] p-3" id="qrbox" aria-hidden="true"></div>
+                    </div>
+                    <div class="text-xs num mt-1.5" style="color:var(--ink-3)">พร้อมเพย์ยอด 6,110 บาท</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <div class="card p-4 lg:p-5 max-w-3xl mt-4">
+            <div class="text-xs font-semibold mb-2" style="color:var(--ink-2)">ประวัติการชำระ</div>
+            <div id="pay-history" class="text-xs" style="color:var(--ink-3)">ยังไม่มี · สลิปที่ผู้เช่าส่งเข้า LINE และการยืนยันด้วยมือจะแสดงที่นี่</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 5. รอตรวจ (Decide) ================= -->
+      <section id="screen-review" class="screen space-y-4">
+        <div>
+          <h1 class="text-xl lg:text-2xl font-bold">รอตรวจ</h1>
+          <p class="text-sm mt-1" style="color:var(--ink-2)">สลิปที่ยอดไม่ตรงหรือตรวจไม่ผ่าน รอคุณตัดสินใจ</p>
+        </div>
+
+        <div id="review-list" class="space-y-4 max-w-2xl">
+          <div class="card p-4 lg:p-5 slip-card" style="border-color:#fcd34d">
+            <div class="flex gap-4 sm:gap-5 flex-wrap sm:flex-nowrap">
+              <div class="w-24 h-36 sm:w-28 sm:h-40 rounded-lg shrink-0 grid place-items-center" style="border:1px solid #fcd34d;background:linear-gradient(#f8fafc,#e2e8f0)" role="img" aria-label="ภาพสลิปการโอนของห้อง A112">
+                <div class="text-center text-[10px] leading-4 px-2" style="color:var(--ink-3)">ภาพสลิป<br>พร้อมเพย์</div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-semibold text-sm">นพดล อินทร์แปลง</span>
+                  <span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">A112</span>
+                  <span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px">verified</span>สลิปจริง</span>
+                </div>
+                <div class="mt-3 grid grid-cols-2 gap-2 text-sm max-w-xs">
+                  <div class="rounded-lg p-2.5" style="background:#f8fafc"><div class="text-xs" style="color:var(--ink-3)">ยอดในสลิป</div><div class="font-bold num text-lg">2,000</div></div>
+                  <div class="rounded-lg p-2.5" style="background:var(--warn-soft)"><div class="text-xs" style="color:var(--warn)">ยอดบิล ก.ย.</div><div class="font-bold num text-lg" style="color:var(--warn)">2,224</div></div>
+                </div>
+                <div class="text-xs num mt-2" style="color:var(--ink-3)">โอน 12 ก.ย. 68 · 20:15 · ธ.กสิกรไทย</div>
+                <div class="flex gap-2 mt-4 flex-wrap">
+                  <button class="btn-primary btn-sm" data-resolve="ปิดบิล A112 ด้วยยอดสลิปแล้ว ส่งยืนยันให้ผู้เช่าแล้ว">ปิดบิลด้วยยอดสลิป</button>
+                  <button class="btn-ghost btn-sm" data-resolve="ปฏิเสธสลิปแล้ว บิล A112 ยังเป็นยังไม่จ่าย">ไม่ใช่บิลนี้</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card p-4 lg:p-5 slip-card" style="border-color:#fca5a5">
+            <div class="flex gap-4 sm:gap-5 flex-wrap sm:flex-nowrap">
+              <div class="w-24 h-36 sm:w-28 sm:h-40 rounded-lg shrink-0 grid place-items-center" style="border:1px solid #fca5a5;background:linear-gradient(#f8fafc,#e2e8f0)" role="img" aria-label="ภาพสลิปการโอนของห้อง A107">
+                <div class="text-center text-[10px] leading-4 px-2" style="color:var(--ink-3)">ภาพสลิป<br>พร้อมเพย์</div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-semibold text-sm">วิภา สุขสันต์</span>
+                  <span class="badge" style="background:var(--primary-soft);color:var(--primary-deep)">A107</span>
+                  <span class="badge" style="background:var(--err-soft);color:var(--err)"><span class="ms fill" style="font-size:13px">gpp_bad</span>ตรวจไม่ผ่าน</span>
+                </div>
+                <div class="text-sm mt-3" style="color:var(--ink-2)">EasySlip ระบุว่ารูปภาพไม่ตรงกับธุรกรรมจริง โปรดตรวจสอบก่อนยืนยัน</div>
+                <div class="text-xs num mt-2" style="color:var(--ink-3)">ส่งเข้ามา 13 ก.ย. 68 · 09:02</div>
+                <div class="flex gap-2 mt-4 flex-wrap">
+                  <button class="btn-primary btn-sm" data-resolve="ปิดบิล A107 ด้วยมือแล้ว">ปิดบิลด้วยมือ</button>
+                  <button class="btn-ghost btn-sm" data-resolve="ปฏิเสธสลิปแล้ว บิล A107 ยังเป็นยังไม่จ่าย">ปฏิเสธสลิป</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="review-empty" class="card p-10 max-w-2xl text-center" style="display:none;border-style:dashed">
+          <span class="ms" style="font-size:40px;color:var(--ink-3)">inbox</span>
+          <div class="font-semibold text-sm mt-3">ไม่มีสลิปรอตรวจ</div>
+          <div class="text-xs mt-1.5 max-w-xs mx-auto" style="color:var(--ink-3)">เมื่อผู้เช่าส่งสลิปที่ยอดไม่ตรงหรือตรวจไม่ผ่าน รายการจะขึ้นที่นี่พร้อมแจ้งเตือนทาง LINE ของคุณ</div>
+        </div>
+      </section>
+
+      <!-- ================= 6. ข้อความ LINE (reference) ================= -->
+      <section id="screen-line" class="screen space-y-4">
+        <div>
+          <h1 class="text-xl lg:text-2xl font-bold">ข้อความ LINE</h1>
+          <p class="text-sm mt-1" style="color:var(--ink-2)">ตัวอย่างข้อความที่บอทส่งจริงในแต่ละเหตุการณ์</p>
+        </div>
+
+        <div class="flex flex-wrap gap-6 lg:gap-8">
+          <div class="min-w-[260px]">
+            <div class="text-xs font-semibold mb-2" style="color:var(--ink-2)">ส่งบิลรายเดือน พร้อม QR ยอดตรง</div>
+            <div class="phone">
+              <div class="flex items-center gap-2 bg-white rounded-xl p-3 mb-3 shadow-sm">
+                <div class="w-8 h-8 rounded-full bg-blue-600 text-white grid place-items-center text-xs font-bold">วจ</div>
+                <div class="text-sm font-semibold">หอพักวังจันทร์ <span class="text-[10px] font-normal" style="color:var(--ink-3)">บอท</span></div>
+              </div>
+              <div class="space-y-3">
+                <div class="bubble p-4">
+                  <div class="text-sm font-bold" style="color:var(--primary-deep)">บิลค่าเช่า · กันยายน 2569</div>
+                  <div class="text-xs mt-0.5" style="color:var(--ink-3)">ห้อง A103 · คุณธนา เจริญกิจ</div>
+                  <div class="mt-3 space-y-1.5 text-sm">
+                    <div class="flex justify-between"><span style="color:var(--ink-2)">ค่าห้อง</span><span class="num">4,200</span></div>
+                    <div class="flex justify-between"><span style="color:var(--ink-2)">ค่าน้ำ <span class="text-xs num" style="color:var(--ink-3)">52×20</span></span><span class="num">1,040</span></div>
+                    <div class="flex justify-between"><span style="color:var(--ink-2)">ค่าไฟ <span class="text-xs num" style="color:var(--ink-3)">90×7</span></span><span class="num">630</span></div>
+                    <div class="flex justify-between"><span style="color:var(--ink-2)">ค่าอินเทอร์เน็ต</span><span class="num">200</span></div>
+                    <div class="flex justify-between"><span style="color:var(--ink-2)">ค่าจัดการขยะ</span><span class="num">40</span></div>
+                    <div class="flex justify-between pt-2" style="border-top:1px solid #f1f5f9"><span class="font-semibold">รวมทั้งสิ้น</span><span class="font-bold num" style="color:var(--primary-deep)">6,110</span></div>
+                  </div>
+                  <div class="mt-3 rounded-lg p-3 flex items-center gap-3" style="border:1px solid #bfdbfe;background:var(--primary-soft)">
+                    <div class="w-16 h-16 bg-white rounded-md grid place-items-center" style="border:1px solid #bfdbfe"><div class="text-[9px] text-center leading-3" style="color:var(--ink-3)">QR<br>พร้อมเพย์</div></div>
+                    <div class="text-xs leading-5" style="color:#1e40af">สแกนจ่ายตามยอด <b class="num">6,110</b> บาท<br>หรือโอนเข้าพร้อมเพย์ 081-234-5678</div>
+                  </div>
+                  <div class="text-[11px] mt-3" style="color:var(--ink-3)">จ่ายเสร็จส่งรูปสลิปกลับมาในแชทนี้ได้เลยค่ะ</div>
+                </div>
+                <div class="text-[10px] text-center num" style="color:var(--ink-3)">1 ก.ย. 69 · 10:00</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="min-w-[260px]">
+            <div class="text-xs font-semibold mb-2" style="color:var(--ink-2)">ยืนยันเมื่อบิลถูกปิด</div>
+            <div class="phone">
+              <div class="flex items-center gap-2 bg-white rounded-xl p-3 mb-3 shadow-sm">
+                <div class="w-8 h-8 rounded-full bg-blue-600 text-white grid place-items-center text-xs font-bold">วจ</div>
+                <div class="text-sm font-semibold">หอพักวังจันทร์ <span class="text-[10px] font-normal" style="color:var(--ink-3)">บอท</span></div>
+              </div>
+              <div class="space-y-3">
+                <div class="bubble p-4 flex gap-3">
+                  <div class="w-9 h-9 rounded-full grid place-items-center shrink-0" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:20px">check_circle</span></div>
+                  <div>
+                    <div class="text-sm font-semibold">ได้รับชำระเงินเรียบร้อย</div>
+                    <div class="text-sm num mt-1" style="color:var(--ink-2)">6,110 บาท · บิลเดือน กันยายน 2569 (ห้อง A103)</div>
+                    <div class="text-[11px] mt-1.5" style="color:var(--ink-3)">ขอบคุณค่ะ</div>
+                  </div>
+                </div>
+                <div class="text-[10px] text-center num" style="color:var(--ink-3)">3 ก.ย. 69 · 21:34</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="min-w-[260px]">
+            <div class="text-xs font-semibold mb-2" style="color:var(--ink-2)">แจ้งเจ้าของ</div>
+            <div class="phone">
+              <div class="flex items-center gap-2 bg-white rounded-xl p-3 mb-3 shadow-sm">
+                <div class="w-8 h-8 rounded-full bg-blue-600 text-white grid place-items-center text-xs font-bold">วจ</div>
+                <div class="text-sm font-semibold">หอพักวังจันทร์ <span class="text-[10px] font-normal" style="color:var(--ink-3)">บอท</span></div>
+              </div>
+              <div class="space-y-3">
+                <div class="bubble p-4" style="border-left:4px solid #f59e0b">
+                  <div class="text-sm font-semibold flex items-center gap-1.5"><span class="ms" style="font-size:17px;color:#f59e0b">notifications</span>สลิปรอตรวจ 1 รายการ</div>
+                  <div class="text-sm num mt-1.5" style="color:var(--ink-2)">ห้อง A112 · ยอดสลิป 2,000 แต่บิล 2,224 บาท</div>
+                  <div class="text-[11px] mt-1" style="color:var(--ink-3)">เปิดหน้า รอตรวจ ในระบบเพื่อตัดสินใจ</div>
+                </div>
+                <div class="bubble p-4">
+                  <div class="text-sm font-semibold">สร้างบิลเดือน กันยายน 2569 แล้ว</div>
+                  <div class="text-sm num mt-1.5" style="color:var(--ink-2)">15 บิล รวม 71,480 บาท · ส่ง LINE แล้ว 14 (A107 ยังไม่เชื่อม)</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 7. ตั้งค่า (Configure) ================= -->
+      <section id="screen-settings" class="screen space-y-4">
+        <div>
+          <h1 class="text-xl lg:text-2xl font-bold">ตั้งค่า</h1>
+          <p class="text-sm mt-1" style="color:var(--ink-2)">ค่าตั้งต้นของหอ · แก้ได้ตลอด บิลที่สร้างแล้วไม่เปลี่ยนตาม</p>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-3 lg:gap-4">
+          <div class="card p-5 lg:p-6">
+            <div class="font-semibold text-sm">อัตราค่าน้ำ/ค่าไฟเริ่มต้น</div>
+            <p class="text-xs mt-1 mb-4" style="color:var(--ink-3)">ใช้กับทุกห้องที่ไม่ได้ตั้งแต่งไว้เป็นรายห้อง</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div><label class="field-label" for="set-water">ค่าน้ำ (บาท/หน่วย)</label><input id="set-water" class="field-input mt-1 num" value="18" inputmode="decimal" /></div>
+              <div><label class="field-label" for="set-electric">ค่าไฟ (บาท/หน่วย)</label><input id="set-electric" class="field-input mt-1 num" value="7" inputmode="decimal" /></div>
+            </div>
+          </div>
+
+          <div class="card p-5 lg:p-6">
+            <div class="font-semibold text-sm">บัญชีรับเงิน (พร้อมเพย์)</div>
+            <p class="text-xs mt-1 mb-4" style="color:var(--ink-3)">ใช้สร้าง QR ตามยอดบิลในข้อความ LINE</p>
+            <div class="space-y-3">
+              <div><label class="field-label" for="set-pp">เบอร์พร้อมเพย์</label><input id="set-pp" class="field-input mt-1 num" value="081-234-5678" inputmode="tel" /></div>
+              <div><label class="field-label" for="set-name">ชื่อบัญชี (แสดงบนบิล)</label><input id="set-name" class="field-input mt-1" value="สมศักดิ์ ใจดี" /></div>
+            </div>
+          </div>
+
+          <div class="card p-5 lg:p-6">
+            <div class="font-semibold text-sm">LINE เจ้าของ (รับแจ้งเตือน)</div>
+            <p class="text-xs mt-1 mb-4" style="color:var(--ink-3)">พิมพ์รหัสนี้ส่งให้บอทใน LINE ของคุณ</p>
+            <div class="flex items-center gap-3 flex-wrap">
+              <div class="font-bold text-2xl tracking-[.25em] num" style="color:var(--primary-deep)" id="owner-code">529407</div>
+              <span class="badge" style="background:var(--ok-soft);color:var(--ok)"><span class="ms fill" style="font-size:13px">check_circle</span>เชื่อมแล้ว</span>
+            </div>
+            <button class="btn-ghost btn-sm mt-4" id="btn-reissue"><span class="ms" style="font-size:16px">refresh</span>ออกรหัสใหม่</button>
+          </div>
+
+          <div class="card p-5 lg:p-6">
+            <div class="font-semibold text-sm">บริการที่เชื่อมต่อ</div>
+            <div class="mt-3 space-y-3 text-sm">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2"><span class="ms fill" style="font-size:18px;color:var(--line)">chat_bubble</span>LINE Messaging API</div>
+                <span class="badge" style="background:var(--ok-soft);color:var(--ok)">พร้อมใช้</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2"><span class="ms" style="font-size:18px;color:var(--primary-deep)">fact_check</span>EasySlip</div>
+                <span class="badge" style="background:#f1f5f9;color:var(--ink-2)">ทดลอง · เหลือ 37 ครั้ง</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-primary" data-toast="บันทึกการตั้งค่าเรียบร้อย"><span class="ms" style="font-size:17px">save</span>บันทึกการตั้งค่า</button>
+      </section>
+
+    </main>
+
+    <!-- ================= Mobile bottom tabs ================= -->
+    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t flex px-1" style="border-color:var(--border);padding-bottom:env(safe-area-inset-bottom)" aria-label="เมนูหลักบนมือถือ">
+      <a class="tab-item" href="#dashboard"><span class="ms" style="font-size:22px">space_dashboard</span>แดชบอร์ด</a>
+      <a class="tab-item" href="#rooms"><span class="ms" style="font-size:22px">door_front</span>ห้องพัก</a>
+      <a class="tab-item" href="#tenants"><span class="ms" style="font-size:22px">group</span>ผู้เช่า</a>
+      <a class="tab-item" href="#bills"><span class="ms" style="font-size:22px">receipt_long</span>บิล</a>
+      <a class="tab-item" href="#review" style="position:relative"><span class="ms" style="font-size:22px">fact_check</span>รอตรวจ<span data-review-badge class="badge" style="position:absolute;top:2px;right:calc(50% - 24px);background:var(--warn-soft);color:var(--warn);padding:.05rem .4rem">2</span></a>
+      <a class="tab-item" href="#settings"><span class="ms" style="font-size:22px">settings</span>ตั้งค่า</a>
+    </nav>
+  </div>
+</div>
+
+<!-- ================= Toasts ================= -->
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<!-- ================= Dialog: เพิ่มห้องพัก ================= -->
+<dialog id="dlg-room" aria-labelledby="dlg-room-title">
+  <form method="dialog" class="p-6">
+    <h2 id="dlg-room-title" class="text-lg font-bold">เพิ่มห้องพัก</h2>
+    <p class="text-xs mt-1 mb-5" style="color:var(--ink-3)">เลขมิเตอร์เริ่มต้นจะเป็นค่าก่อนหน้าของบิลแรกของห้องนี้</p>
+    <div class="space-y-4">
+      <div><label class="field-label" for="room-no">เลขห้อง</label><input id="room-no" class="field-input mt-1" placeholder="เช่น A119" /></div>
+      <div><label class="field-label" for="room-rent">ค่าห้อง/เดือน (บาท)</label><input id="room-rent" class="field-input mt-1 num" placeholder="3500" inputmode="numeric" /></div>
+      <div>
+        <span class="field-label">ค่าน้ำ</span>
+        <div class="grid grid-cols-2 gap-3 mt-1.5">
+          <div><label class="text-xs" style="color:var(--ink-3)" for="room-wr">บาท/หน่วย (ว่าง = ใช้ค่าทั้งหอ)</label><input id="room-wr" class="field-input mt-1 num" placeholder="18" inputmode="decimal" /></div>
+        </div>
+      </div>
+      <fieldset>
+        <legend class="field-label">ค่าไฟ</legend>
+        <div class="mt-1.5 space-y-2">
+          <label class="flex items-center gap-2 text-sm">
+            <input type="radio" name="room-emode" value="metered" checked /> คิดตามมิเตอร์
+            <input class="field-input !w-24 num ml-1" placeholder="7 บ./หน่วย" inputmode="decimal" aria-label="ราคาค่าไฟต่อหน่วย" />
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="radio" name="room-emode" value="flat" /> เหมาจ่ายรายเดือน
+          </label>
+          <p class="text-xs pl-6" style="color:var(--ink-3)">โหมดเหมาจ่าย: ระบบยังบันทึกเลขมิเตอร์ แต่จะให้กรอกยอดค่าไฟเต็มตอนสร้างบิลแต่ละเดือน</p>
+        </div>
+      </fieldset>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="field-label" for="room-wm">มิเตอร์น้ำเริ่มต้น</label><input id="room-wm" class="field-input mt-1 num" placeholder="1245" inputmode="numeric" /></div>
+        <div><label class="field-label" for="room-em">มิเตอร์ไฟเริ่มต้น</label><input id="room-em" class="field-input mt-1 num" placeholder="9820" inputmode="numeric" /></div>
+      </div>
+    </div>
+    <div class="flex gap-2 mt-6">
+      <button value="cancel" class="btn-ghost" formnovalidate>ยกเลิก</button>
+      <button value="save" class="btn-primary">บันทึกห้อง</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ================= Dialog: เพิ่มผู้เช่า ================= -->
+<dialog id="dlg-tenant" aria-labelledby="dlg-tenant-title">
+  <form method="dialog" class="p-6">
+    <h2 id="dlg-tenant-title" class="text-lg font-bold">เพิ่มผู้เช่า</h2>
+    <p class="text-xs mt-1 mb-5" style="color:var(--ink-3)">หลังบันทึก ให้ผู้เช่าแอดบอท LINE แล้วพิมพ์เลขห้องเพื่อเชื่อม</p>
+    <div class="space-y-4">
+      <div><label class="field-label" for="t-name">ชื่อ-นามสกุล</label><input id="t-name" class="field-input mt-1" placeholder="เช่น สมหญิง รักเรียน" /></div>
+      <div><label class="field-label" for="t-phone">เบอร์โทร</label><input id="t-phone" class="field-input mt-1 num" placeholder="08x-xxx-xxxx" inputmode="tel" /></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="field-label" for="t-room">ห้องพัก (ว่างอยู่)</label>
+          <select id="t-room" class="field-input mt-1"><option>A104</option><option>A109</option><option>A116</option></select>
+        </div>
+        <div><label class="field-label" for="t-date">วันเข้า</label><input id="t-date" type="date" class="field-input mt-1" /></div>
+      </div>
+    </div>
+    <div class="flex gap-2 mt-6">
+      <button value="cancel" class="btn-ghost" formnovalidate>ยกเลิก</button>
+      <button value="save" class="btn-primary">บันทึกผู้เช่า</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- shared ---------- */
+  var fmt = function (n) { return n.toLocaleString("th-TH"); };
+
+  /* ---------- monthly data (dashboard filter) ---------- */
+  var ALL_ROOMS = ["A101","A102","A103","A104","A105","A106","A107","A108","A109","A110","A111","A112","A113","A114","A115","A116","A117","A118"];
+  var MONTHS = {
+    "09-2569": {
+      label: "กันยายน 2569", due: 71480, collected: 58200, bills: 15, paid: 12, sent: 14,
+      unpaidRooms: [
+        { room: "A103", name: "ธนา เจริญกิจ", amt: 6110, days: "ส่งบิลแล้ว 12 วัน" },
+        { room: "A107", name: "วิภา สุขสันต์", amt: 4946, days: "ส่งบิลแล้ว 12 วัน" },
+        { room: "A112", name: "นพดล อินทร์แปลง", amt: 2224, review: true }
+      ],
+      slipPending: 1, vacant: ["A104", "A109", "A117"]
+    },
+    "08-2569": {
+      label: "สิงหาคม 2569", due: 69300, collected: 63800, bills: 15, paid: 13, sent: 14,
+      unpaidRooms: [
+        { room: "A109", name: "กิตติ ศรีวงศ์", amt: 3200, days: "ส่งบิลแล้ว 9 วัน" },
+        { room: "A114", name: "พรทิพย์ มั่นคง", amt: 2300, days: "ส่งบิลแล้ว 9 วัน" }
+      ],
+      slipPending: 0, vacant: ["A104", "A117", "A118"]
+    },
+    "07-2569": {
+      label: "กรกฎาคม 2569", due: 66900, collected: 61000, bills: 14, paid: 13, sent: 13,
+      unpaidRooms: [
+        { room: "A103", name: "ธนา เจริญกิจ", amt: 5900, days: "ส่งบิลแล้ว 15 วัน" }
+      ],
+      slipPending: 0, vacant: ["A104", "A109", "A117", "A118"]
+    }
+  };
+
+  function renderMonth(key) {
+    var m = MONTHS[key];
+    var unpaidAmt = m.unpaidRooms.reduce(function (s, r) { return s + r.amt; }, 0);
+    document.getElementById("dash-subtitle").textContent = m.label;
+    document.getElementById("kpi-due").innerHTML = fmt(m.due) + ' <span class="text-xs font-normal" style="color:var(--ink-3)">บาท</span>';
+    document.getElementById("kpi-due-sub").textContent = m.bills + " บิล · ส่งทาง LINE แล้ว " + m.sent;
+    document.getElementById("kpi-collected").innerHTML = fmt(m.collected) + ' <span class="text-xs font-normal" style="color:var(--ink-3)">บาท</span>';
+    document.getElementById("kpi-collected-sub").textContent = m.paid + " จาก " + m.bills + " บิล";
+    document.getElementById("kpi-unpaid").innerHTML = fmt(unpaidAmt) + ' <span class="text-xs font-normal" style="color:var(--ink-3)">บาท</span>';
+    document.getElementById("kpi-unpaid-sub").textContent = m.unpaidRooms.length + " ห้อง" + (m.slipPending ? " · มีสลิปรอตรวจ " + m.slipPending : "");
+    document.getElementById("kpi-vacant").textContent = m.vacant.length;
+    document.getElementById("kpi-vacant-sub").textContent = "อัตราการเช่า " + Math.round((18 - m.vacant.length) / 18 * 100) + "%";
+
+    var list = document.getElementById("unpaid-list");
+    list.innerHTML = "";
+    m.unpaidRooms.forEach(function (r) {
+      var el = document.createElement("div");
+      el.className = "py-2.5 flex items-center gap-3";
+      var tone = r.review ? "var(--warn-soft);color:var(--warn)" : "var(--primary-soft);color:var(--primary-deep)";
+      el.innerHTML =
+        '<div class="w-9 h-9 rounded-lg grid place-items-center text-xs font-bold shrink-0" style="background:' + tone + '">' + r.room + "</div>" +
+        '<div class="min-w-0 flex-1"><div class="text-sm font-medium truncate">' + r.name + '</div>' +
+        '<div class="text-xs ' + (r.review ? 'flex items-center gap-1" style="color:var(--warn)"><span class="ms fill" style="font-size:13px">fact_check</span>สลิปรอตรวจ' : 'num" style="color:var(--ink-3)">' + r.days) + "</div></div>" +
+        '<div class="text-sm font-semibold num">' + fmt(r.amt) + "</div>";
+      list.appendChild(el);
+    });
+
+    var unpaidSet = {};
+    m.unpaidRooms.forEach(function (r) { unpaidSet[r.room] = true; });
+    var vacantSet = {};
+    m.vacant.forEach(function (r) { vacantSet[r] = true; });
+    var grid = document.getElementById("room-grid");
+    grid.innerHTML = "";
+    var cnt = { paid: 0, unpaid: 0, vacant: 0 };
+    ALL_ROOMS.forEach(function (room) {
+      var s, style;
+      if (vacantSet[room]) { s = "ว่าง"; cnt.vacant++; style = "border-slate-200 bg-slate-50 text-slate-400"; }
+      else if (unpaidSet[room]) { s = "ยังไม่จ่าย"; cnt.unpaid++; style = "border-blue-200 bg-blue-50 text-blue-700"; }
+      else { s = "จ่ายแล้ว"; cnt.paid++; style = "border-emerald-200 bg-emerald-50 text-emerald-700"; }
+      var el = document.createElement("a");
+      el.href = "#rooms";
+      el.className = "rounded-lg border py-2.5 text-center transition-shadow hover:shadow-sm " + style;
+      el.innerHTML = '<div class="text-xs font-bold">' + room + '</div><div class="text-[10px] mt-0.5">' + s + "</div>";
+      grid.appendChild(el);
+    });
+    document.getElementById("cnt-paid").textContent = cnt.paid;
+    document.getElementById("cnt-unpaid").textContent = cnt.unpaid;
+    document.getElementById("cnt-vacant").textContent = cnt.vacant;
+  }
+  document.getElementById("dash-month").addEventListener("change", function (e) { renderMonth(e.target.value); });
+  renderMonth("09-2569");
+
+  /* ---------- meter table (wizard step 1) ---------- */
+  var meters = [
+    { room: "A101", name: "สมชาย", rent: 3500, wr: 18, er: 7, wp: 1245, ep: 9820, w: 1288, e: 9960, extras: [] },
+    { room: "A103", name: "ธนา", rent: 4200, wr: 20, er: 7, wp: 1510, ep: 4520, w: 1562, e: 4610,
+      extras: [{ name: "ค่าอินเทอร์เน็ต", amt: 200 }, { name: "ค่าจัดการขยะ", amt: 40 }] },
+    { room: "A105", name: "อรุณี", rent: 3500, wr: 18, er: 7, wp: 590, ep: 3310, w: 614, e: 3385, extras: [] },
+    { room: "A110", name: "ณัฐพล", rent: 3800, wr: 18, flat: true, wp: 76, ep: 2210, w: 91, e: 2295, flatAmt: 600, extras: [] }
+  ];
+  var OTHERS_TOTAL = 50577; // อีก 11 ห้องในตัวอย่าง
+
+  var body = document.getElementById("meter-body");
+  meters.forEach(function (m, i) {
+    var rateNote = m.flat
+      ? 'ค่าห้อง ' + fmt(m.rent) + ' · <span style="color:var(--warn)">ไฟเหมาจ่าย</span>'
+      : 'ค่าห้อง ' + fmt(m.rent) + (m.wr !== 18 ? ' · น้ำ ' + m.wr + "/หน่วย" : "");
+    var tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td class="td"><span class="font-bold">' + m.room + '</span> <span class="text-xs" style="color:var(--ink-3)">' + m.name + '</span>' +
+        '<div class="text-xs num" style="color:var(--ink-3)">' + rateNote + "</div>" +
+        '<button class="link-action mt-1" data-extoggle="' + i + '" style="color:var(--primary-deep)">+ ค่าใช้จ่ายเพิ่มเติม</button></td>' +
+      '<td class="td"><label class="sr-only" for="mw' + i + '">มิเตอร์น้ำใหม่ห้อง ' + m.room + '</label><div class="flex items-center gap-1.5 num flex-wrap"><input class="meter-input" id="mw' + i + '" value="' + m.w + '" inputmode="numeric" /><span class="text-xs" style="color:var(--ink-3)">← ' + m.wp + "</span></div></td>" +
+      '<td class="td"><label class="sr-only" for="me' + i + '">มิเตอร์ไฟใหม่ห้อง ' + m.room + '</label><div class="flex items-center gap-1.5 num flex-wrap"><input class="meter-input" id="me' + i + '" value="' + m.e + '" inputmode="numeric" /><span class="text-xs" style="color:var(--ink-3)">← ' + m.ep + (m.flat ? " (บันทึกมิเตอร์เท่านั้น)" : "") + "</span></div></td>" +
+      '<td class="td text-right num" id="wa' + i + '"></td>' +
+      '<td class="td text-right">' + (m.flat
+        ? '<label class="sr-only" for="fa' + i + '">ยอดค่าไฟเหมาห้อง ' + m.room + '</label><div class="flex items-center gap-1.5 num justify-end flex-wrap"><input class="meter-input" id="fa' + i + '" value="' + m.flatAmt + '" inputmode="numeric" /><span class="text-xs" style="color:var(--warn)">บาท (เหมา)</span></div>'
+        : '<span class="num" id="ea' + i + '"></span>') + "</td>" +
+      '<td class="td text-right num" id="xa' + i + '"></td>' +
+      '<td class="td text-right font-bold num" id="ta' + i + '"></td>';
+    body.appendChild(tr);
+
+    var exr = document.createElement("tr");
+    exr.id = "exr" + i;
+    exr.style.display = m.extras.length ? "" : "none";
+    exr.innerHTML =
+      '<td colspan="7" class="!py-2.5" style="background:#fafcff">' +
+        '<div class="flex items-center gap-2 flex-wrap text-xs">' +
+          '<span style="color:var(--ink-3)">ค่าใช้จ่ายเพิ่มเติม:</span>' +
+          '<div class="flex gap-2 flex-wrap" id="exlist' + i + '"></div>' +
+          '<button class="btn-ghost btn-sm" data-exadd="' + i + '">+ เพิ่มรายการ</button>' +
+        "</div>" +
+      "</td>";
+    body.appendChild(exr);
+
+    function addCharge(name, amt) {
+      var chip = document.createElement("span");
+      chip.className = "charge-chip";
+      chip.innerHTML =
+        '<input value="' + name + '" aria-label="ชื่อค่าใช้จ่ายเพิ่มเติม" /> ' +
+        '<input class="amt num" value="' + amt + '" inputmode="numeric" aria-label="จำนวนเงิน" /> ' +
+        '<button type="button" class="ms" style="font-size:15px;color:var(--ink-3)" aria-label="ลบรายการนี้">close</button>';
+      chip.querySelector(".ms").addEventListener("click", function () {
+        chip.remove();
+        if (!document.getElementById("exlist" + i).children.length) { document.getElementById("exr" + i).style.display = "none"; }
+        calc();
+      });
+      chip.querySelectorAll("input").forEach(function (inp) { inp.addEventListener("input", calc); });
+      document.getElementById("exlist" + i).appendChild(chip);
+    }
+    m.extras.forEach(function (x) { addCharge(x.name, x.amt); });
+    body.querySelector('[data-exadd="' + i + '"]').addEventListener("click", function () {
+      document.getElementById("exr" + i).style.display = "";
+      addCharge("ค่าใช้จ่าย", "");
+      calc();
+    });
+    body.querySelector('[data-extoggle="' + i + '"]').addEventListener("click", function () {
+      var row = document.getElementById("exr" + i);
+      if (row.style.display === "none") {
+        row.style.display = "";
+        if (!document.getElementById("exlist" + i).children.length) { addCharge("ค่าใช้จ่าย", ""); }
+      } else { row.style.display = "none"; }
+      calc();
+    });
+  });
+
+  function extrasSum(i) {
+    var sum = 0;
+    document.querySelectorAll("#exlist" + i + " .amt").forEach(function (inp) { sum += +inp.value || 0; });
+    return sum;
+  }
+  function calc() {
+    var bad = 0, grand = 0;
+    meters.forEach(function (m, i) {
+      var w = +document.getElementById("mw" + i).value || 0;
+      var e = +document.getElementById("me" + i).value || 0;
+      var rowBad = w < m.wp || e < m.ep;
+      var wa = (w - m.wp) * m.wr;
+      var ea = m.flat ? (+document.getElementById("fa" + i).value || 0) : (e - m.ep) * m.er;
+      var xa = extrasSum(i);
+      var total = m.rent + wa + ea + xa;
+      if (rowBad) { bad++; } else { grand += total; }
+      document.getElementById("mw" + i).classList.toggle("bad", w < m.wp);
+      document.getElementById("me" + i).classList.toggle("bad", e < m.ep);
+      document.getElementById("wa" + i).textContent = rowBad ? "–" : fmt(wa) + " (" + (w - m.wp) + ")";
+      if (!m.flat) { document.getElementById("ea" + i).textContent = rowBad ? "–" : fmt(ea) + " (" + (e - m.ep) + ")"; }
+      document.getElementById("xa" + i).textContent = xa ? fmt(xa) : "–";
+      document.getElementById("ta" + i).textContent = rowBad ? "ต้องแก้" : fmt(total);
+    });
+    document.getElementById("grand-total").textContent = fmt(grand + (bad ? 0 : OTHERS_TOTAL));
+    document.getElementById("meter-error").style.display = bad ? "flex" : "none";
+    var next = document.getElementById("btn-next");
+    next.disabled = bad > 0;
+    next.textContent = bad > 0 ? "แก้เลขมิเตอร์ก่อน" : "ถัดไป: ตรวจทาน";
+  }
+  body.addEventListener("input", calc);
+  calc();
+
+  /* ---------- routing ---------- */
+  var ROUTES = { dashboard: "แดชบอร์ด", rooms: "ห้องพัก", tenants: "ผู้เช่า", bills: "บิล", review: "รอตรวจ", line: "ข้อความ LINE", settings: "ตั้งค่า" };
+  function route() {
+    var h = location.hash.replace("#", "") || "dashboard";
+    if (!ROUTES[h]) { h = "dashboard"; }
+    document.querySelectorAll(".screen").forEach(function (s) { s.classList.remove("active"); });
+    document.getElementById("screen-" + h).classList.add("active");
+    document.querySelectorAll(".nav-item, .tab-item").forEach(function (n) {
+      n.classList.toggle("active", n.getAttribute("href") === "#" + h);
+    });
+    document.getElementById("mobile-title").textContent = ROUTES[h];
+    window.scrollTo(0, 0);
+  }
+  window.addEventListener("hashchange", route);
+  route();
+
+  /* ---------- bills subviews ---------- */
+  function billsView(v) {
+    document.querySelectorAll("[data-bview]").forEach(function (el) {
+      el.classList.toggle("active", el.dataset.bview === v);
+    });
+    document.getElementById("screen-bills").classList.add("active");
+    window.scrollTo(0, 0);
+  }
+  document.addEventListener("click", function (ev) {
+    var t = ev.target.closest("[data-bills-view]");
+    if (t) { billsView(t.dataset.billsView); }
+  });
+
+  /* ---------- send all: loading -> success ---------- */
+  var sendBtn = document.getElementById("btn-send-all");
+  sendBtn.addEventListener("click", function () {
+    sendBtn.disabled = true;
+    sendBtn.innerHTML = '<span class="ms spin" style="font-size:17px;color:#a7f3d0">progress_activity</span>กำลังส่งบิลทาง LINE';
+    setTimeout(function () {
+      sendBtn.disabled = false;
+      sendBtn.innerHTML = '<span class="ms fill" style="font-size:17px;color:#a7f3d0">send</span>สร้างบิลและส่ง LINE ทั้งหมด';
+      billsView("list");
+      toast("สร้างบิล 15 ใบและส่ง LINE แล้ว สำเร็จ 14 (A107 ยังไม่เชื่อม)");
+    }, 1200);
+  });
+
+  /* ---------- mark paid ---------- */
+  document.getElementById("btn-mark-paid").addEventListener("click", function () {
+    var b = document.getElementById("detail-badge");
+    b.textContent = "จ่ายแล้ว · โอน 13 ก.ย. 68";
+    b.style.background = "var(--ok-soft)"; b.style.color = "var(--ok)";
+    document.getElementById("pay-history").innerHTML =
+      '<div class="flex items-center gap-2 py-1.5"><span class="ms fill" style="font-size:15px;color:var(--ok)">check_circle</span><span class="num">13 ก.ย. 68 · 21:34 · ยืนยันด้วยมือ · ช่องทางโอน · 6,110 บาท</span></div>';
+    var btn = document.getElementById("btn-mark-paid");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="ms" style="font-size:17px">check</span>จ่ายแล้ว';
+    toast("ปิดบิลห้อง A103 แล้ว ระบบส่งยืนยันให้ผู้เช่าทาง LINE");
+  });
+
+  /* ---------- review queue ---------- */
+  function updateBadges() {
+    var n = document.querySelectorAll(".slip-card").length;
+    document.querySelectorAll("[data-review-badge]").forEach(function (b) {
+      b.textContent = n;
+      b.style.display = n ? "" : "none";
+    });
+    document.getElementById("review-empty").style.display = n ? "none" : "block";
+    document.getElementById("review-list").style.display = n ? "" : "none";
+  }
+  document.querySelectorAll("[data-resolve]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var card = btn.closest(".slip-card");
+      card.classList.add("leaving");
+      setTimeout(function () { card.remove(); updateBadges(); }, 250);
+      toast(btn.dataset.resolve);
+    });
+  });
+  updateBadges();
+
+  /* ---------- settings ---------- */
+  document.getElementById("btn-reissue").addEventListener("click", function () {
+    var code = String(Math.floor(100000 + Math.random() * 900000));
+    document.getElementById("owner-code").textContent = code;
+    toast("ออกรหัสใหม่แล้ว รหัสเดิมใช้ไม่ได้ทันที");
+  });
+
+  /* ---------- dialogs ---------- */
+  document.querySelectorAll("[data-open]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var d = document.getElementById(btn.dataset.open);
+      d.showModal();
+      var first = d.querySelector("input, select");
+      if (first) { setTimeout(function () { first.focus(); }, 50); }
+    });
+  });
+  document.querySelectorAll("dialog").forEach(function (d) {
+    d.addEventListener("close", function () {
+      if (d.returnValue === "save") { toast(d.id === "dlg-room" ? "บันทึกห้องพักแล้ว" : "บันทึกผู้เช่าแล้ว ห้องเปลี่ยนเป็นมีผู้เช่า"); }
+    });
+  });
+
+  /* ---------- toast on data-toast buttons ---------- */
+  document.querySelectorAll("[data-toast]").forEach(function (btn) {
+    btn.addEventListener("click", function () { toast(btn.dataset.toast); });
+  });
+
+  /* ---------- toast ---------- */
+  function toast(msg) {
+    var box = document.getElementById("toasts");
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = '<span class="ms fill" style="font-size:16px;color:#6ee7b7">check_circle</span>' + msg;
+    box.appendChild(el);
+    setTimeout(function () {
+      el.style.transition = "opacity .25s ease-out"; el.style.opacity = "0";
+      setTimeout(function () { el.remove(); }, 250);
+    }, 2600);
+  }
+
+  /* ---------- decorative QR ---------- */
+  var qr = document.getElementById("qrbox");
+  var seed = 42;
+  function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+  for (var i = 0; i < 64; i++) {
+    var d = document.createElement("div");
+    var finder = (i % 8 < 3 && i < 24) || (i % 8 > 4 && i < 24) || (i % 8 < 3 && i > 39 && i < 48);
+    d.style.width = "8px"; d.style.height = "8px"; d.style.borderRadius = "1px";
+    d.style.background = finder ? "#1e3a8a" : (rnd() > 0.5 ? "#1e3a8a" : "transparent");
+    qr.appendChild(d);
+  }
+})();
+</script>
+</body>
+</html>

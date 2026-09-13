@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wangchan-dorm",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "SEAM_PROBE": "0"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "wangchan-dorm",
+      "database_id": "985296cf-2b88-4f8f-b8f8-57e1fb508456",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SLIPS",
+      "bucket_name": "wangchan-dorm-slips"
+    }
+  ],
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*"]
+  }
+}

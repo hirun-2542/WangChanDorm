@@ -1,0 +1,110 @@
+:root {
+  /* Wang Chan Dorm — Clean Premium SaaS */
+  --bg-app: #F7FAFF;
+  --surface: #FFFFFF;
+  --surface-subtle: #F9FBFE;
+  --primary: #1677FF;
+  --primary-hover: #0F63DB;
+  --primary-soft: #EAF3FF;
+  --text-primary: #10213D;
+  --text-secondary: #60708A;
+  --text-muted: #94A3B8;
+  --border: #E6EDF7;
+  --success: #16A36A;
+  --success-soft: #ECFDF5;
+  --warning: #F59E0B;
+  --warning-soft: #FFF7E6;
+  --danger: #EF4444;
+  --danger-soft: #FEF2F2;
+  --line-green: #06C755;
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --shadow-card: 0 4px 18px rgba(34, 78, 135, 0.06);
+  --shadow-floating: 0 12px 30px rgba(34, 78, 135, 0.12);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --sidebar-width: 232px;
+  --content-max: 1440px;
+}
+
+html, body {
+  font-family: "IBM Plex Sans Thai", "Sarabun", system-ui, sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+.ui-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.ui-button-primary {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.ui-button-primary:hover { background: var(--primary-hover); }
+
+.ui-button-secondary {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.ui-input {
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 0 12px;
+  color: var(--text-primary);
+}
+
+.ui-input:focus {
+  outline: 2px solid rgba(22, 119, 255, 0.16);
+  border-color: var(--primary);
+}
+
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ui-badge-success { background: var(--success-soft); color: var(--success); }
+.ui-badge-warning { background: var(--warning-soft); color: #B66A00; }
+.ui-badge-danger { background: var(--danger-soft); color: var(--danger); }
+.ui-badge-primary { background: var(--primary-soft); color: var(--primary-hover); }
+
+.ui-number { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 767px) {
+  :root { --sidebar-width: 0px; }
+  .ui-touch-target { min-width: 44px; min-height: 44px; }
+}

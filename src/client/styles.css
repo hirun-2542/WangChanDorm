@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #f6f8fc;
+  --color-surface: #ffffff;
+  --color-surface-alt: #fbfdff;
+  --color-border: #e6edf7;
+  --color-ink: #10213d;
+  --color-muted: #60708a;
+  --color-muted-2: #94a3b8;
+  --color-soft: #eaf3ff;
+  --color-primary: #2563eb;
+  --color-primary-deep: #1d4ed8;
+  --color-ok: #059669;
+  --color-warn: #b45309;
+  --color-err: #dc2626;
+  --color-line-green: #06c755;
+  --font-sans: "IBM Plex Sans Thai", system-ui, sans-serif;
+  --shadow-card: 0 6px 22px rgba(34, 78, 135, 0.07);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  :focus-visible {
+    outline: 2px dashed var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.ms {
+  display: inline-block;
+  font-family: "Material Symbols Rounded";
+  font-variation-settings: "FILL" 0, "wght" 400;
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+  user-select: none;
+}
+
+.ms.fill {
+  font-variation-settings: "FILL" 1, "wght" 400;
+}
