@@ -26,7 +26,7 @@ export function DashboardPage() {
   return (
     <Placeholder
       icon="space_dashboard"
-      title="Dashboard"
+      title="แดชบอร์ด"
       description="ภาพรวมยอดที่ควรเก็บ เก็บแล้ว ค้างชำระ และสถานะห้องทั้งหอในหน้าเดียว"
     />
   );

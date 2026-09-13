@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import type { ComponentType } from "react";
 import {
   BillsPage,
   DashboardPage,
@@ -10,76 +9,26 @@ import {
   TenantsPage,
 } from "./pages";
 
-const routes = ["dashboard", "rooms", "tenants", "bills", "review", "line", "settings"] as const;
+const routeList = [
+  { id: "dashboard", label: "แดชบอร์ด", icon: "space_dashboard", Page: DashboardPage },
+  { id: "rooms", label: "ห้องพัก", icon: "door_front", Page: RoomsPage },
+  { id: "tenants", label: "ผู้เช่า", icon: "group", Page: TenantsPage },
+  { id: "bills", label: "บิล", icon: "receipt_long", Page: BillsPage },
+  { id: "review", label: "รอตรวจ", icon: "fact_check", Page: ReviewPage },
+  { id: "line", label: "ข้อความ LINE", icon: "chat_bubble", Page: LinePage },
+  { id: "settings", label: "ตั้งค่า", icon: "settings", Page: SettingsPage },
+] as const;
 
-type Route = (typeof routes)[number];
+type Route = (typeof routeList)[number]["id"];
 
-interface RouteMeta {
-  navLabel: string;
-  tabLabel: string;
-  pageTitle: string;
-  icon: string;
-  Page: ComponentType;
+function findRoute(route: Route) {
+  return routeList.find((item) => item.id === route) ?? routeList[0];
 }
-
-const routeMeta: Record<Route, RouteMeta> = {
-  dashboard: {
-    navLabel: "แดชบอร์ด",
-    tabLabel: "Dashboard",
-    pageTitle: "Dashboard",
-    icon: "space_dashboard",
-    Page: DashboardPage,
-  },
-  rooms: {
-    navLabel: "ห้องพัก",
-    tabLabel: "ห้อง",
-    pageTitle: "ห้องพัก",
-    icon: "door_front",
-    Page: RoomsPage,
-  },
-  tenants: {
-    navLabel: "ผู้เช่า",
-    tabLabel: "ผู้เช่า",
-    pageTitle: "ผู้เช่า",
-    icon: "group",
-    Page: TenantsPage,
-  },
-  bills: {
-    navLabel: "บิล",
-    tabLabel: "บิล",
-    pageTitle: "บิล",
-    icon: "receipt_long",
-    Page: BillsPage,
-  },
-  review: {
-    navLabel: "รอตรวจ",
-    tabLabel: "รอตรวจ",
-    pageTitle: "รอตรวจสลิป",
-    icon: "fact_check",
-    Page: ReviewPage,
-  },
-  line: {
-    navLabel: "ข้อความ LINE",
-    tabLabel: "LINE",
-    pageTitle: "ข้อความ LINE",
-    icon: "chat_bubble",
-    Page: LinePage,
-  },
-  settings: {
-    navLabel: "ตั้งค่า",
-    tabLabel: "ตั้งค่า",
-    pageTitle: "ตั้งค่า",
-    icon: "settings",
-    Page: SettingsPage,
-  },
-};
-
-const desktopRoutes: Route[] = ["dashboard", "rooms", "tenants", "bills", "review", "line", "settings"];
-const mobileRoutes: Route[] = ["dashboard", "rooms", "tenants", "bills", "review", "settings"];
 
 function parseRoute(hash: string): Route {
   const id = hash.replace(/^#/, "");
-  return routes.find((route) => route === id) ?? "dashboard";
+  const match = routeList.find((item) => item.id === id);
+  return match === undefined ? "dashboard" : match.id;
 }
 
 function useHashRoute(): Route {
@@ -98,15 +47,11 @@ function useHashRoute(): Route {
   }, []);
 
   useEffect(() => {
-    document.title = `${routeMeta[route].pageTitle} — หอพักวังจันทร์`;
+    document.title = `${findRoute(route).label} — หอพักวังจันทร์`;
     window.scrollTo(0, 0);
   }, [route]);
 
   return route;
-}
-
-function logoClasses(size: string): string {
-  return `grid ${size} shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2485ff] to-[#0f63db] text-white`;
 }
 
 interface NavItemProps {
@@ -115,7 +60,7 @@ interface NavItemProps {
 }
 
 function SidebarNavItem({ route, active }: NavItemProps) {
-  const meta = routeMeta[route];
+  const meta = findRoute(route);
 
   return (
     <a
@@ -126,13 +71,13 @@ function SidebarNavItem({ route, active }: NavItemProps) {
       }`}
     >
       <span className="ms text-[20px]">{meta.icon}</span>
-      <span className="hidden lg:inline">{meta.navLabel}</span>
+      <span className="hidden lg:inline">{meta.label}</span>
     </a>
   );
 }
 
 function MobileTabItem({ route, active }: NavItemProps) {
-  const meta = routeMeta[route];
+  const meta = findRoute(route);
 
   return (
     <a
@@ -143,38 +88,36 @@ function MobileTabItem({ route, active }: NavItemProps) {
       }`}
     >
       <span className="ms text-[22px]">{meta.icon}</span>
-      {meta.tabLabel}
+      {meta.label}
     </a>
   );
 }
 
 export default function App() {
   const route = useHashRoute();
-  const Page = routeMeta[route].Page;
+  const Page = findRoute(route).Page;
 
   return (
     <div className="min-h-screen bg-bg md:grid md:grid-cols-[88px_1fr] lg:grid-cols-[236px_1fr]">
       <aside className="hidden border-r border-border bg-surface px-2.5 py-[18px] md:sticky md:top-0 md:flex md:h-screen md:flex-col lg:px-3.5">
         <div className="flex items-center gap-2.5 px-2 pb-[18px] md:justify-center md:px-0 lg:justify-start lg:px-2">
-          <div className={logoClasses("h-10 w-10")}>
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2485ff] to-[#0f63db] text-white">
             <span className="ms fill text-[22px]">home</span>
           </div>
           <div className="hidden lg:block">
-            <div className="font-bold leading-tight">Wang Chan Dorm</div>
+            <div className="font-bold leading-tight">หอพักวังจันทร์</div>
             <div className="text-xs text-muted-2">ระบบจัดการหอพัก</div>
           </div>
         </div>
 
         <nav className="grid gap-1.5">
-          {desktopRoutes.map((item) => (
-            <SidebarNavItem key={item} route={item} active={item === route} />
+          {routeList.map((item) => (
+            <SidebarNavItem key={item.id} route={item.id} active={item.id === route} />
           ))}
         </nav>
 
         <div className="mt-auto hidden px-2 pb-1 pt-3 text-xs text-muted-2 lg:block">
-          Wang Chan Dorm · MVP
-          <br />
-          Clean Premium Theme
+          หอพักวังจันทร์ · เวอร์ชันต้นแบบ
         </div>
       </aside>
 
@@ -212,10 +155,10 @@ export default function App() {
         </header>
 
         <header className="sticky top-0 z-30 flex h-[58px] items-center gap-2.5 border-b border-border bg-white/95 px-4 md:hidden">
-          <div className={logoClasses("h-9 w-9")}>
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2485ff] to-[#0f63db] text-white">
             <span className="ms fill text-[20px]">home</span>
           </div>
-          <strong>{routeMeta[route].pageTitle}</strong>
+          <strong>{findRoute(route).label}</strong>
           <button
             type="button"
             className="ml-auto grid h-9 w-9 place-items-center rounded-[10px] border border-border bg-surface text-muted"
@@ -231,8 +174,8 @@ export default function App() {
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-40 flex h-[68px] border-t border-border bg-surface md:hidden">
-        {mobileRoutes.map((item) => (
-          <MobileTabItem key={item} route={item} active={item === route} />
+        {routeList.map((item) => (
+          <MobileTabItem key={item.id} route={item.id} active={item.id === route} />
         ))}
       </nav>
     </div>

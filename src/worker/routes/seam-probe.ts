@@ -50,6 +50,8 @@ api.post("/seam-probe", async (c) => {
     const object = await c.env.SLIPS.get(key);
     const objectText = object === null ? null : await object.text();
 
+    await c.env.SLIPS.delete(key);
+
     const outboundResponse = await fetch(target.href, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -64,9 +66,9 @@ api.post("/seam-probe", async (c) => {
       outbound: { status: outboundResponse.status, body: outboundBody },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "seam probe failed", error: message }));
-    return c.json({ ok: false, error: message }, 500);
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "seam probe failed", error: detail }));
+    return c.json({ ok: false, error: "seam probe failed" }, 500);
   }
 });
 

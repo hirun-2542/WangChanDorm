@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const seamProbeUrl = "https://dorm.test/api/seam-probe";
@@ -11,9 +11,14 @@ interface SeamProbeBody {
   outbound: { status: number; body: string };
 }
 
-async function readRequestBody(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
-  const request = input instanceof Request ? input : new Request(String(input), init);
-  return request.text();
+interface OutboundCall {
+  url: string;
+  method: string | undefined;
+  body: string;
+}
+
+function readRequestBody(url: string, init: RequestInit): string {
+  return init.body as string;
 }
 
 describe("POST /api/seam-probe", () => {
@@ -22,15 +27,18 @@ describe("POST /api/seam-probe", () => {
   });
 
   it("round-trips d1, r2 and the outbound request", async () => {
-    const received: string[] = [];
+    const received: OutboundCall[] = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
-    fetchSpy.mockImplementation(async (input, init) => {
-      received.push(await readRequestBody(input, init));
-      return new Response(JSON.stringify({ received: true }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+    fetchSpy.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      received.push({ url, method: init?.method, body: readRequestBody(url, init ?? {}) });
+      return Promise.resolve(
+        new Response(JSON.stringify({ received: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
     });
 
     const response = await SELF.fetch(seamProbeUrl, {
@@ -46,10 +54,13 @@ describe("POST /api/seam-probe", () => {
     expect(body.d1.readBack).toBe(body.d1.written);
     expect(body.r2.readBack).toBe(body.d1.written);
     expect(received).toHaveLength(1);
-    const outboundBody = received[0];
-    expect(outboundBody).toBeDefined();
-    expect(JSON.parse(outboundBody ?? "")).toEqual({ probe: body.d1.written });
-    expect(body.outbound.status).toBe(200);
+
+    const outbound = received[0];
+    expect(outbound?.url).toBe(outboundUrl);
+    expect(outbound?.method).toBe("POST");
+    expect(JSON.parse(outbound?.body ?? "")).toEqual({ probe: body.d1.written });
+    expect(JSON.parse(body.outbound.body)).toEqual({ received: true });
+    expect(await env.SLIPS.get(body.r2.key)).toBeNull();
   });
 
   it("rejects an outbound url that is not http or https", async () => {
