@@ -1,6 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Badge, Button, Card, CardHeader, Dialog, Field, PageHeader, Toast } from "../ui";
-import { dorm } from "../mock-data";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  ApiError,
+  fetchSettings,
+  regenerateOwnerCode,
+  updateSettings,
+  type PromptpayType,
+  type Settings,
+} from "../api";
+import { Badge, Button, Card, CardHeader, Dialog, EmptyState, Field, PageHeader, Skeleton, Toast } from "../ui";
 import { ChoiceRow, numericValue } from "./dorm-shared";
 
 const sectionList = [
@@ -26,6 +33,20 @@ function Section({ id, title, description, children }: SectionProps) {
         {children}
       </Card>
     </div>
+  );
+}
+
+function IntegrationRow({ name, description, configured }: { name: string; description: string; configured: boolean }) {
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
+      <div className="min-w-0">
+        <span className="block text-sm text-charcoal">{name}</span>
+        <span className="block text-xs text-fog">{description}</span>
+      </div>
+      <Badge tone={configured ? "paid" : "neutral"} icon={configured ? "check_circle" : "link_off"}>
+        {configured ? "ตั้งค่าแล้ว" : "ยังไม่ตั้งค่า"}
+      </Badge>
+    </li>
   );
 }
 
@@ -82,17 +103,52 @@ function QrPreview() {
 }
 
 export function SettingsPage() {
-  const [dormName, setDormName] = useState(dorm.name);
-  const [ownerName, setOwnerName] = useState(dorm.ownerName);
-  const [waterRate, setWaterRate] = useState(String(dorm.waterRate));
-  const [electricRate, setElectricRate] = useState(String(dorm.electricRate));
-  const [payType, setPayType] = useState<"phone" | "id">("phone");
-  const [payId, setPayId] = useState(dorm.promptPayId);
-  const [payName, setPayName] = useState(dorm.promptPayName);
-  const [code, setCode] = useState(dorm.pairingCode);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<{ message: string; field?: string } | null>(null);
+  const [dormName, setDormName] = useState("");
+  const [ownerName, setOwnerName] = useState("");
+  const [waterRate, setWaterRate] = useState("");
+  const [electricRate, setElectricRate] = useState("");
+  const [payType, setPayType] = useState<PromptpayType>("phone");
+  const [payId, setPayId] = useState("");
+  const [payName, setPayName] = useState("");
+  const [code, setCode] = useState("");
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [activeSection, setActiveSection] = useState<string>(sectionList[0].id);
   const [toast, setToast] = useState<string | null>(null);
+
+  const applySettings = useCallback((data: Settings) => {
+    setSettings(data);
+    setDormName(data.dormName);
+    setOwnerName(data.ownerName);
+    setWaterRate(String(data.defaultWaterRate));
+    setElectricRate(String(data.defaultElectricRate));
+    setPayType(data.promptpayType === "citizen-id" ? "citizen-id" : "phone");
+    setPayId(data.promptpayId);
+    setPayName(data.promptpayName);
+    setCode(data.ownerLinkCode);
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+
+    try {
+      const data = await fetchSettings();
+      applySettings(data);
+    } catch (error) {
+      setLoadError(error instanceof ApiError ? error.message : "โหลดการตั้งค่าไม่สำเร็จ");
+    } finally {
+      setLoading(false);
+    }
+  }, [applySettings]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   useEffect(() => {
     if (toast === null) {
@@ -108,7 +164,13 @@ export function SettingsPage() {
     };
   }, [toast]);
 
+  const ready = !loading && loadError === null && settings !== null;
+
   useEffect(() => {
+    if (!ready) {
+      return;
+    }
+
     const nodes = sectionList
       .map((item) => document.getElementById(item.id))
       .filter((node): node is HTMLElement => node !== null);
@@ -138,7 +200,7 @@ export function SettingsPage() {
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [ready]);
 
   const waterValue = numericValue(waterRate);
   const electricValue = numericValue(electricRate);
@@ -148,25 +210,59 @@ export function SettingsPage() {
     waterValue !== null &&
     waterValue > 0 &&
     electricValue !== null &&
-    electricValue > 0;
+    electricValue > 0 &&
+    !saving;
+
+  const fieldError = (name: string): string | undefined =>
+    saveError !== null && saveError.field === name ? saveError.message : undefined;
 
   const goTo = (id: string) => {
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
     setActiveSection(id);
   };
 
-  const save = () => {
-    setToast("บันทึกการตั้งค่าเรียบร้อย");
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      const updated = await updateSettings({
+        dormName: dormName.trim(),
+        ownerName: ownerName.trim(),
+        defaultWaterRate: waterValue ?? 0,
+        defaultElectricRate: electricValue ?? 0,
+        promptpayType: payType,
+        promptpayId: payId.trim(),
+        promptpayName: payName.trim(),
+      });
+      applySettings(updated);
+      setToast("บันทึกการตั้งค่าเรียบร้อย");
+    } catch (error) {
+      if (error instanceof ApiError && error.field !== undefined) {
+        setSaveError({ message: error.message, field: error.field });
+      } else {
+        setSaveError(null);
+        setToast(error instanceof ApiError ? error.message : "บันทึกการตั้งค่าไม่สำเร็จ");
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const regenCode = () => {
-    const next = String(Math.floor(100000 + Math.random() * 900000));
-    setCode(next);
-    setConfirmRegen(false);
-    setToast(`ออกรหัสเชื่อมต่อใหม่ ${next} แล้ว`);
+  const regenCode = async () => {
+    try {
+      const next = await regenerateOwnerCode();
+      setCode(next);
+      setSettings((current) => (current === null ? current : { ...current, ownerLinkCode: next }));
+      setConfirmRegen(false);
+      setToast(`ออกรหัสเชื่อมต่อใหม่ ${next} แล้ว`);
+    } catch (error) {
+      setConfirmRegen(false);
+      setToast(error instanceof ApiError ? error.message : "ออกรหัสเชื่อมต่อใหม่ไม่สำเร็จ");
+    }
   };
 
-  const ownerConnected = dorm.lineConnected;
+  const ownerConnected = settings?.ownerLineConnected ?? false;
 
   return (
     <div className="pb-24">
@@ -199,143 +295,187 @@ export function SettingsPage() {
         </nav>
 
         <div className="grid gap-4">
-          <Section id="settings-dorm" title="ข้อมูลหอ" description="แสดงบนใบแจ้งหนี้และข้อความที่ส่งถึงผู้เช่า">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field
-                label="ชื่อหอ"
-                value={dormName}
-                onChange={setDormName}
-                error={dormName.trim() === "" ? "กรอกชื่อหอ" : undefined}
+          {loadError !== null ? (
+            <Card>
+              <EmptyState
+                icon="cloud_off"
+                title="โหลดการตั้งค่าไม่สำเร็จ"
+                description={loadError}
+                action={
+                  <Button
+                    variant="secondary"
+                    icon="refresh"
+                    onClick={() => {
+                      void load();
+                    }}
+                  >
+                    ลองใหม่
+                  </Button>
+                }
               />
-              <Field label="ชื่อเจ้าของ" value={ownerName} onChange={setOwnerName} />
-            </div>
-          </Section>
-
-          <Section id="settings-rates" title="ค่าน้ำ/ค่าไฟ" description="อัตราตั้งต้นที่ใช้กับห้องที่ยังไม่กำหนดอัตราเอง">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field
-                label="ค่าน้ำตั้งต้น (บาท/หน่วย)"
-                value={waterRate}
-                onChange={setWaterRate}
-                inputMode="numeric"
-                helper={`ปัจจุบัน ${dorm.waterRate} บาท/หน่วย`}
-                error={waterValue === null || waterValue <= 0 ? "กรอกอัตราที่มากกว่า 0" : undefined}
-              />
-              <Field
-                label="ค่าไฟตั้งต้น (บาท/หน่วย)"
-                value={electricRate}
-                onChange={setElectricRate}
-                inputMode="numeric"
-                helper={`ปัจจุบัน ${dorm.electricRate} บาท/หน่วย`}
-                error={electricValue === null || electricValue <= 0 ? "กรอกอัตราที่มากกว่า 0" : undefined}
-              />
-            </div>
-            <div className="panel-muted mt-4">
-              <p className="text-sm text-charcoal">บิลที่สร้างไปแล้วจะไม่เปลี่ยนตามค่านี้</p>
-              <p className="mt-1 text-xs text-steel">
-                ทุกบิลจะเก็บอัตราน้ำไฟที่ใช้ตอนออกบิลไว้เป็นข้อมูลของบิลนั้น และใช้ค่าที่บันทึกไว้ตลอดไป
-              </p>
-            </div>
-          </Section>
-
-          <Section id="settings-promptpay" title="พร้อมเพย์" description="ใช้สร้าง QR ให้ผู้เช่าสแกนจ่ายเมื่อออกบิล">
-            <fieldset className="grid gap-2">
-              <legend className="field-label">ประเภทพร้อมเพย์</legend>
-              <ChoiceRow
-                name="promptpay-type"
-                checked={payType === "phone"}
-                title="เบอร์โทรศัพท์"
-                helper="ใช้เบอร์ที่ผูกพร้อมเพย์ไว้ เช่น 081-234-5678"
-                onSelect={() => {
-                  setPayType("phone");
-                }}
-              />
-              <ChoiceRow
-                name="promptpay-type"
-                checked={payType === "id"}
-                title="เลขบัตรประชาชน / นิติบุคคล"
-                helper="ใช้เลข 13 หลักที่ลงทะเบียนพร้อมเพย์"
-                onSelect={() => {
-                  setPayType("id");
-                }}
-              />
-            </fieldset>
-
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <Field
-                label="PromptPay ID"
-                value={payId}
-                onChange={setPayId}
-                helper={payType === "phone" ? "เบอร์โทรศัพท์ที่ผูกพร้อมเพย์" : "เลขบัตรประชาชนหรือเลขทะเบียนนิติบุคคล 13 หลัก"}
-                error={payId.trim() === "" ? "กรอกพร้อมเพย์ไอดี" : undefined}
-              />
-              <Field label="ชื่อบัญชี" value={payName} onChange={setPayName} />
-            </div>
-
-            <div className="mt-4">
-              <QrPreview />
-            </div>
-          </Section>
-
-          <Section id="settings-line" title="LINE เจ้าของ" description="ใช้รับสลิปและแจ้งเตือนไปยัง LINE ของเจ้าของหอ">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
-              <div className="min-w-0">
-                <span className="block text-sm text-charcoal">สถานะการเชื่อมต่อ</span>
-                <span className="block text-xs text-fog">แจ้งเตือนสลิปรอตรวจและสรุปผลการส่งบิลจะส่งมาที่ LINE นี้</span>
+            </Card>
+          ) : settings === null ? (
+            <Card>
+              <div className="grid gap-4" aria-busy="true">
+                <Skeleton className="h-5 w-40" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-24 w-full" />
+                <Skeleton className="h-10 w-2/3" />
               </div>
-              <Badge tone={ownerConnected ? "paid" : "vacant"} icon={ownerConnected ? "check_circle" : "link_off"}>
-                {ownerConnected ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
-              </Badge>
-            </div>
-
-            <div className="mt-4 rounded-lg border border-ash p-4">
-              <p className="text-xs text-fog">รหัสเชื่อมต่อ 6 หลัก</p>
-              <p className="num mt-1 text-2xl tracking-[0.3em] text-charcoal">{code}</p>
-              <p className="mt-1 text-xs text-steel">ให้เจ้าของหอพิมพ์รหัสนี้ในแชท LINE บอทเพื่อยืนยันตัวตน</p>
-              <Button
-                variant="secondary"
-                icon="refresh"
-                className="mt-3"
-                onClick={() => {
-                  setConfirmRegen(true);
-                }}
-              >
-                ออกรหัสใหม่
-              </Button>
-            </div>
-          </Section>
-
-          <Section id="settings-integrations" title="การเชื่อมต่อ" description="สถานะบริการที่หอใช้อยู่">
-            <ul className="grid gap-3">
-              <li className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
-                <div className="min-w-0">
-                  <span className="block text-sm text-charcoal">LINE Messaging API</span>
-                  <span className="block text-xs text-fog">ใช้ส่งบิลและข้อความอัตโนมัติให้ผู้เช่า</span>
+            </Card>
+          ) : (
+            <>
+              <Section id="settings-dorm" title="ข้อมูลหอ" description="แสดงบนใบแจ้งหนี้และข้อความที่ส่งถึงผู้เช่า">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    label="ชื่อหอ"
+                    value={dormName}
+                    onChange={setDormName}
+                    error={fieldError("dormName") ?? (dormName.trim() === "" ? "กรอกชื่อหอ" : undefined)}
+                  />
+                  <Field
+                    label="ชื่อเจ้าของ"
+                    value={ownerName}
+                    onChange={setOwnerName}
+                    error={fieldError("ownerName")}
+                  />
                 </div>
-                <Badge tone="paid" icon="check_circle">
-                  พร้อมใช้
-                </Badge>
-              </li>
-              <li className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
-                <div className="min-w-0">
-                  <span className="block text-sm text-charcoal">EasySlip</span>
-                  <span className="block text-xs text-fog">ตรวจสลิปอัตโนมัติเมื่อผู้เช่าส่งสลิปเข้ามา</span>
+              </Section>
+
+              <Section id="settings-rates" title="ค่าน้ำ/ค่าไฟ" description="อัตราตั้งต้นที่ใช้กับห้องที่ยังไม่กำหนดอัตราเอง">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    label="ค่าน้ำตั้งต้น (บาท/หน่วย)"
+                    value={waterRate}
+                    onChange={setWaterRate}
+                    inputMode="numeric"
+                    helper={`ปัจจุบัน ${settings.defaultWaterRate} บาท/หน่วย`}
+                    error={fieldError("defaultWaterRate") ?? (waterValue === null || waterValue <= 0 ? "กรอกอัตราที่มากกว่า 0" : undefined)}
+                  />
+                  <Field
+                    label="ค่าไฟตั้งต้น (บาท/หน่วย)"
+                    value={electricRate}
+                    onChange={setElectricRate}
+                    inputMode="numeric"
+                    helper={`ปัจจุบัน ${settings.defaultElectricRate} บาท/หน่วย`}
+                    error={fieldError("defaultElectricRate") ?? (electricValue === null || electricValue <= 0 ? "กรอกอัตราที่มากกว่า 0" : undefined)}
+                  />
                 </div>
-                <Badge tone="neutral" icon="science">
-                  {dorm.easySlipPlan} · เหลือ {dorm.easySlipChecksLeft} ครั้ง
-                </Badge>
-              </li>
-            </ul>
-            <p className="mt-3 text-xs text-fog">ระบบเก็บคีย์การเชื่อมต่อไว้ฝั่งเซิร์ฟเวอร์ จึงไม่แสดงคีย์ในหน้านี้</p>
-          </Section>
+                <div className="panel-muted mt-4">
+                  <p className="text-sm text-charcoal">บิลที่สร้างไปแล้วจะไม่เปลี่ยนตามค่านี้</p>
+                  <p className="mt-1 text-xs text-steel">
+                    ทุกบิลจะเก็บอัตราน้ำไฟที่ใช้ตอนออกบิลไว้เป็นข้อมูลของบิลนั้น และใช้ค่าที่บันทึกไว้ตลอดไป
+                  </p>
+                </div>
+              </Section>
+
+              <Section id="settings-promptpay" title="พร้อมเพย์" description="ใช้สร้าง QR ให้ผู้เช่าสแกนจ่ายเมื่อออกบิล">
+                <fieldset className="grid gap-2">
+                  <legend className="field-label">ประเภทพร้อมเพย์</legend>
+                  <ChoiceRow
+                    name="promptpay-type"
+                    checked={payType === "phone"}
+                    title="เบอร์โทรศัพท์"
+                    helper="ใช้เบอร์ที่ผูกพร้อมเพย์ไว้ เช่น 081-234-5678"
+                    onSelect={() => {
+                      setPayType("phone");
+                    }}
+                  />
+                  <ChoiceRow
+                    name="promptpay-type"
+                    checked={payType === "citizen-id"}
+                    title="เลขบัตรประชาชน / นิติบุคคล"
+                    helper="ใช้เลข 13 หลักที่ลงทะเบียนพร้อมเพย์"
+                    onSelect={() => {
+                      setPayType("citizen-id");
+                    }}
+                  />
+                </fieldset>
+
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <Field
+                    label="PromptPay ID"
+                    value={payId}
+                    onChange={setPayId}
+                    helper={payType === "phone" ? "เบอร์โทรศัพท์ที่ผูกพร้อมเพย์" : "เลขบัตรประชาชนหรือเลขทะเบียนนิติบุคคล 13 หลัก"}
+                    error={fieldError("promptpayId") ?? (payId.trim() === "" ? "กรอกพร้อมเพย์ไอดี" : undefined)}
+                  />
+                  <Field label="ชื่อบัญชี" value={payName} onChange={setPayName} error={fieldError("promptpayName")} />
+                </div>
+
+                <div className="mt-4">
+                  <QrPreview />
+                </div>
+              </Section>
+
+              <Section id="settings-line" title="LINE เจ้าของ" description="ใช้รับสลิปและแจ้งเตือนไปยัง LINE ของเจ้าของหอ">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
+                  <div className="min-w-0">
+                    <span className="block text-sm text-charcoal">สถานะการเชื่อมต่อ</span>
+                    <span className="block text-xs text-fog">แจ้งเตือนสลิปรอตรวจและสรุปผลการส่งบิลจะส่งมาที่ LINE นี้</span>
+                  </div>
+                  <Badge tone={ownerConnected ? "paid" : "vacant"} icon={ownerConnected ? "check_circle" : "link_off"}>
+                    {ownerConnected ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
+                  </Badge>
+                </div>
+
+                {!ownerConnected && (
+                  <p className="mt-3 text-xs text-steel">การเชื่อม LINE เจ้าของจะเปิดให้ใช้ในขั้นถัดไป รหัสด้านล่างยังใช้เชื่อมไม่ได้ตอนนี้</p>
+                )}
+
+                <div className="mt-4 rounded-lg border border-ash p-4">
+                  <p className="text-xs text-fog">รหัสเชื่อมต่อ 6 หลัก</p>
+                  <p className="num mt-1 text-2xl tracking-[0.3em] text-charcoal">{code}</p>
+                  <p className="mt-1 text-xs text-steel">ให้เจ้าของหอพิมพ์รหัสนี้ในแชท LINE บอทเพื่อยืนยันตัวตน</p>
+                  <Button
+                    variant="secondary"
+                    icon="refresh"
+                    className="mt-3"
+                    onClick={() => {
+                      setConfirmRegen(true);
+                    }}
+                  >
+                    ออกรหัสใหม่
+                  </Button>
+                </div>
+              </Section>
+
+              <Section id="settings-integrations" title="การเชื่อมต่อ" description="สถานะบริการที่หอใช้อยู่">
+                <ul className="grid gap-3">
+                  <IntegrationRow
+                    name="LINE Messaging API"
+                    description="ใช้ส่งบิลและข้อความอัตโนมัติให้ผู้เช่า"
+                    configured={settings.integrations.lineConfigured}
+                  />
+                  <IntegrationRow
+                    name="EasySlip"
+                    description="ตรวจสลิปอัตโนมัติเมื่อผู้เช่าส่งสลิปเข้ามา"
+                    configured={settings.integrations.easySlipConfigured}
+                  />
+                </ul>
+                <p className="mt-3 text-xs text-fog">ระบบเก็บคีย์การเชื่อมต่อไว้ฝั่งเซิร์ฟเวอร์ จึงไม่แสดงคีย์ในหน้านี้</p>
+              </Section>
+            </>
+          )}
         </div>
       </div>
 
-      <div className="fixed inset-x-0 bottom-[calc(3.5rem_+_env(safe-area-inset-bottom))] z-30 border-t border-ash bg-canvas-white px-4 py-3 md:inset-x-auto md:bottom-6 md:right-6 md:rounded-xl md:border md:px-3 md:py-2">
-        <Button variant="primary" icon="save" className="w-full md:w-auto" disabled={!canSave} onClick={save}>
-          บันทึกการตั้งค่า
-        </Button>
-      </div>
+      {ready && (
+        <div className="fixed inset-x-0 bottom-[calc(3.5rem_+_env(safe-area-inset-bottom))] z-30 border-t border-ash bg-canvas-white px-4 py-3 md:inset-x-auto md:bottom-6 md:right-6 md:rounded-xl md:border md:px-3 md:py-2">
+          <Button
+            variant="primary"
+            icon="save"
+            className="w-full md:w-auto"
+            disabled={!canSave}
+            onClick={() => {
+              void save();
+            }}
+          >
+            บันทึกการตั้งค่า
+          </Button>
+        </div>
+      )}
 
       <Dialog
         open={confirmRegen}
@@ -353,7 +493,13 @@ export function SettingsPage() {
             >
               ยกเลิก
             </Button>
-            <Button variant="primary" icon="refresh" onClick={regenCode}>
+            <Button
+              variant="primary"
+              icon="refresh"
+              onClick={() => {
+                void regenCode();
+              }}
+            >
               ออกรหัสใหม่
             </Button>
           </>

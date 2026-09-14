@@ -50,6 +50,36 @@ export interface TenantUpdate {
   checkInDate?: string;
 }
 
+export type PromptpayType = "phone" | "citizen-id";
+
+export interface SettingsIntegrations {
+  lineConfigured: boolean;
+  easySlipConfigured: boolean;
+}
+
+export interface Settings {
+  dormName: string;
+  ownerName: string;
+  defaultWaterRate: number;
+  defaultElectricRate: number;
+  promptpayType: PromptpayType;
+  promptpayId: string;
+  promptpayName: string;
+  ownerLinkCode: string;
+  ownerLineConnected: boolean;
+  integrations: SettingsIntegrations;
+}
+
+export interface SettingsUpdate {
+  dormName?: string;
+  ownerName?: string;
+  defaultWaterRate?: number;
+  defaultElectricRate?: number;
+  promptpayType?: PromptpayType;
+  promptpayId?: string;
+  promptpayName?: string;
+}
+
 interface ErrorPayload {
   code: string;
   message: string;
@@ -132,6 +162,14 @@ export function apiPatch<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
+export function apiPut<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function fetchRooms(): Promise<Room[]> {
   const body = await apiGet<{ ok: true; rooms: Room[] }>("/api/rooms");
   return body.rooms;
@@ -165,4 +203,19 @@ export async function updateTenant(id: string, input: TenantUpdate): Promise<Ten
 export async function checkoutTenant(id: string, checkOutDate: string): Promise<Tenant> {
   const body = await apiPost<{ ok: true; tenant: Tenant }>(`/api/tenants/${encodeURIComponent(id)}/checkout`, { checkOutDate });
   return body.tenant;
+}
+
+export async function fetchSettings(): Promise<Settings> {
+  const body = await apiGet<{ ok: true; settings: Settings }>("/api/settings");
+  return body.settings;
+}
+
+export async function updateSettings(input: SettingsUpdate): Promise<Settings> {
+  const body = await apiPut<{ ok: true; settings: Settings }>("/api/settings", input);
+  return body.settings;
+}
+
+export async function regenerateOwnerCode(): Promise<string> {
+  const body = await apiPost<{ ok: true; ownerLinkCode: string }>("/api/settings/owner-code", {});
+  return body.ownerLinkCode;
 }

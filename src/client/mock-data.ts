@@ -13,9 +13,6 @@ export interface DormInfo {
   waterRate: number;
   electricRate: number;
   pairingCode: string;
-  lineConnected: boolean;
-  easySlipPlan: string;
-  easySlipChecksLeft: number;
 }
 
 export interface Room {
@@ -123,9 +120,6 @@ export const dorm: DormInfo = {
   waterRate: 18,
   electricRate: 7,
   pairingCode: "529407",
-  lineConnected: true,
-  easySlipPlan: "ทดลอง",
-  easySlipChecksLeft: 37,
 };
 
 export const period = "กันยายน 2569";

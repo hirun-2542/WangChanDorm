@@ -8,6 +8,3 @@ LINE_CHANNEL_SECRET=
 
 # คีย์สำหรับตรวจสลิปโอนเงินผ่าน EasySlip
 EASYSLIP_API_KEY=
-
-# รหัสสำหรับผูกบัญชี LINE ของเจ้าของหอพัก
-OWNER_LINK_CODE=

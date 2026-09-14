@@ -100,7 +100,7 @@ status: ready
 - **LINE Messaging API:** push บิลเป็น Flex message (แยกยอดครบรวมค่าใช้จ่ายเพิ่ม + รูป QR + ชี้นำส่งสลิปกลับ), reply สำหรับตอบ webhook, push ยืนยันการชำระ, push แจ้งเจ้าของ (สลิปรอตรวจ + สรุปหลังส่งบิลทั้งหอ)
 - **QR พร้อมเพย์:** สร้าง payload EMVCo (พร้อมเพย์ + ยอดรวมทั้งสิ้นของบิล) และเรนเดอร์เป็น PNG เองใน Worker เสิร์ฟจาก route สาธารณะ
 - **EasySlip:** ส่ง URL รูปสลิป (จาก R2 ผ่าน route สาธารณะ) ให้ API ตรวจ; เก็บผลลัพธ์ดิบลง `slips.easyslip_result`
-- **Secrets:** LINE channel token/secret, EasySlip API key, รหัสเชื่อมเจ้าของ — ผ่าน wrangler secrets ไม่เก็บใน source
+- **Secrets:** `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_CHANNEL_SECRET`, `EASYSLIP_API_KEY` — ผ่าน wrangler secrets ไม่เก็บใน source; รหัสเชื่อมเจ้าของเก็บในตาราง `settings` และแสดงในหน้าตั้งค่า (ไม่ใช่ wrangler secret)
 - **UX:** ตาม prototype ที่ตกลงไว้ที่ `design/index.html` — minimal ขาว/น้ำเงิน, ฟอนต์ IBM Plex Sans Thai, 7 หน้า (แดชบอร์ดมี filter รายเดือน, ห้องพัก, ผู้เช่า, บิล, รอตรวจ, ข้อความ LINE, ตั้งค่า)
 
 ## Testing Decisions
@@ -126,6 +126,6 @@ status: ready
 
 - สมมติฐาน: UI ภาษาไทยทั้งหมด, ผู้ใช้เดียว, หอ ≤ 20 ห้อง (ยืนยันจากเจ้าของแล้ว; โควตา LINE แผนฟรี ~300 push/เดือน พอ; EasySlip เริ่มจาก Tester plan 50 ครั้ง/7 วัน)
 - อ้างอิง: แผน MVP (`~/.commandcode/plans/wangchan-dorm-mvp.md`) และ prototype UX ที่ `design/index.html` (แหล่งจริงสำหรับ UX/UI) — ตอน implement ให้สร้าง `CONTEXT.md` (glossary) และ `docs/adr/0001` (ปิดบิลอัตโนมัติเมื่อยอดตรง) และ `docs/adr/0002` (เลือก Cloudflare Workers) ตามร่างในแผน
-- การเชื่อม LINE ของเจ้าของใช้รหัส 6 หลักเพื่อกันผู้เช่าพิมพ์เลขห้องชนกัน; รหัสเก็บเป็น secret และออกใหม่ได้จากหน้าตั้งค่า
+- การเชื่อม LINE ของเจ้าของใช้รหัส 6 หลักเพื่อกันผู้เช่าพิมพ์เลขห้องชนกัน; รหัสเก็บในตาราง `settings` แสดงในหน้าตั้งค่า และออกใหม่ได้จากหน้าตั้งค่า
 - ข้อความ push ทั้งหมดเป็นภาษาไทย สุภาพ สั้น กระชับ ตามตัวอย่างใน prototype หน้า "ข้อความ LINE"
 - Orchestration: head model ทำ review/plan/create task, code-writing subagent ใช้ DeepSeek 4.1 Flash และให้ head review ผลก่อนรวม

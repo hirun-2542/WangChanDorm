@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, createRoom, fetchRooms, updateRoom, type Room, type RoomInput } from "../api";
+import { ApiError, createRoom, fetchRooms, fetchSettings, updateRoom, type Room, type RoomInput } from "../api";
 import { useSearch } from "../search";
 import {
   Badge,
@@ -18,7 +18,6 @@ import {
   Toast,
   type DataTableColumn,
 } from "../ui";
-import { dorm } from "../mock-data";
 import { baht } from "./bills-shared";
 import { ChoiceRow, numericValue } from "./dorm-shared";
 
@@ -26,6 +25,11 @@ type StatusFilter = "all" | "occupied" | "vacant";
 type RoomView = "table" | "cards";
 type WaterMode = "default" | "custom";
 type ElectricChoice = "default" | "custom" | "flat";
+
+interface RateDefaults {
+  waterRate: number;
+  electricRate: number;
+}
 
 interface RoomForm {
   id: string;
@@ -38,38 +42,38 @@ interface RoomForm {
   electricRate: string;
 }
 
-const emptyRoomForm = (): RoomForm => ({
+const emptyRoomForm = (defaults: RateDefaults): RoomForm => ({
   id: "",
   rent: "",
   waterMeterInit: "0",
   electricMeterInit: "0",
   waterMode: "default",
-  waterRate: String(dorm.waterRate),
+  waterRate: String(defaults.waterRate),
   electricChoice: "default",
-  electricRate: String(dorm.electricRate),
+  electricRate: String(defaults.electricRate),
 });
 
-const roomFormOf = (room: Room): RoomForm => ({
+const roomFormOf = (room: Room, defaults: RateDefaults): RoomForm => ({
   id: room.roomNumber,
   rent: String(room.rent),
   waterMeterInit: String(room.waterMeterInit),
   electricMeterInit: String(room.electricMeterInit),
   waterMode: room.waterRate === null ? "default" : "custom",
-  waterRate: String(room.waterRate ?? dorm.waterRate),
+  waterRate: String(room.waterRate ?? defaults.waterRate),
   electricChoice: room.electricMode === "flat" ? "flat" : room.electricRate === null ? "default" : "custom",
-  electricRate: String(room.electricRate ?? dorm.electricRate),
+  electricRate: String(room.electricRate ?? defaults.electricRate),
 });
 
-function waterRateText(room: Room): string {
-  return `${room.waterRate ?? dorm.waterRate} บาท/หน่วย`;
+function waterRateText(room: Room, defaults: RateDefaults): string {
+  return `${room.waterRate ?? defaults.waterRate} บาท/หน่วย`;
 }
 
-function electricText(room: Room): string {
+function electricText(room: Room, defaults: RateDefaults): string {
   if (room.electricMode === "flat") {
     return "เหมาจ่ายรายเดือน";
   }
 
-  return `${room.electricRate ?? dorm.electricRate} บาท/หน่วย`;
+  return `${room.electricRate ?? defaults.electricRate} บาท/หน่วย`;
 }
 
 function RoomStatusBadge({ room }: { room: Room }) {
@@ -88,6 +92,7 @@ interface RoomDrawerProps {
   open: boolean;
   base: Room | null;
   form: RoomForm;
+  defaults: RateDefaults;
   duplicateId: boolean;
   saving: boolean;
   serverError: { message: string; field?: string } | null;
@@ -96,7 +101,7 @@ interface RoomDrawerProps {
   onSave: (input: RoomInput) => void;
 }
 
-function RoomDrawer({ open, base, form, duplicateId, saving, serverError, onChange, onClose, onSave }: RoomDrawerProps) {
+function RoomDrawer({ open, base, form, defaults, duplicateId, saving, serverError, onChange, onClose, onSave }: RoomDrawerProps) {
   const rent = numericValue(form.rent);
   const rentInvalid = rent === null || !Number.isInteger(rent) || rent <= 0;
   const waterMeterValue = numericValue(form.waterMeterInit);
@@ -195,7 +200,7 @@ function RoomDrawer({ open, base, form, duplicateId, saving, serverError, onChan
             name="room-water"
             checked={form.waterMode === "default"}
             title="ใช้อัตราทั้งหอ"
-            helper={`ใช้อัตราทั้งหอ ${dorm.waterRate} บาท/หน่วย`}
+            helper={`ใช้อัตราทั้งหอ ${defaults.waterRate} บาท/หน่วย`}
             onSelect={() => {
               update({ waterMode: "default" });
             }}
@@ -204,7 +209,7 @@ function RoomDrawer({ open, base, form, duplicateId, saving, serverError, onChan
             name="room-water"
             checked={form.waterMode === "custom"}
             title="กำหนดเอง"
-            helper={`ห้องนี้คิดค่าน้ำเอง เริ่มจากอัตราทั้งหอ ${dorm.waterRate} บาท/หน่วย`}
+            helper={`ห้องนี้คิดค่าน้ำเอง เริ่มจากอัตราทั้งหอ ${defaults.waterRate} บาท/หน่วย`}
             onSelect={() => {
               update({ waterMode: "custom" });
             }}
@@ -230,7 +235,7 @@ function RoomDrawer({ open, base, form, duplicateId, saving, serverError, onChan
             name="room-electric"
             checked={form.electricChoice === "default"}
             title="ใช้อัตราทั้งหอ"
-            helper={`ใช้อัตราทั้งหอ ${dorm.electricRate} บาท/หน่วย`}
+            helper={`ใช้อัตราทั้งหอ ${defaults.electricRate} บาท/หน่วย`}
             onSelect={() => {
               update({ electricChoice: "default" });
             }}
@@ -281,6 +286,7 @@ function RoomDrawer({ open, base, form, duplicateId, saving, serverError, onChan
 export function RoomsPage() {
   const { query, setQuery } = useSearch();
   const [roomList, setRoomList] = useState<Room[]>([]);
+  const [rateDefaults, setRateDefaults] = useState<RateDefaults | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -289,7 +295,7 @@ export function RoomsPage() {
     typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches ? "table" : "cards",
   );
   const [menuId, setMenuId] = useState<string | null>(null);
-  const [form, setForm] = useState<RoomForm>(emptyRoomForm);
+  const [form, setForm] = useState<RoomForm>(() => emptyRoomForm({ waterRate: 0, electricRate: 0 }));
   const [base, setBase] = useState<Room | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formError, setFormError] = useState<{ message: string; field?: string } | null>(null);
@@ -304,8 +310,9 @@ export function RoomsPage() {
     setError(null);
 
     try {
-      const list = await fetchRooms();
+      const [list, settings] = await Promise.all([fetchRooms(), fetchSettings()]);
       setRoomList(list);
+      setRateDefaults({ waterRate: settings.defaultWaterRate, electricRate: settings.defaultElectricRate });
     } catch (loadError) {
       setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลห้องไม่สำเร็จ");
     } finally {
@@ -347,17 +354,18 @@ export function RoomsPage() {
 
   const menuRoom = roomList.find((room) => room.id === menuId) ?? null;
   const duplicateId = roomList.some((room) => room.roomNumber === form.id.trim().toUpperCase() && room.id !== base?.id);
+  const defaults = rateDefaults ?? { waterRate: 0, electricRate: 0 };
 
   const openAdd = () => {
     setBase(null);
-    setForm(emptyRoomForm());
+    setForm(emptyRoomForm(defaults));
     setFormError(null);
     setFormOpen(true);
   };
 
   const openEdit = (room: Room) => {
     setBase(room);
-    setForm(roomFormOf(room));
+    setForm(roomFormOf(room, defaults));
     setFormError(null);
     setFormOpen(true);
   };
@@ -418,7 +426,7 @@ export function RoomsPage() {
       align: "right",
       render: (room) => (
         <div className="flex items-center justify-end gap-2">
-          <span className="num">{waterRateText(room)}</span>
+          <span className="num">{waterRateText(room, defaults)}</span>
           {room.waterRate !== null && <span className="chip">อัตราพิเศษ</span>}
         </div>
       ),
@@ -429,7 +437,7 @@ export function RoomsPage() {
       align: "right",
       render: (room) => (
         <div className="flex items-center justify-end gap-2">
-          <span className="num">{electricText(room)}</span>
+          <span className="num">{electricText(room, defaults)}</span>
           {room.electricMode === "flat" && <span className="chip">ไฟเหมา</span>}
           {room.electricMode === "meter" && room.electricRate !== null && <span className="chip">อัตราพิเศษ</span>}
         </div>
@@ -625,12 +633,12 @@ export function RoomsPage() {
                 </div>
                 <div>
                   <dt className="text-xs text-fog">ค่าน้ำ</dt>
-                  <dd className="num text-sm text-charcoal">{waterRateText(room)}</dd>
+                  <dd className="num text-sm text-charcoal">{waterRateText(room, defaults)}</dd>
                   {room.waterRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
                 </div>
                 <div>
                   <dt className="text-xs text-fog">ค่าไฟ</dt>
-                  <dd className="num text-sm text-charcoal">{electricText(room)}</dd>
+                  <dd className="num text-sm text-charcoal">{electricText(room, defaults)}</dd>
                   {room.electricMode === "flat" && <span className="chip mt-1">ไฟเหมา</span>}
                   {room.electricMode === "meter" && room.electricRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
                 </div>
@@ -708,6 +716,7 @@ export function RoomsPage() {
         open={formOpen}
         base={base}
         form={form}
+        defaults={defaults}
         duplicateId={duplicateId}
         saving={saving}
         serverError={formError}

@@ -58,12 +58,13 @@ npx wrangler d1 migrations apply wangchan-dorm --remote
 
 - `seed/rooms.sql` — ห้องตัวอย่าง 18 ห้อง (`A101`–`A118`) id `room-a101` …
 - `seed/tenants.sql` — ผู้เช่าปัจจุบัน 15 คน (ห้องที่มีผู้เช่า) และผู้ย้ายออก 1 คน (`ปกรณ์ วังทอง` ห้อง `room-a104`) id `tenant-a101` … วันที่เก็บเป็น ISO `YYYY-MM-DD`
+- `seed/settings.sql` — ค่าตั้งต้นของหอ (ชื่อหอ/เจ้าของ, อัตราน้ำ/ไฟ, พร้อมเพย์) id เป็น key ของตาราง `settings` ไม่ seed `owner_line_user_id` เพราะรอ ticket 05 และไม่ seed รหัสเชื่อมเจ้าของ เพราะระบบสร้างรหัสใหม่ให้อัตโนมัติเมื่ออ่านค่าครั้งแรก
 
 ```bash
 npm run db:migrate:local    # apply migrations กับ D1 local
-npm run db:seed:local       # ใส่ข้อมูลห้องและผู้เช่าตัวอย่างลง D1 local (ทั้งสองไฟล์)
+npm run db:seed:local       # ใส่ข้อมูลห้อง ผู้เช่า และค่าตั้งต้นหอลง D1 local (ทั้งสามไฟล์)
 npm run db:migrate:remote   # apply migrations กับ D1 production
-npm run db:seed:remote      # ใส่ข้อมูลห้องและผู้เช่าตัวอย่างลง D1 production (ทั้งสองไฟล์)
+npm run db:seed:remote      # ใส่ข้อมูลห้อง ผู้เช่า และค่าตั้งต้นหอลง D1 production (ทั้งสามไฟล์)
 ```
 
 ## Tests
@@ -76,6 +77,8 @@ npm test
 
 - `test/health.test.ts` ยิง `GET /health` ผ่าน `SELF.fetch` แล้วตรวจว่า D1 และ R2 ตอบ ok
 - `test/seam.test.ts` เทสต์ seam ของโปรเจกต์ ยิง `POST /api/seam-probe` แล้วตรวจ D1 write/read, R2 write/read + การลบ object หลังใช้ และ outbound fetch (URL, method และ body) ที่ถูกดักไว้
+- `test/rooms.test.ts` และ `test/tenants.test.ts` ยิง REST API จริงเข้า `/api/rooms` และ `/api/tenants` แล้วตรวจสถานะที่อ่านกลับได้
+- `test/settings.test.ts` ยิง `/api/settings` ตรวจค่าเริ่มต้น, subset PUT, การปฏิเสธค่าไม่ถูกต้อง, unknown key และการออกรหัสเจ้าของใหม่
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
 `POST /api/seam-probe` ถูกปิดใน production ด้วย var `SEAM_PROBE` (ค่า `0` ใน `wrangler.jsonc`) และเปิดเฉพาะในเทสต์ด้วย miniflare binding override ใน `vitest.config.ts`
@@ -98,8 +101,9 @@ Production:
 npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 npx wrangler secret put LINE_CHANNEL_SECRET
 npx wrangler secret put EASYSLIP_API_KEY
-npx wrangler secret put OWNER_LINK_CODE
 ```
+
+รหัสเชื่อมเจ้าของไม่ใช่ secret — เก็บอยู่ในตาราง `settings` ของ D1 และแสดงในหน้าตั้งค่าของแอป (กดออกรหัสใหม่ได้จากที่นั่น) จึงไม่ต้องตั้งผ่าน `wrangler secret`
 
 Local: คัดลอก `.dev.vars.example` เป็น `.dev.vars` แล้วใส่ค่าจริง ไฟล์ `.dev.vars` ถูก gitignore ไว้แล้ว หลังใส่ค่าเสร็จให้รัน `npx wrangler types` เพื่อให้ `Env` มีชื่อ secret ครบ
 
@@ -128,11 +132,11 @@ npm run deploy
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, seam-probe)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, settings, seam-probe)
 src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)
-src/client/pages/ หน้าจอแต่ละหน้า (rooms, bills, tenants, dashboard, ...)
+src/client/pages/ หน้าจอแต่ละหน้า (rooms, tenants, settings, bills, dashboard, ...)
 migrations/       D1 migrations
-seed/             ข้อมูลตัวอย่าง (rooms.sql, tenants.sql)
+seed/             ข้อมูลตัวอย่าง (rooms.sql, tenants.sql, settings.sql)
 test/             vitest + @cloudflare/vitest-pool-workers
 design/           prototype UX/UI (ไฟล์อ้างอิง ไม่ได้ build)
 docs/             spec และ ADR
