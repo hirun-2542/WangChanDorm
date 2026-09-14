@@ -1,42 +1,86 @@
-import { useEffect, useState } from "react";
-import {
-  BillsPage,
-  DashboardPage,
-  LinePage,
-  ReviewPage,
-  RoomsPage,
-  SettingsPage,
-  TenantsPage,
-} from "./pages";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { pendingReviewCount } from "./mock-data";
+import { BillsPage } from "./pages/bills";
+import { DashboardPage } from "./pages/dashboard";
+import { LinePage } from "./pages/line";
+import { ReviewPage } from "./pages/review";
+import { RoomsPage } from "./pages/rooms";
+import { SettingsPage } from "./pages/settings";
+import { TenantsPage } from "./pages/tenants";
+import { SearchProvider, useSearch } from "./search";
+import type { PageProps } from "./ui";
 
 const routeList = [
-  { id: "dashboard", label: "แดชบอร์ด", icon: "space_dashboard", Page: DashboardPage },
-  { id: "rooms", label: "ห้องพัก", icon: "door_front", Page: RoomsPage },
-  { id: "tenants", label: "ผู้เช่า", icon: "group", Page: TenantsPage },
-  { id: "bills", label: "บิล", icon: "receipt_long", Page: BillsPage },
-  { id: "review", label: "รอตรวจ", icon: "fact_check", Page: ReviewPage },
-  { id: "line", label: "ข้อความ LINE", icon: "chat_bubble", Page: LinePage },
-  { id: "settings", label: "ตั้งค่า", icon: "settings", Page: SettingsPage },
+  { id: "dashboard", label: "แดชบอร์ด", icon: "space_dashboard" },
+  { id: "rooms", label: "ห้องพัก", icon: "door_front" },
+  { id: "tenants", label: "ผู้เช่า", icon: "group" },
+  { id: "bills", label: "บิล", icon: "receipt_long" },
+  { id: "review", label: "รอตรวจ", icon: "fact_check" },
+  { id: "line", label: "ข้อความ LINE", icon: "chat_bubble" },
+  { id: "settings", label: "ตั้งค่า", icon: "settings" },
 ] as const;
 
-type Route = (typeof routeList)[number]["id"];
+type RouteId = (typeof routeList)[number]["id"];
 
-function findRoute(route: Route) {
-  return routeList.find((item) => item.id === route) ?? routeList[0];
+const pages: Record<RouteId, (props: PageProps) => ReactNode> = {
+  dashboard: DashboardPage,
+  rooms: RoomsPage,
+  tenants: TenantsPage,
+  bills: BillsPage,
+  review: ReviewPage,
+  line: LinePage,
+  settings: SettingsPage,
+};
+
+const mobileTabs = [
+  { id: "dashboard", label: "แดชบอร์ด", icon: "space_dashboard" },
+  { id: "rooms", label: "ห้องพัก", icon: "door_front" },
+  { id: "tenants", label: "ผู้เช่า", icon: "group" },
+  { id: "bills", label: "บิล", icon: "receipt_long" },
+] as const;
+
+const moreItems = [
+  { route: "review", label: "รอตรวจ", icon: "fact_check" },
+  { route: "line", label: "ข้อความ LINE", icon: "chat_bubble" },
+  { route: "settings", label: "ตั้งค่า", icon: "settings" },
+] as const;
+
+const moreRoutes: RouteId[] = ["review", "line", "settings"];
+
+interface ParsedRoute {
+  route: RouteId;
+  view: string;
 }
 
-function parseRoute(hash: string): Route {
-  const id = hash.replace(/^#/, "");
-  const match = routeList.find((item) => item.id === id);
-  return match === undefined ? "dashboard" : match.id;
+function findRoute(id: RouteId) {
+  return routeList.find((item) => item.id === id) ?? routeList[0];
 }
 
-function useHashRoute(): Route {
-  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash));
+function parseRoute(hash: string): ParsedRoute {
+  const [routePart = "", viewPart = ""] = hash.replace(/^#/, "").split("/");
+  const match = routeList.find((item) => item.id === routePart);
+
+  if (match === undefined) {
+    return { route: "dashboard", view: "" };
+  }
+
+  return { route: match.id, view: viewPart };
+}
+
+function routeTitle(parsed: ParsedRoute) {
+  if (parsed.route === "bills" && parsed.view === "create") {
+    return "สร้างบิล";
+  }
+
+  return findRoute(parsed.route).label;
+}
+
+function useHashRoute(): ParsedRoute {
+  const [parsed, setParsed] = useState<ParsedRoute>(() => parseRoute(window.location.hash));
 
   useEffect(() => {
     const onHashChange = () => {
-      setRoute(parseRoute(window.location.hash));
+      setParsed(parseRoute(window.location.hash));
     };
 
     window.addEventListener("hashchange", onHashChange);
@@ -47,137 +91,281 @@ function useHashRoute(): Route {
   }, []);
 
   useEffect(() => {
-    document.title = `${findRoute(route).label} — หอพักวังจันทร์`;
+    document.title = `${routeTitle(parsed)} — หอพักวังจันทร์`;
     window.scrollTo(0, 0);
-  }, [route]);
+  }, [parsed]);
 
-  return route;
+  return parsed;
 }
 
-interface NavItemProps {
-  route: Route;
+function Monogram() {
+  return (
+    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[image:var(--gradient-conic-spectrum)] p-[2px]">
+      <span className="grid h-full w-full place-items-center rounded-xl bg-canvas-white text-[13px] font-semibold text-charcoal">วจ</span>
+    </span>
+  );
+}
+
+interface NavLinkProps {
+  route: RouteId;
+  label: string;
+  icon: string;
   active: boolean;
+  badge?: number;
 }
 
-function SidebarNavItem({ route, active }: NavItemProps) {
-  const meta = findRoute(route);
-
+function NavLink({ route, label, icon, active, badge }: NavLinkProps) {
   return (
     <a
       href={`#${route}`}
+      title={label}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-sm font-medium no-underline transition-colors md:justify-center lg:justify-start ${
-        active ? "bg-soft text-primary-deep" : "text-muted hover:bg-soft hover:text-primary-deep"
+      className={`relative flex min-h-11 items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm no-underline transition-colors md:justify-center xl:justify-start ${
+        active ? "bg-status-unpaid-bg text-deep-sapphire" : "text-graphite hover:bg-paper-mist hover:text-charcoal"
       }`}
     >
-      <span className="ms text-[20px]">{meta.icon}</span>
-      <span className="hidden lg:inline">{meta.label}</span>
+      <span className={active ? "ms fill text-[18px]" : "ms text-[18px]"} aria-hidden="true">
+        {icon}
+      </span>
+      <span className="hidden xl:inline">{label}</span>
+      {badge !== undefined && badge > 0 && (
+        <>
+          <span className="absolute right-3 top-2 h-2 w-2 rounded-full bg-tangerine md:block xl:hidden" aria-hidden="true" />
+          <span className="num ml-auto hidden rounded-full bg-status-review-bg px-2 py-0.5 text-[11px] font-medium text-status-review-fg xl:inline">
+            {badge}
+          </span>
+        </>
+      )}
     </a>
   );
 }
 
-function MobileTabItem({ route, active }: NavItemProps) {
-  const meta = findRoute(route);
-
+function PendingLink({ className, badge, label }: { className: string; badge: number; label: string }) {
   return (
-    <a
-      href={`#${route}`}
-      aria-current={active ? "page" : undefined}
-      className={`flex flex-1 flex-col items-center justify-center gap-1 text-[10px] no-underline ${
-        active ? "text-primary-deep" : "text-muted-2"
-      }`}
-    >
-      <span className="ms text-[22px]">{meta.icon}</span>
-      {meta.label}
+    <a href="#review" aria-label={label} className={className}>
+      <span className="ms text-[20px]" aria-hidden="true">
+        fact_check
+      </span>
+      {badge > 0 && (
+        <span className="num absolute -right-1.5 -top-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-status-review-bg px-1 text-[11px] font-medium text-status-review-fg">
+          {badge}
+        </span>
+      )}
     </a>
   );
 }
 
-export default function App() {
-  const route = useHashRoute();
-  const Page = findRoute(route).Page;
+function Shell() {
+  const parsed = useHashRoute();
+  const { query, setQuery } = useSearch();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const moreRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    setQuery("");
+  }, [parsed.route, setQuery]);
+
+  const closeMore = () => {
+    moreRef.current?.close();
+  };
+
+  const openMore = () => {
+    moreRef.current?.showModal();
+  };
+
+  const Page = pages[parsed.route];
+  const title = routeTitle(parsed);
+  const moreActive = moreRoutes.includes(parsed.route);
 
   return (
-    <div className="min-h-screen bg-bg md:grid md:grid-cols-[88px_1fr] lg:grid-cols-[236px_1fr]">
-      <aside className="hidden border-r border-border bg-surface px-2.5 py-[18px] md:sticky md:top-0 md:flex md:h-screen md:flex-col lg:px-3.5">
-        <div className="flex items-center gap-2.5 px-2 pb-[18px] md:justify-center md:px-0 lg:justify-start lg:px-2">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2485ff] to-[#0f63db] text-white">
-            <span className="ms fill text-[22px]">home</span>
-          </div>
-          <div className="hidden lg:block">
-            <div className="font-bold leading-tight">หอพักวังจันทร์</div>
-            <div className="text-xs text-muted-2">ระบบจัดการหอพัก</div>
-          </div>
+    <div className="min-h-screen bg-canvas-white text-charcoal md:grid md:grid-cols-[72px_1fr] xl:grid-cols-[232px_1fr]">
+      <aside className="sticky top-0 hidden h-screen flex-col overflow-y-auto border-r border-ash bg-canvas-white px-3 py-4 md:flex">
+        <div className="flex items-center gap-2.5 px-1 pb-5 md:justify-center md:px-0 xl:justify-start xl:px-1">
+          <Monogram />
+          <span className="hidden xl:block">
+            <span className="block text-sm font-semibold text-charcoal">หอพักวังจันทร์</span>
+            <span className="block text-[11px] text-fog">ระบบจัดการหอพัก</span>
+          </span>
         </div>
 
-        <nav className="grid gap-1.5">
+        <nav className="grid gap-1" aria-label="เมนูหลัก">
           {routeList.map((item) => (
-            <SidebarNavItem key={item.id} route={item.id} active={item.id === route} />
+            <div key={item.id}>
+              <NavLink
+                route={item.id}
+                label={item.label}
+                icon={item.icon}
+                active={item.id === parsed.route}
+                badge={item.id === "review" ? pendingReviewCount : undefined}
+              />
+              {item.id === "bills" && parsed.route === "bills" && (
+                <div className="mt-1 hidden gap-1 pl-6 xl:grid">
+                  <a
+                    href="#bills/create"
+                    aria-current={parsed.view === "create" ? "page" : undefined}
+                    className={`flex min-h-9 items-center rounded-lg px-2.5 text-[13px] no-underline transition-colors ${
+                      parsed.view === "create" ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel hover:bg-paper-mist"
+                    }`}
+                  >
+                    สร้างบิล
+                  </a>
+                  <a
+                    href="#bills"
+                    aria-current={parsed.view === "" ? "page" : undefined}
+                    className={`flex min-h-9 items-center rounded-lg px-2.5 text-[13px] no-underline transition-colors ${
+                      parsed.view === "" ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel hover:bg-paper-mist"
+                    }`}
+                  >
+                    รายการบิล
+                  </a>
+                </div>
+              )}
+            </div>
           ))}
         </nav>
-
-        <div className="mt-auto hidden px-2 pb-1 pt-3 text-xs text-muted-2 lg:block">
-          หอพักวังจันทร์ · เวอร์ชันต้นแบบ
-        </div>
       </aside>
 
       <div className="min-w-0">
-        <header className="sticky top-0 z-30 hidden h-[66px] items-center gap-4 border-b border-border bg-white/90 px-6 backdrop-blur md:flex">
-          <div className="relative max-w-[480px] flex-1">
-            <span className="ms pointer-events-none absolute left-3 top-2.5 text-[18px] text-muted-2">search</span>
-            <input
-              className="h-10 w-full rounded-[10px] border border-border bg-surface-alt pl-9 pr-[68px] text-sm outline-none focus:border-primary"
-              placeholder="ค้นหาห้อง, ผู้เช่า, เบอร์โทร..."
-              aria-label="ค้นหา"
-            />
-            <span className="absolute right-2 top-2 rounded-md border border-border bg-[#f2f6fb] px-1.5 py-0.5 text-[11px] text-muted-2">
-              Ctrl K
+        <header className="sticky top-0 z-30 hidden h-16 items-center gap-4 border-b border-ash bg-canvas-white px-6 md:flex">
+          <div className="relative w-full max-w-[480px]">
+            <span className="ms pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-fog" aria-hidden="true">
+              search
             </span>
+            <input
+              ref={searchRef}
+              type="search"
+              className="input h-11 pl-10 pr-20"
+              placeholder="ค้นหาห้อง, ผู้เช่า, เบอร์โทร..."
+              aria-label="ค้นหาห้อง, ผู้เช่า, เบอร์โทร"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+              }}
+            />
+            <span className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">Ctrl K</span>
           </div>
-          <div className="ml-auto flex items-center gap-2.5">
-            <button
-              type="button"
-              className="grid h-[38px] w-[38px] place-items-center rounded-[10px] border border-border bg-surface text-muted"
-              aria-label="แจ้งเตือน"
-            >
-              <span className="ms text-[20px]">notifications</span>
-            </button>
-            <div className="flex items-center gap-2.5 text-[13px]">
-              <div className="grid h-[34px] w-[34px] place-items-center rounded-full bg-gradient-to-br from-[#e9f2ff] to-[#bfd9ff] font-bold text-primary-deep">
-                N
-              </div>
-              <div>
-                <div className="font-semibold">เจ้าของหอพัก</div>
-                <div className="text-[11px] text-muted-2">ผู้ดูแลระบบ</div>
-              </div>
+
+          <div className="ml-auto flex items-center gap-3">
+            <PendingLink className="icon-btn" badge={pendingReviewCount} label="รอตรวจสลิป" />
+            <div className="flex items-center gap-2.5">
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-paper-mist text-[13px] font-semibold text-charcoal">จ</span>
+              <span className="hidden lg:block">
+                <span className="block text-[13px] font-semibold text-charcoal">เจ้าของหอพัก</span>
+                <span className="block text-[11px] text-fog">ผู้ดูแลระบบ</span>
+              </span>
             </div>
           </div>
         </header>
 
-        <header className="sticky top-0 z-30 flex h-[58px] items-center gap-2.5 border-b border-border bg-white/95 px-4 md:hidden">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2485ff] to-[#0f63db] text-white">
-            <span className="ms fill text-[20px]">home</span>
-          </div>
-          <strong>{findRoute(route).label}</strong>
-          <button
-            type="button"
-            className="ml-auto grid h-9 w-9 place-items-center rounded-[10px] border border-border bg-surface text-muted"
-            aria-label="แจ้งเตือน"
-          >
-            <span className="ms text-[20px]">notifications</span>
-          </button>
+        <header className="sticky top-0 z-30 flex h-14 items-center gap-2.5 border-b border-ash bg-canvas-white px-4 md:hidden">
+          <Monogram />
+          <strong className="truncate text-sm font-semibold text-charcoal">{title}</strong>
+          <PendingLink className="icon-btn ml-auto h-11 w-11" badge={pendingReviewCount} label="รอตรวจสลิป" />
         </header>
 
-        <main className="mx-auto max-w-[1480px] px-4 pb-24 pt-5 md:px-6 md:pb-10 md:pt-7">
-          <Page />
+        <main className="mx-auto w-full max-w-[1400px] px-4 pb-28 pt-5 md:px-6 md:pb-12 md:pt-6">
+          <div className="mb-3">
+            <span className="chip">ข้อมูลตัวอย่าง</span>
+          </div>
+          <Page view={parsed.view} />
         </main>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 flex h-[68px] border-t border-border bg-surface md:hidden">
-        {routeList.map((item) => (
-          <MobileTabItem key={item.id} route={item.id} active={item.id === route} />
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 flex border-t border-ash bg-canvas-white md:hidden"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        aria-label="เมนูหลัก"
+      >
+        {mobileTabs.map((item) => (
+          <a
+            key={item.id}
+            href={`#${item.id}`}
+            aria-current={item.id === parsed.route ? "page" : undefined}
+            className={`flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[11px] no-underline ${
+              item.id === parsed.route ? "text-deep-sapphire" : "text-fog"
+            }`}
+          >
+            <span className={item.id === parsed.route ? "ms fill text-[22px]" : "ms text-[22px]"} aria-hidden="true">
+              {item.icon}
+            </span>
+            {item.label}
+          </a>
         ))}
+        <button
+          type="button"
+          onClick={openMore}
+          aria-current={moreActive ? "page" : undefined}
+          className={`flex min-h-14 flex-1 flex-col items-center justify-center gap-1 text-[11px] ${moreActive ? "text-deep-sapphire" : "text-fog"}`}
+        >
+          <span className={moreActive ? "ms fill text-[22px]" : "ms text-[22px]"} aria-hidden="true">
+            more_horiz
+          </span>
+          เพิ่มเติม
+        </button>
       </nav>
+
+      <dialog
+        ref={moreRef}
+        className="sheet"
+        aria-label="เมนูเพิ่มเติม"
+        onCancel={(event) => {
+          event.preventDefault();
+          closeMore();
+        }}
+        onClick={(event) => {
+          if (event.target === moreRef.current) {
+            closeMore();
+          }
+        }}
+      >
+        <div className="mx-auto mt-3 h-1 w-10 rounded-full bg-smoke" aria-hidden="true" />
+        <nav className="grid gap-1 px-4 pb-4 pt-3" aria-label="เมนูเพิ่มเติม">
+          {moreItems.map((item) => (
+            <a
+              key={item.route}
+              href={`#${item.route}`}
+              onClick={closeMore}
+              aria-current={item.route === parsed.route ? "page" : undefined}
+              className={`flex min-h-12 items-center gap-3 rounded-lg px-3 text-sm no-underline ${
+                item.route === parsed.route ? "bg-status-unpaid-bg text-deep-sapphire" : "text-charcoal hover:bg-paper-mist"
+              }`}
+            >
+              <span className="ms text-[20px]" aria-hidden="true">
+                {item.icon}
+              </span>
+              {item.label}
+              {item.route === "review" && pendingReviewCount > 0 && (
+                <span className="num ml-auto rounded-full bg-status-review-bg px-2 py-0.5 text-[11px] font-medium text-status-review-fg">
+                  {pendingReviewCount}
+                </span>
+              )}
+            </a>
+          ))}
+        </nav>
+      </dialog>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <SearchProvider>
+      <Shell />
+    </SearchProvider>
   );
 }
