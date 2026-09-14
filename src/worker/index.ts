@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import health from "./routes/health";
+import line, { lineAdmin } from "./routes/line";
 import rooms from "./routes/rooms";
 import api from "./routes/seam-probe";
 import settings from "./routes/settings";
@@ -9,8 +10,10 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.route("/health", health);
 app.route("/api", api);
+app.route("/api/line", lineAdmin);
 app.route("/api/rooms", rooms);
 app.route("/api/settings", settings);
 app.route("/api/tenants", tenants);
+app.route("/webhook/line", line);
 
 export default app;

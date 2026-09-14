@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorBody, readJsonObject } from "./shared";
+import { errorBody, readJsonObject, upsertSettingSql } from "./shared";
 
 const settings = new Hono<{ Bindings: Env }>();
 
@@ -222,11 +222,7 @@ settings.put("/", async (c) => {
 
     if (updates.size > 0) {
       await c.env.DB.batch(
-        [...updates].map(([key, value]) =>
-          c.env.DB.prepare(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-          ).bind(key, value),
-        ),
+        [...updates].map(([key, value]) => c.env.DB.prepare(upsertSettingSql).bind(key, value)),
       );
     }
 

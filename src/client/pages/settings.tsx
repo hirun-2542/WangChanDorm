@@ -421,7 +421,7 @@ export function SettingsPage() {
                 </div>
 
                 {!ownerConnected && (
-                  <p className="mt-3 text-xs text-steel">การเชื่อม LINE เจ้าของจะเปิดให้ใช้ในขั้นถัดไป รหัสด้านล่างยังใช้เชื่อมไม่ได้ตอนนี้</p>
+                  <p className="mt-3 text-xs text-steel">พิมพ์รหัสด้านล่างในแชท LINE บอทเพื่อเชื่อมและรับการแจ้งเตือนจากระบบ</p>
                 )}
 
                 <div className="mt-4 rounded-lg border border-ash p-4">

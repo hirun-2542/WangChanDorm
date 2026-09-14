@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Badge, Button, Card, CardHeader, EmptyState, PageHeader, Select } from "../ui";
+import { useCallback, useEffect, useState } from "react";
+import { ApiError, fetchPendingLinks, linkPendingUser, type PendingLink } from "../api";
+import { Badge, Button, Card, CardHeader, EmptyState, PageHeader, Select, Skeleton } from "../ui";
 import type { Tenant } from "../mock-data";
 
 export interface PendingLineUser {
@@ -16,49 +17,99 @@ export interface PairingResult {
   roomId: string;
 }
 
-export function seedPendingUsers(): PendingLineUser[] {
-  return [
-    {
-      id: "lp-1",
-      displayName: "พลอย ชุติมณฑน์",
-      lastMessage: "สวัสดีค่ะ ฝากเชื่อมต่อกับห้องของหอด้วยนะคะ",
-      time: "วันนี้ · 09:14",
-    },
-  ];
+function formatLastSeen(value: string): string {
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const parsed = new Date(normalized.endsWith("Z") ? normalized : `${normalized}Z`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+
+  return `${day}/${month} ${hours}:${minutes}`;
+}
+
+function toPendingUser(link: PendingLink): PendingLineUser {
+  const displayName = link.displayName.trim();
+
+  return {
+    id: link.lineUserId,
+    displayName: displayName === "" ? "ผู้ใช้ LINE" : displayName,
+    lastMessage: link.lastMessage === null || link.lastMessage === "" ? "ยังไม่ได้พิมพ์ข้อความ" : link.lastMessage,
+    time: formatLastSeen(link.lastSeenAt),
+  };
 }
 
 export interface PairingSurfaceProps {
-  pending: PendingLineUser[];
   tenants: Tenant[];
   onPaired: (result: PairingResult) => void;
   onBack: () => void;
 }
 
-export function PairingSurface({ pending, tenants, onPaired, onBack }: PairingSurfaceProps) {
-  const [selectedPendingId, setSelectedPendingId] = useState<string>(() => pending[0]?.id ?? "");
+export function PairingSurface({ tenants, onPaired, onBack }: PairingSurfaceProps) {
+  const [pending, setPending] = useState<PendingLineUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [pairing, setPairing] = useState(false);
+  const [pairError, setPairError] = useState<string | null>(null);
+  const [selectedPendingId, setSelectedPendingId] = useState("");
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [success, setSuccess] = useState<PairingResult | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+
+    try {
+      const links = await fetchPendingLinks();
+      setPending(links.map(toPendingUser));
+    } catch (error) {
+      setLoadError(error instanceof ApiError ? error.message : "โหลดรายการรอเชื่อม LINE ไม่สำเร็จ");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const activePending = pending.find((user) => user.id === selectedPendingId) ?? pending[0] ?? null;
   const candidates = tenants.filter((tenant) => tenant.status === "current" && !tenant.lineLinked);
 
-  const pair = () => {
+  const pair = async () => {
     const tenant = candidates.find((item) => item.id === selectedTenantId);
 
-    if (activePending === null || tenant === undefined) {
+    if (activePending === null || tenant === undefined || pairing) {
       return;
     }
 
-    const result: PairingResult = {
-      pendingId: activePending.id,
-      tenantId: tenant.id,
-      tenantName: tenant.name,
-      roomId: tenant.roomId,
-    };
+    setPairing(true);
+    setPairError(null);
 
-    onPaired(result);
-    setSuccess(result);
-    setSelectedTenantId("");
+    try {
+      await linkPendingUser(activePending.id, tenant.id);
+
+      const result: PairingResult = {
+        pendingId: activePending.id,
+        tenantId: tenant.id,
+        tenantName: tenant.name,
+        roomId: tenant.roomId,
+      };
+
+      onPaired(result);
+      await load();
+      setSuccess(result);
+      setSelectedTenantId("");
+    } catch (error) {
+      setPairError(error instanceof ApiError ? error.message : "จับคู่ LINE ไม่สำเร็จ");
+    } finally {
+      setPairing(false);
+    }
   };
 
   return (
@@ -66,9 +117,11 @@ export function PairingSurface({ pending, tenants, onPaired, onBack }: PairingSu
       <PageHeader
         title="จัดการการเชื่อม LINE"
         supporting={
-          pending.length === 0
-            ? "ไม่มีผู้ใช้ LINE รอจับคู่"
-            : `${pending.length} คนที่แอด LINE แล้วแต่ยังจับคู่ไม่ได้`
+          loading
+            ? "กำลังโหลดรายการรอเชื่อม LINE"
+            : pending.length === 0
+              ? "ไม่มีผู้ใช้ LINE รอจับคู่"
+              : `${pending.length} คนที่แอด LINE แล้วแต่ยังจับคู่ไม่ได้`
         }
         actions={
           <Button variant="ghost" icon="arrow_back" onClick={onBack}>
@@ -80,8 +133,31 @@ export function PairingSurface({ pending, tenants, onPaired, onBack }: PairingSu
       {success === null ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <Card className="lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto">
-            <CardHeader title="ผู้ใช้ LINE รอจับคู่" description={`แสดง ${pending.length} คน`} />
-            {pending.length === 0 ? (
+            <CardHeader title="ผู้ใช้ LINE รอจับคู่" description={loading ? "กำลังโหลด" : `แสดง ${pending.length} คน`} />
+            {loading ? (
+              <div className="grid gap-3" aria-busy="true">
+                <Skeleton className="h-14 w-full" />
+                <Skeleton className="h-14 w-full" />
+                <Skeleton className="h-14 w-2/3" />
+              </div>
+            ) : loadError !== null ? (
+              <EmptyState
+                icon="cloud_off"
+                title="โหลดรายการรอเชื่อมไม่สำเร็จ"
+                description={loadError}
+                action={
+                  <Button
+                    variant="secondary"
+                    icon="refresh"
+                    onClick={() => {
+                      void load();
+                    }}
+                  >
+                    ลองใหม่
+                  </Button>
+                }
+              />
+            ) : pending.length === 0 ? (
               <p className="py-6 text-center text-sm text-fog">ไม่มีผู้ใช้ LINE รอจับคู่ในขณะนี้</p>
             ) : (
               <ul className="grid gap-2">
@@ -122,7 +198,13 @@ export function PairingSurface({ pending, tenants, onPaired, onBack }: PairingSu
           </Card>
 
           <Card>
-            {activePending === null ? (
+            {loading ? (
+              <div className="grid gap-4" aria-busy="true">
+                <Skeleton className="h-5 w-40" />
+                <Skeleton className="h-20 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : activePending === null ? (
               <EmptyState
                 icon="link"
                 title="ยังไม่มีผู้ใช้ LINE รอจับคู่"
@@ -154,7 +236,10 @@ export function PairingSurface({ pending, tenants, onPaired, onBack }: PairingSu
                     <Select
                       label="เลือกผู้เช่า"
                       value={selectedTenantId}
-                      onChange={setSelectedTenantId}
+                      onChange={(value) => {
+                        setSelectedTenantId(value);
+                        setPairError(null);
+                      }}
                       options={[
                         { value: "", label: "ยังไม่ได้เลือก" },
                         ...candidates.map((tenant) => ({
@@ -165,10 +250,20 @@ export function PairingSurface({ pending, tenants, onPaired, onBack }: PairingSu
                       helper="จับคู่แล้วบิลและข้อความยืนยันจะส่งถึงผู้ใช้ LINE รายนี้"
                     />
 
-                    <div className="flex justify-end">
-                      <Button variant="primary" icon="link" disabled={selectedTenantId === ""} onClick={pair}>
-                        จับคู่ LINE
-                      </Button>
+                    <div className="grid gap-2">
+                      {pairError !== null && <p className="text-xs text-danger">{pairError}</p>}
+                      <div className="flex justify-end">
+                        <Button
+                          variant="primary"
+                          icon="link"
+                          disabled={selectedTenantId === "" || pairing}
+                          onClick={() => {
+                            void pair();
+                          }}
+                        >
+                          จับคู่ LINE
+                        </Button>
+                      </div>
                     </div>
                   </>
                 )}

@@ -50,6 +50,13 @@ export interface TenantUpdate {
   checkInDate?: string;
 }
 
+export interface PendingLink {
+  lineUserId: string;
+  displayName: string;
+  lastMessage: string | null;
+  lastSeenAt: string;
+}
+
 export type PromptpayType = "phone" | "citizen-id";
 
 export interface SettingsIntegrations {
@@ -208,6 +215,15 @@ export async function checkoutTenant(id: string, checkOutDate: string): Promise<
 export async function fetchSettings(): Promise<Settings> {
   const body = await apiGet<{ ok: true; settings: Settings }>("/api/settings");
   return body.settings;
+}
+
+export async function fetchPendingLinks(): Promise<PendingLink[]> {
+  const body = await apiGet<{ ok: true; pending: PendingLink[] }>("/api/line/pending");
+  return body.pending;
+}
+
+export async function linkPendingUser(lineUserId: string, tenantId: string): Promise<void> {
+  await apiPost<{ ok: true }>(`/api/line/pending/${encodeURIComponent(lineUserId)}/link`, { tenantId });
 }
 
 export async function updateSettings(input: SettingsUpdate): Promise<Settings> {

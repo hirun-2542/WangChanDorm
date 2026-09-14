@@ -12,6 +12,8 @@ export default defineConfig(async () => {
           bindings: {
             SEAM_PROBE: "1",
             TEST_MIGRATIONS: migrations,
+            LINE_CHANNEL_SECRET: "test-channel-secret",
+            LINE_CHANNEL_ACCESS_TOKEN: "test-channel-access-token",
           },
         },
       }),

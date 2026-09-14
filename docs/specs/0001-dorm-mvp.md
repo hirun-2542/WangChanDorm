@@ -80,6 +80,7 @@ status: ready
   - `bill_charges(id, bill_id, name, amount, position)` — ค่าใช้จ่ายเพิ่มเติมต่อบิล เช่น ค่าอินเทอร์เน็ต ค่าจัดการขยะ
   - `slips(bill_id NULL, line_user_id, image_key, easyslip_result, amount NULL, status)` — สลิปหนึ่งใบปิดได้บิลเดียว
   - `settings(key, value)` — อัตรา default, promptpay_id, owner_line_user_id, ชื่อหอ, รหัสเชื่อมเจ้าของ
+  - `line_pending(line_user_id PK, display_name NULL, last_message, last_seen_at)` — คิว "รอเชื่อม" ของคนที่แอดบอทแล้วจับคู่อัตโนมัติไม่ได้ (เก็บข้อความล่าสุดที่พิมพ์); แถวถูกลบทันทีที่ผู้ใช้รายนั้นเชื่อมกับผู้เช่าสำเร็จ ไม่ว่าจะเชื่อมเองผ่านการพิมพ์เลขห้องหรือเจ้าของจับคู่ให้ในหน้าเว็บ
   - `bills.total = rent + water_amount + electric_amount + ผลรวม bill_charges` เสมอ
 - **กฎโดเมนสำคัญ:**
   - 1 บิล/ห้อง/เดือน; สร้างบิลเฉพาะห้องที่มีผู้เช่า
@@ -91,7 +92,7 @@ status: ready
   - การเชื่อม LINE: ผู้เช่าพิมพ์เลขห้องให้บอท → ผูก line_user_id กับผู้เช่าปัจจุบันของห้องนั้น + บอทยืนยันชื่อกลับ; ข้อความอื่น → เก็บเป็น "รอเชื่อม" ให้เจ้าของจับคู่ในหน้าผู้เช่า; รหัส 6 หลัก → เชื่อมเป็นเจ้าของ
   - การปิดบิลอัตโนมัติ: สลิปต้องผ่าน EasySlip (สถานะ success) และยอดตรงกับยอดรวมทั้งสิ้น (รวมค่าใช้จ่ายเพิ่มเติมแล้ว) ของบิล unpaid ล่าสุดของห้องผู้ส่งเท่านั้น; ไม่ตรง → คิวรอตรวจ; สลิปใบหนึ่งใช้ปิดบิลได้ไม่เกินหนึ่งใบ
 - **API contract (REST, อยู่หลัง Access):**
-  - `rooms` CRUD (รวม electric_mode); `tenants` CRUD + จับคู่ pending LINE; `GET/PUT /settings` + ออกรหัสเจ้าของใหม่
+  - `rooms` CRUD (รวม electric_mode); `tenants` CRUD; `GET/PUT /settings` + ออกรหัสเจ้าของใหม่; `GET /api/line/pending` และ `POST /api/line/pending/:lineUserId/link` สำหรับจับคู่ pending LINE
   - `POST /bills/generate {period, มิเตอร์รายห้อง, ยอดไฟเหมารายห้อง, ค่าใช้จ่ายเพิ่มเติมรายห้อง}`; `GET /bills?period`; `PATCH/DELETE /bills/:id` (unpaid เท่านั้น, แก้ extras ได้); `POST /bills/:id/send`; `POST /bills/send-all`; `POST /bills/:id/mark-paid {method}`
   - `GET /review-queue`; `POST /slips/:id/resolve {settle|reject}`
   - `GET /stats/dashboard?period` — KPI + ค้างชำระ + กริดห้อง + กราฟ ตามเดือนที่เลือก

@@ -82,9 +82,9 @@ describe("dorm settings", () => {
     expect(body.settings.ownerLineConnected).toBe(false);
   });
 
-  it("reports both integrations as not configured when no secrets are present", async () => {
+  it("reports the LINE integration as configured and EasySlip as not configured", async () => {
     const settings = await readSettings();
-    expect(settings.integrations.lineConfigured).toBe(false);
+    expect(settings.integrations.lineConfigured).toBe(true);
     expect(settings.integrations.easySlipConfigured).toBe(false);
   });
 

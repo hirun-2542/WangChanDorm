@@ -3,9 +3,11 @@ import {
   ApiError,
   checkoutTenant,
   createTenant,
+  fetchPendingLinks,
   fetchRooms,
   fetchTenants,
   updateTenant,
+  type PendingLink,
   type Room,
   type Tenant,
   type TenantStatus,
@@ -30,7 +32,7 @@ import {
 } from "../ui";
 import { bills as pinnedBills, type Tenant as PinnedTenant } from "../mock-data";
 import { baht, todayIso } from "./bills-shared";
-import { PairingSurface, seedPendingUsers, type PairingResult, type PendingLineUser } from "./tenants-pairing";
+import { PairingSurface, type PairingResult } from "./tenants-pairing";
 
 const thaiMonthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 
@@ -351,7 +353,7 @@ export function TenantsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [pendingUsers, setPendingUsers] = useState<PendingLineUser[]>(() => seedPendingUsers());
+  const [pendingLinks, setPendingLinks] = useState<PendingLink[]>([]);
   const [tab, setTab] = useState<TenantStatus>("current");
   const [pairingOpen, setPairingOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -372,9 +374,10 @@ export function TenantsPage() {
     setError(null);
 
     try {
-      const [tenants, rooms] = await Promise.all([fetchTenants(), fetchRooms()]);
+      const [tenants, rooms, pending] = await Promise.all([fetchTenants(), fetchRooms(), fetchPendingLinks()]);
       setTenantList(tenants);
       setRoomList(rooms);
+      setPendingLinks(pending);
     } catch (loadError) {
       setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลผู้เช่าไม่สำเร็จ");
     } finally {
@@ -401,8 +404,8 @@ export function TenantsPage() {
   }, [toast]);
 
   const markPaired = (result: PairingResult) => {
-    setPendingUsers((prev) => prev.filter((user) => user.id !== result.pendingId));
     showToast(`เชื่อม LINE กับ คุณ${result.tenantName} แล้ว`);
+    void load();
   };
 
   const pairingTenants: PinnedTenant[] = tenantList.map((tenant) => ({
@@ -420,7 +423,6 @@ export function TenantsPage() {
     return (
       <div>
         <PairingSurface
-          pending={pendingUsers}
           tenants={pairingTenants}
           onPaired={markPaired}
           onBack={() => {
@@ -602,7 +604,7 @@ export function TenantsPage() {
         }
       />
 
-      {pendingUsers.length > 0 && (
+      {pendingLinks.length > 0 && (
         <Card className="mb-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-start gap-3">
@@ -614,7 +616,7 @@ export function TenantsPage() {
               </span>
               <div className="min-w-0">
                 <p className="text-sm text-charcoal">
-                  มี {pendingUsers.length} คนที่แอด LINE แล้วแต่ยังจับคู่ไม่ได้
+                  มี {pendingLinks.length} คนที่แอด LINE แล้วแต่ยังจับคู่ไม่ได้
                 </p>
                 <p className="mt-0.5 text-xs text-fog">จับคู่เพื่อให้บิลและข้อความยืนยันส่งถึงผู้เช่าได้</p>
               </div>
