@@ -74,7 +74,7 @@ status: ready
 - **การยืนยันตัวตน:** Cloudflare Access ครอบทั้งแอป ยกเว้น path สาธารณะ 3 จุด: webhook ของ LINE, route รูป QR, route รูปสลิป (ให้ EasySlip ดึงได้)
 - **โดเมน (จาก glossary ของโปรเจกต์):** ห้องพัก, ผู้เช่า, บิล, การอ่านมิเตอร์, ปิดบิล, สลิป, คิวรอตรวจ, การเชื่อม LINE, เจ้าของ
 - **Schema (D1) — สรุปโครงสร้างที่ฝังการตัดสินใจ:**
-  - `rooms(room_number UNIQUE, rent, water_rate NULL, electric_mode: metered|flat, electric_rate NULL, water_meter_init, electric_meter_init, status)` — อัตรา NULL = ใช้ค่าทั้งหอ; `electric_mode = flat` = ค่าไฟเหมาจ่าย (rate ไม่ใช้)
+  - `rooms(room_number UNIQUE, rent, water_rate NULL, electric_mode: meter|flat, electric_rate NULL, water_meter_init, electric_meter_init, status)` — อัตรา NULL = ใช้ค่าทั้งหอ; `electric_mode = flat` = ค่าไฟเหมาจ่าย (rate ไม่ใช้)
   - `tenants(room_id, check_in_date, check_out_date NULL, line_user_id NULL UNIQUE, status)` — line_user_id ผูกกับคน ไม่ใช่ห้อง
   - `bills(UNIQUE(room_id, period), rent, water_prev/curr/rate/units/amount, electric_prev/curr/rate NULL/units NULL/amount, total, status, paid_at, paid_method, sent_at)` — snapshot ทุกค่า ณ วันสร้าง; ห้องเหมา: บันทึก prev/curr มิเตอร์ไฟด้วย แต่ rate/units เป็น NULL และ amount = ยอดเต็มที่กรอก
   - `bill_charges(id, bill_id, name, amount, position)` — ค่าใช้จ่ายเพิ่มเติมต่อบิล เช่น ค่าอินเทอร์เน็ต ค่าจัดการขยะ

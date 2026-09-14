@@ -52,6 +52,17 @@ npx wrangler d1 migrations apply wangchan-dorm --local
 npx wrangler d1 migrations apply wangchan-dorm --remote
 ```
 
+### Seed
+
+ข้อมูลห้องตัวอย่าง 18 ห้อง (`A101`–`A118`) อยู่ใน `seed/rooms.sql` โดยใช้ `INSERT OR IGNORE` และ id คงที่ (`room-a101` …) จึงรันซ้ำได้โดยไม่ทับหรือสร้างข้อมูลซ้ำ
+
+```bash
+npm run db:migrate:local    # apply migrations กับ D1 local
+npm run db:seed:local       # ใส่ข้อมูลห้องตัวอย่างลง D1 local
+npm run db:migrate:remote   # apply migrations กับ D1 production
+npm run db:seed:remote      # ใส่ข้อมูลห้องตัวอย่างลง D1 production
+```
+
 ## Tests
 
 ```bash
@@ -114,9 +125,11 @@ npm run deploy
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, seam-probe)
-src/client/       React SPA (main.tsx, App.tsx, pages.tsx, styles.css)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, seam-probe)
+src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)
+src/client/pages/ หน้าจอแต่ละหน้า (rooms, bills, tenants, dashboard, ...)
 migrations/       D1 migrations
+seed/             ข้อมูลห้องตัวอย่าง (rooms.sql)
 test/             vitest + @cloudflare/vitest-pool-workers
 design/           prototype UX/UI (ไฟล์อ้างอิง ไม่ได้ build)
 docs/             spec และ ADR

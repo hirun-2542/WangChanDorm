@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ApiError, createRoom, fetchRooms, updateRoom, type Room, type RoomInput } from "../api";
 import { useSearch } from "../search";
 import {
   Badge,
@@ -12,11 +13,12 @@ import {
   IconButton,
   PageHeader,
   Select,
+  Skeleton,
   StatusBadge,
   Toast,
   type DataTableColumn,
 } from "../ui";
-import { dorm, rooms as pinnedRooms, type Room } from "../mock-data";
+import { dorm } from "../mock-data";
 import { baht, tenantByRoom } from "./bills-shared";
 import { ChoiceRow, numericValue } from "./dorm-shared";
 
@@ -28,49 +30,50 @@ type ElectricChoice = "default" | "custom" | "flat";
 interface RoomForm {
   id: string;
   rent: string;
-  previousWater: string;
-  previousElectric: string;
+  waterMeterInit: string;
+  electricMeterInit: string;
   waterMode: WaterMode;
   waterRate: string;
   electricChoice: ElectricChoice;
   electricRate: string;
-  flatAmount: string;
 }
 
 const emptyRoomForm = (): RoomForm => ({
   id: "",
   rent: "",
-  previousWater: "0",
-  previousElectric: "0",
+  waterMeterInit: "0",
+  electricMeterInit: "0",
   waterMode: "default",
   waterRate: String(dorm.waterRate),
   electricChoice: "default",
   electricRate: String(dorm.electricRate),
-  flatAmount: "",
 });
 
 const roomFormOf = (room: Room): RoomForm => ({
-  id: room.id,
+  id: room.roomNumber,
   rent: String(room.rent),
-  previousWater: String(room.previousWater),
-  previousElectric: String(room.previousElectric),
-  waterMode: room.waterRate === dorm.waterRate ? "default" : "custom",
-  waterRate: String(room.waterRate),
-  electricChoice: room.electricMode === "flat" ? "flat" : room.electricRate === dorm.electricRate ? "default" : "custom",
-  electricRate: String(room.electricRate),
-  flatAmount: room.flatElectricAmount > 0 ? String(room.flatElectricAmount) : "",
+  waterMeterInit: String(room.waterMeterInit),
+  electricMeterInit: String(room.electricMeterInit),
+  waterMode: room.waterRate === null ? "default" : "custom",
+  waterRate: String(room.waterRate ?? dorm.waterRate),
+  electricChoice: room.electricMode === "flat" ? "flat" : room.electricRate === null ? "default" : "custom",
+  electricRate: String(room.electricRate ?? dorm.electricRate),
 });
 
 function waterRateText(room: Room): string {
-  return `${room.waterRate} บาท/หน่วย`;
+  return `${room.waterRate ?? dorm.waterRate} บาท/หน่วย`;
 }
 
 function electricText(room: Room): string {
-  return room.electricMode === "flat" ? `${baht(room.flatElectricAmount)} บาท/เดือน` : `${room.electricRate} บาท/หน่วย`;
+  if (room.electricMode === "flat") {
+    return "เหมาจ่ายรายเดือน";
+  }
+
+  return `${room.electricRate ?? dorm.electricRate} บาท/หน่วย`;
 }
 
 function RoomStatusBadge({ room }: { room: Room }) {
-  if (!room.occupied) {
+  if (room.status === "vacant") {
     return <StatusBadge status="vacant" />;
   }
 
@@ -86,35 +89,31 @@ interface RoomDrawerProps {
   base: Room | null;
   form: RoomForm;
   duplicateId: boolean;
+  saving: boolean;
+  serverError: { message: string; field?: string } | null;
   onChange: (form: RoomForm) => void;
   onClose: () => void;
-  onSave: (room: Room) => void;
+  onSave: (input: RoomInput) => void;
 }
 
-function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }: RoomDrawerProps) {
+function RoomDrawer({ open, base, form, duplicateId, saving, serverError, onChange, onClose, onSave }: RoomDrawerProps) {
   const rent = numericValue(form.rent);
-  const rentInvalid = rent === null || rent < 0;
-  const waterMeter = numericValue(form.previousWater);
-  const waterMeterInvalid = waterMeter === null || waterMeter < 0;
-  const electricMeter = numericValue(form.previousElectric);
-  const electricMeterInvalid = electricMeter === null || electricMeter < 0;
+  const rentInvalid = rent === null || !Number.isInteger(rent) || rent <= 0;
+  const waterMeterValue = numericValue(form.waterMeterInit);
+  const waterMeterInvalid = waterMeterValue === null || waterMeterValue < 0;
+  const electricMeterValue = numericValue(form.electricMeterInit);
+  const electricMeterInvalid = electricMeterValue === null || electricMeterValue < 0;
   const customWater = numericValue(form.waterRate);
   const customWaterInvalid = form.waterMode === "custom" && (customWater === null || customWater <= 0);
   const customElectric = numericValue(form.electricRate);
   const customElectricInvalid = form.electricChoice === "custom" && (customElectric === null || customElectric <= 0);
-  const flatAmount = numericValue(form.flatAmount);
-  const flatInvalid = form.electricChoice === "flat" && (flatAmount === null || flatAmount <= 0);
 
   const idBlank = form.id.trim() === "";
   const canSave =
-    !idBlank &&
-    !duplicateId &&
-    !rentInvalid &&
-    !waterMeterInvalid &&
-    !electricMeterInvalid &&
-    !customWaterInvalid &&
-    !customElectricInvalid &&
-    !flatInvalid;
+    !idBlank && !duplicateId && !rentInvalid && !waterMeterInvalid && !electricMeterInvalid && !customWaterInvalid && !customElectricInvalid && !saving;
+
+  const fieldError = (name: string): string | undefined =>
+    serverError !== null && serverError.field === name ? serverError.message : undefined;
 
   const update = (patch: Partial<RoomForm>) => {
     onChange({ ...form, ...patch });
@@ -122,15 +121,13 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
 
   const save = () => {
     onSave({
-      id: form.id.trim(),
+      roomNumber: form.id.trim().toUpperCase(),
       rent: rent ?? 0,
-      waterRate: form.waterMode === "custom" ? customWater ?? dorm.waterRate : dorm.waterRate,
-      electricRate: form.electricChoice === "custom" ? customElectric ?? dorm.electricRate : dorm.electricRate,
+      waterRate: form.waterMode === "custom" ? customWater : null,
       electricMode: form.electricChoice === "flat" ? "flat" : "meter",
-      flatElectricAmount: form.electricChoice === "flat" ? flatAmount ?? 0 : 0,
-      occupied: base?.occupied ?? false,
-      previousWater: waterMeter ?? 0,
-      previousElectric: electricMeter ?? 0,
+      electricRate: form.electricChoice === "custom" ? customElectric : null,
+      waterMeterInit: waterMeterValue ?? 0,
+      electricMeterInit: electricMeterValue ?? 0,
     });
   };
 
@@ -138,7 +135,7 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
     <Drawer
       open={open}
       onClose={onClose}
-      title={base === null ? "เพิ่มห้อง" : `แก้ไขห้อง ${base.id}`}
+      title={base === null ? "เพิ่มห้อง" : `แก้ไขห้อง ${base.roomNumber}`}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -158,7 +155,7 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
             update({ id: value });
           }}
           placeholder="เช่น A119"
-          error={idBlank ? "กรอกเลขห้อง" : duplicateId ? "เลขห้องนี้ถูกใช้แล้ว" : undefined}
+          error={idBlank ? "กรอกเลขห้อง" : fieldError("roomNumber") ?? (duplicateId ? "เลขห้องนี้ถูกใช้แล้ว" : undefined)}
         />
 
         <Field
@@ -168,27 +165,27 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
             update({ rent: value });
           }}
           inputMode="numeric"
-          error={rentInvalid ? "กรอกจำนวนเงินเป็นตัวเลข" : undefined}
+          error={rentInvalid ? "กรอกจำนวนเงินเป็นตัวเลข" : fieldError("rent")}
         />
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="มิเตอร์น้ำเริ่มต้น"
-            value={form.previousWater}
+            value={form.waterMeterInit}
             onChange={(value) => {
-              update({ previousWater: value });
+              update({ waterMeterInit: value });
             }}
             inputMode="numeric"
-            error={waterMeterInvalid ? "กรอกตัวเลข" : undefined}
+            error={waterMeterInvalid ? "กรอกตัวเลข" : fieldError("waterMeterInit")}
           />
           <Field
             label="มิเตอร์ไฟเริ่มต้น"
-            value={form.previousElectric}
+            value={form.electricMeterInit}
             onChange={(value) => {
-              update({ previousElectric: value });
+              update({ electricMeterInit: value });
             }}
             inputMode="numeric"
-            error={electricMeterInvalid ? "กรอกตัวเลข" : undefined}
+            error={electricMeterInvalid ? "กรอกตัวเลข" : fieldError("electricMeterInit")}
           />
         </div>
 
@@ -221,7 +218,7 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
                   update({ waterRate: value });
                 }}
                 inputMode="numeric"
-                error={customWaterInvalid ? "กรอกอัตราที่มากกว่า 0" : undefined}
+                error={customWaterInvalid ? "กรอกอัตราที่มากกว่า 0" : fieldError("waterRate")}
               />
             </div>
           )}
@@ -265,24 +262,17 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
                   update({ electricRate: value });
                 }}
                 inputMode="numeric"
-                error={customElectricInvalid ? "กรอกอัตราที่มากกว่า 0" : undefined}
+                error={customElectricInvalid ? "กรอกอัตราที่มากกว่า 0" : fieldError("electricRate")}
               />
             </div>
           )}
           {form.electricChoice === "flat" && (
-            <div className="pl-7">
-              <Field
-                label="ค่าไฟเหมาจ่ายต่อเดือน (บาท)"
-                value={form.flatAmount}
-                onChange={(value) => {
-                  update({ flatAmount: value });
-                }}
-                inputMode="numeric"
-                error={flatInvalid ? "กรอกจำนวนเงินต่อเดือน" : undefined}
-              />
-            </div>
+            <p className="pl-7 text-xs text-fog">โหมดเหมาจ่ายไม่ใช้อัตราต่อหน่วย จะกรอกยอดค่าไฟเต็มตอนสร้างบิล</p>
           )}
+          {fieldError("electricMode") !== undefined && <p className="text-xs text-danger">{fieldError("electricMode")}</p>}
         </fieldset>
+
+        {serverError !== null && serverError.field === undefined && <p className="text-xs text-danger">{serverError.message}</p>}
       </div>
     </Drawer>
   );
@@ -290,7 +280,10 @@ function RoomDrawer({ open, base, form, duplicateId, onChange, onClose, onSave }
 
 export function RoomsPage() {
   const { query, setQuery } = useSearch();
-  const [roomList, setRoomList] = useState<Room[]>(() => pinnedRooms.map((room) => ({ ...room })));
+  const [roomList, setRoomList] = useState<Room[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [view, setView] = useState<RoomView>(() =>
     typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches ? "table" : "cards",
@@ -299,11 +292,30 @@ export function RoomsPage() {
   const [form, setForm] = useState<RoomForm>(emptyRoomForm);
   const [base, setBase] = useState<Room | null>(null);
   const [formOpen, setFormOpen] = useState(false);
+  const [formError, setFormError] = useState<{ message: string; field?: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
   }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const list = await fetchRooms();
+      setRoomList(list);
+    } catch (loadError) {
+      setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลห้องไม่สำเร็จ");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   useEffect(() => {
     if (toast === null) {
@@ -320,44 +332,69 @@ export function RoomsPage() {
   }, [toast]);
 
   const total = roomList.length;
-  const occupiedCount = roomList.filter((room) => room.occupied).length;
+  const occupiedCount = roomList.filter((room) => room.status === "occupied").length;
   const vacantCount = total - occupiedCount;
 
   const needle = query.trim().toLowerCase();
   const filtered = roomList.filter((room) => {
-    const tenant = tenantByRoom.get(room.id);
+    const tenant = tenantByRoom.get(room.roomNumber);
     const matchesQuery =
-      needle === "" || room.id.toLowerCase().includes(needle) || (tenant !== undefined && tenant.name.toLowerCase().includes(needle));
-    const matchesStatus = statusFilter === "all" ? true : statusFilter === "occupied" ? room.occupied : !room.occupied;
+      needle === "" ||
+      room.roomNumber.toLowerCase().includes(needle) ||
+      (tenant !== undefined && tenant.name.toLowerCase().includes(needle));
+    const matchesStatus = statusFilter === "all" ? true : statusFilter === "occupied" ? room.status === "occupied" : room.status === "vacant";
     return matchesQuery && matchesStatus;
   });
 
   const menuRoom = roomList.find((room) => room.id === menuId) ?? null;
-  const duplicateId = roomList.some((room) => room.id === form.id.trim() && room.id !== base?.id);
+  const duplicateId = roomList.some((room) => room.roomNumber === form.id.trim().toUpperCase() && room.id !== base?.id);
 
   const openAdd = () => {
     setBase(null);
     setForm(emptyRoomForm());
+    setFormError(null);
     setFormOpen(true);
   };
 
   const openEdit = (room: Room) => {
     setBase(room);
     setForm(roomFormOf(room));
+    setFormError(null);
     setFormOpen(true);
   };
 
-  const saveRoom = (room: Room) => {
-    setRoomList((prev) => (base === null ? [...prev, room] : prev.map((item) => (item.id === base.id ? room : item))));
-    setFormOpen(false);
-    showToast(base === null ? `เพิ่มห้อง ${room.id} แล้ว` : `บันทึกห้อง ${room.id} แล้ว`);
+  const saveRoom = async (input: RoomInput) => {
+    setSaving(true);
+    setFormError(null);
+
+    try {
+      if (base === null) {
+        const created = await createRoom(input);
+        showToast(`เพิ่มห้อง ${created.roomNumber} แล้ว`);
+      } else {
+        const updated = await updateRoom(base.id, input);
+        showToast(`บันทึกห้อง ${updated.roomNumber} แล้ว`);
+      }
+
+      setFormOpen(false);
+      setBase(null);
+      await load();
+    } catch (saveError) {
+      if (saveError instanceof ApiError) {
+        setFormError(saveError.field === undefined ? { message: saveError.message } : { message: saveError.message, field: saveError.field });
+      } else {
+        setFormError({ message: "บันทึกข้อมูลห้องไม่สำเร็จ" });
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const columns: DataTableColumn<Room>[] = [
     {
       key: "room",
       header: "ห้อง",
-      render: (room) => <span className="num font-medium text-charcoal">{room.id}</span>,
+      render: (room) => <span className="num font-medium text-charcoal">{room.roomNumber}</span>,
     },
     {
       key: "status",
@@ -368,7 +405,7 @@ export function RoomsPage() {
       key: "tenant",
       header: "ผู้เช่า",
       render: (room) => {
-        const tenant = tenantByRoom.get(room.id);
+        const tenant = tenantByRoom.get(room.roomNumber);
         return tenant === undefined ? <span className="text-fog">ยังไม่มีผู้เช่า</span> : <span className="text-charcoal">{tenant.name}</span>;
       },
     },
@@ -385,7 +422,7 @@ export function RoomsPage() {
       render: (room) => (
         <div className="flex items-center justify-end gap-2">
           <span className="num">{waterRateText(room)}</span>
-          {room.waterRate !== dorm.waterRate && <span className="chip">อัตราพิเศษ</span>}
+          {room.waterRate !== null && <span className="chip">อัตราพิเศษ</span>}
         </div>
       ),
     },
@@ -397,16 +434,17 @@ export function RoomsPage() {
         <div className="flex items-center justify-end gap-2">
           <span className="num">{electricText(room)}</span>
           {room.electricMode === "flat" && <span className="chip">ไฟเหมา</span>}
+          {room.electricMode === "meter" && room.electricRate !== null && <span className="chip">อัตราพิเศษ</span>}
         </div>
       ),
     },
     {
       key: "meter",
-      header: "มิเตอร์ล่าสุด",
+      header: "มิเตอร์เริ่มต้น",
       align: "right",
       render: (room) => (
         <span className="num text-steel">
-          น้ำ {room.previousWater} · ไฟ {room.previousElectric}
+          น้ำ {room.waterMeterInit} · ไฟ {room.electricMeterInit}
         </span>
       ),
     },
@@ -418,7 +456,7 @@ export function RoomsPage() {
         <div className="flex justify-end">
           <IconButton
             icon="more_vert"
-            label={`เปิดเมนูจัดการห้อง ${room.id}`}
+            label={`เปิดเมนูจัดการห้อง ${room.roomNumber}`}
             onClick={() => {
               setMenuId(room.id);
             }}
@@ -432,7 +470,7 @@ export function RoomsPage() {
     <div>
       <PageHeader
         title="ห้องพัก"
-        supporting={`${total} ห้อง · มีผู้เช่า ${occupiedCount} · ว่าง ${vacantCount}`}
+        supporting={loading ? "กำลังโหลดข้อมูล" : `${total} ห้อง · มีผู้เช่า ${occupiedCount} · ว่าง ${vacantCount}`}
         actions={
           <Button variant="primary" icon="add" onClick={openAdd}>
             เพิ่มห้อง
@@ -495,7 +533,36 @@ export function RoomsPage() {
         </div>
       </Card>
 
-      {filtered.length === 0 ? (
+      {loading ? (
+        <Card>
+          <div className="grid gap-3" aria-busy="true">
+            <Skeleton className="h-5 w-44" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-2/3" />
+          </div>
+        </Card>
+      ) : error !== null ? (
+        <Card>
+          <EmptyState
+            icon="cloud_off"
+            title="โหลดข้อมูลห้องไม่สำเร็จ"
+            description={error}
+            action={
+              <Button
+                variant="secondary"
+                icon="refresh"
+                onClick={() => {
+                  void load();
+                }}
+              >
+                ลองใหม่
+              </Button>
+            }
+          />
+        </Card>
+      ) : filtered.length === 0 ? (
         total === 0 ? (
           <Card>
             <EmptyState
@@ -540,14 +607,14 @@ export function RoomsPage() {
             <Card key={room.id}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <span className="num block text-base font-medium text-charcoal">{room.id}</span>
-                  <span className="block text-xs text-fog">{tenantByRoom.get(room.id)?.name ?? "ยังไม่มีผู้เช่า"}</span>
+                  <span className="num block text-base font-medium text-charcoal">{room.roomNumber}</span>
+                  <span className="block text-xs text-fog">{tenantByRoom.get(room.roomNumber)?.name ?? "ยังไม่มีผู้เช่า"}</span>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <RoomStatusBadge room={room} />
                   <IconButton
                     icon="more_vert"
-                    label={`เปิดเมนูจัดการห้อง ${room.id}`}
+                    label={`เปิดเมนูจัดการห้อง ${room.roomNumber}`}
                     onClick={() => {
                       setMenuId(room.id);
                     }}
@@ -562,17 +629,18 @@ export function RoomsPage() {
                 <div>
                   <dt className="text-xs text-fog">ค่าน้ำ</dt>
                   <dd className="num text-sm text-charcoal">{waterRateText(room)}</dd>
-                  {room.waterRate !== dorm.waterRate && <span className="chip mt-1">อัตราพิเศษ</span>}
+                  {room.waterRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
                 </div>
                 <div>
                   <dt className="text-xs text-fog">ค่าไฟ</dt>
                   <dd className="num text-sm text-charcoal">{electricText(room)}</dd>
                   {room.electricMode === "flat" && <span className="chip mt-1">ไฟเหมา</span>}
+                  {room.electricMode === "meter" && room.electricRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
                 </div>
                 <div>
-                  <dt className="text-xs text-fog">มิเตอร์ล่าสุด</dt>
+                  <dt className="text-xs text-fog">มิเตอร์เริ่มต้น</dt>
                   <dd className="num text-sm text-charcoal">
-                    น้ำ {room.previousWater} · ไฟ {room.previousElectric}
+                    น้ำ {room.waterMeterInit} · ไฟ {room.electricMeterInit}
                   </dd>
                 </div>
               </dl>
@@ -586,7 +654,7 @@ export function RoomsPage() {
         onClose={() => {
           setMenuId(null);
         }}
-        title={menuRoom === null ? "จัดการห้อง" : `จัดการห้อง ${menuRoom.id}`}
+        title={menuRoom === null ? "จัดการห้อง" : `จัดการห้อง ${menuRoom.roomNumber}`}
         footer={
           <Button
             variant="ghost"
@@ -622,7 +690,7 @@ export function RoomsPage() {
             >
               ดูบิล
             </Button>
-            {!menuRoom.occupied && (
+            {menuRoom.status === "vacant" && (
               <Button
                 variant="secondary"
                 icon="person_add"
@@ -644,11 +712,17 @@ export function RoomsPage() {
         base={base}
         form={form}
         duplicateId={duplicateId}
+        saving={saving}
+        serverError={formError}
         onChange={setForm}
         onClose={() => {
           setFormOpen(false);
+          setBase(null);
+          setFormError(null);
         }}
-        onSave={saveRoom}
+        onSave={(input) => {
+          void saveRoom(input);
+        }}
       />
 
       <Toast message={toast ?? ""} open={toast !== null} />
