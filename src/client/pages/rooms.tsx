@@ -19,7 +19,7 @@ import {
   type DataTableColumn,
 } from "../ui";
 import { dorm } from "../mock-data";
-import { baht, tenantByRoom } from "./bills-shared";
+import { baht } from "./bills-shared";
 import { ChoiceRow, numericValue } from "./dorm-shared";
 
 type StatusFilter = "all" | "occupied" | "vacant";
@@ -337,11 +337,10 @@ export function RoomsPage() {
 
   const needle = query.trim().toLowerCase();
   const filtered = roomList.filter((room) => {
-    const tenant = tenantByRoom.get(room.roomNumber);
     const matchesQuery =
       needle === "" ||
       room.roomNumber.toLowerCase().includes(needle) ||
-      (tenant !== undefined && tenant.name.toLowerCase().includes(needle));
+      (room.occupiedBy !== null && room.occupiedBy.toLowerCase().includes(needle));
     const matchesStatus = statusFilter === "all" ? true : statusFilter === "occupied" ? room.status === "occupied" : room.status === "vacant";
     return matchesQuery && matchesStatus;
   });
@@ -404,10 +403,8 @@ export function RoomsPage() {
     {
       key: "tenant",
       header: "ผู้เช่า",
-      render: (room) => {
-        const tenant = tenantByRoom.get(room.roomNumber);
-        return tenant === undefined ? <span className="text-fog">ยังไม่มีผู้เช่า</span> : <span className="text-charcoal">{tenant.name}</span>;
-      },
+      render: (room) =>
+        room.occupiedBy === null ? <span className="text-fog">ยังไม่มีผู้เช่า</span> : <span className="text-charcoal">{room.occupiedBy}</span>,
     },
     {
       key: "rent",
@@ -608,7 +605,7 @@ export function RoomsPage() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <span className="num block text-base font-medium text-charcoal">{room.roomNumber}</span>
-                  <span className="block text-xs text-fog">{tenantByRoom.get(room.roomNumber)?.name ?? "ยังไม่มีผู้เช่า"}</span>
+                  <span className="block text-xs text-fog">{room.occupiedBy ?? "ยังไม่มีผู้เช่า"}</span>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <RoomStatusBadge room={room} />

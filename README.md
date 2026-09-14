@@ -54,13 +54,16 @@ npx wrangler d1 migrations apply wangchan-dorm --remote
 
 ### Seed
 
-ข้อมูลห้องตัวอย่าง 18 ห้อง (`A101`–`A118`) อยู่ใน `seed/rooms.sql` โดยใช้ `INSERT OR IGNORE` และ id คงที่ (`room-a101` …) จึงรันซ้ำได้โดยไม่ทับหรือสร้างข้อมูลซ้ำ
+ข้อมูลตัวอย่างใช้ `INSERT OR IGNORE` และ id คงที่ จึงรันซ้ำได้โดยไม่ทับหรือสร้างข้อมูลซ้ำ
+
+- `seed/rooms.sql` — ห้องตัวอย่าง 18 ห้อง (`A101`–`A118`) id `room-a101` …
+- `seed/tenants.sql` — ผู้เช่าปัจจุบัน 15 คน (ห้องที่มีผู้เช่า) และผู้ย้ายออก 1 คน (`ปกรณ์ วังทอง` ห้อง `room-a104`) id `tenant-a101` … วันที่เก็บเป็น ISO `YYYY-MM-DD`
 
 ```bash
 npm run db:migrate:local    # apply migrations กับ D1 local
-npm run db:seed:local       # ใส่ข้อมูลห้องตัวอย่างลง D1 local
+npm run db:seed:local       # ใส่ข้อมูลห้องและผู้เช่าตัวอย่างลง D1 local (ทั้งสองไฟล์)
 npm run db:migrate:remote   # apply migrations กับ D1 production
-npm run db:seed:remote      # ใส่ข้อมูลห้องตัวอย่างลง D1 production
+npm run db:seed:remote      # ใส่ข้อมูลห้องและผู้เช่าตัวอย่างลง D1 production (ทั้งสองไฟล์)
 ```
 
 ## Tests
@@ -125,11 +128,11 @@ npm run deploy
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, seam-probe)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, seam-probe)
 src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)
 src/client/pages/ หน้าจอแต่ละหน้า (rooms, bills, tenants, dashboard, ...)
 migrations/       D1 migrations
-seed/             ข้อมูลห้องตัวอย่าง (rooms.sql)
+seed/             ข้อมูลตัวอย่าง (rooms.sql, tenants.sql)
 test/             vitest + @cloudflare/vitest-pool-workers
 design/           prototype UX/UI (ไฟล์อ้างอิง ไม่ได้ build)
 docs/             spec และ ADR

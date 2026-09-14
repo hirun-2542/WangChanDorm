@@ -1,10 +1,10 @@
 import { Hono } from "hono";
+import { errorBody, readJsonObject } from "./shared";
 
 const rooms = new Hono<{ Bindings: Env }>();
 
 type ElectricMode = "meter" | "flat";
 type RoomStatus = "vacant" | "occupied";
-type ErrorCode = "VALIDATION" | "DUPLICATE" | "NOT_FOUND" | "INTERNAL";
 
 interface RoomRow {
   id: string;
@@ -17,6 +17,7 @@ interface RoomRow {
   electric_meter_init: number;
   status: string;
   created_at: string;
+  occupied_by: string | null;
 }
 
 interface RoomPayload {
@@ -29,15 +30,13 @@ interface RoomPayload {
   waterMeterInit: number;
   electricMeterInit: number;
   status: RoomStatus;
-}
-
-interface ErrorBody {
-  ok: false;
-  error: { code: ErrorCode; message: string; field?: string };
+  occupiedBy: string | null;
 }
 
 const roomColumns =
-  "id, room_number, rent, water_rate, electric_mode, electric_rate, water_meter_init, electric_meter_init, status, created_at";
+  "r.id, r.room_number, r.rent, r.water_rate, r.electric_mode, r.electric_rate, r.water_meter_init, r.electric_meter_init, r.status, r.created_at, t.full_name AS occupied_by";
+
+const roomFrom = "FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current'";
 
 function toRoom(row: RoomRow): RoomPayload {
   return {
@@ -50,11 +49,8 @@ function toRoom(row: RoomRow): RoomPayload {
     waterMeterInit: row.water_meter_init,
     electricMeterInit: row.electric_meter_init,
     status: row.status === "occupied" ? "occupied" : "vacant",
+    occupiedBy: row.occupied_by,
   };
-}
-
-function errorBody(code: ErrorCode, message: string, field?: string): ErrorBody {
-  return field === undefined ? { ok: false, error: { code, message } } : { ok: false, error: { code, message, field } };
 }
 
 function parsePositiveInt(value: unknown): number | null {
@@ -81,23 +77,9 @@ function parseElectricMode(value: unknown): ElectricMode | null {
   return value === "meter" || value === "flat" ? value : null;
 }
 
-async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const body: unknown = await request.json();
-
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return null;
-    }
-
-    return body as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
 rooms.get("/", async (c) => {
   try {
-    const result = await c.env.DB.prepare(`SELECT ${roomColumns} FROM rooms ORDER BY room_number ASC`).all<RoomRow>();
+    const result = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} ORDER BY r.room_number ASC`).all<RoomRow>();
     return c.json({ ok: true, rooms: result.results.map(toRoom) }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -171,7 +153,7 @@ rooms.post("/", async (c) => {
       .bind(id, roomNumber, rent, waterRate.value, electricMode, storedElectricRate, waterMeterInit, electricMeterInit)
       .run();
 
-    const row = await c.env.DB.prepare(`SELECT ${roomColumns} FROM rooms WHERE id = ?`).bind(id).first<RoomRow>();
+    const row = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} WHERE r.id = ?`).bind(id).first<RoomRow>();
 
     if (row === null) {
       console.error(JSON.stringify({ message: "create room readback failed", roomId: id }));
@@ -200,7 +182,7 @@ rooms.patch("/:id", async (c) => {
   }
 
   try {
-    const existing = await c.env.DB.prepare(`SELECT ${roomColumns} FROM rooms WHERE id = ?`).bind(id).first<RoomRow>();
+    const existing = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} WHERE r.id = ?`).bind(id).first<RoomRow>();
 
     if (existing === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบห้องที่ต้องการแก้ไข"), 404);
@@ -306,7 +288,7 @@ rooms.patch("/:id", async (c) => {
       .bind(roomNumber, rent, waterRate, electricMode, storedElectricRate, waterMeterInit, electricMeterInit, id)
       .run();
 
-    const row = await c.env.DB.prepare(`SELECT ${roomColumns} FROM rooms WHERE id = ?`).bind(id).first<RoomRow>();
+    const row = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} WHERE r.id = ?`).bind(id).first<RoomRow>();
 
     if (row === null) {
       console.error(JSON.stringify({ message: "update room readback failed", roomId: id }));

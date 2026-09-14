@@ -1,4 +1,15 @@
 import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import {
+  ApiError,
+  checkoutTenant,
+  createTenant,
+  fetchRooms,
+  fetchTenants,
+  updateTenant,
+  type Room,
+  type Tenant,
+  type TenantStatus,
+} from "../api";
 import { useSearch } from "../search";
 import {
   Badge,
@@ -12,18 +23,12 @@ import {
   Field,
   PageHeader,
   Select,
+  Skeleton,
   StatusBadge,
   Toast,
   type DataTableColumn,
 } from "../ui";
-import {
-  bills as pinnedBills,
-  rooms as pinnedRooms,
-  tenants as pinnedTenants,
-  type Room,
-  type Tenant,
-  type TenantStatus,
-} from "../mock-data";
+import { bills as pinnedBills, type Tenant as PinnedTenant } from "../mock-data";
 import { baht, todayIso } from "./bills-shared";
 import { PairingSurface, seedPendingUsers, type PairingResult, type PendingLineUser } from "./tenants-pairing";
 
@@ -43,18 +48,14 @@ function formatThaiDate(iso: string): string {
   return `${dayPart} ${monthLabel} ${shortYear}`;
 }
 
-function parseThaiDate(label: string): string {
-  const [dayPart, monthPart, yearPart] = label.split(" ");
-  const monthIndex = monthPart === undefined ? -1 : thaiMonthsShort.indexOf(monthPart);
-  const day = Number(dayPart);
-  const shortYear = Number(yearPart);
+function saveFailureState(
+  failure: unknown,
+  fallback: string,
+): { error: { message: string; field?: string }; toast: boolean } {
+  const message = failure instanceof ApiError ? failure.message : fallback;
+  const field = failure instanceof ApiError ? failure.field : undefined;
 
-  if (monthIndex < 0 || !Number.isFinite(day) || !Number.isFinite(shortYear)) {
-    return "";
-  }
-
-  const year = 2500 + shortYear - 543;
-  return `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return { error: { message, field }, toast: field === undefined };
 }
 
 function LineStatusBadge({ linked }: { linked: boolean }) {
@@ -166,6 +167,8 @@ interface TenantFormDrawerProps {
   roomLabel: string;
   roomOptions: { value: string; label: string }[];
   roomHelper: string;
+  saving: boolean;
+  serverError: { message: string; field?: string } | null;
   onClose: () => void;
   onSave: (values: TenantFormValues) => void;
 }
@@ -179,6 +182,8 @@ function TenantFormDrawer({
   roomLabel,
   roomOptions,
   roomHelper,
+  saving,
+  serverError,
   onClose,
   onSave,
 }: TenantFormDrawerProps) {
@@ -206,7 +211,10 @@ function TenantFormDrawer({
   const phoneValid = phone.trim() !== "";
   const roomValid = roomId !== "";
   const dateValid = checkIn !== "";
-  const canSave = nameValid && phoneValid && roomValid && dateValid;
+  const canSave = nameValid && phoneValid && roomValid && dateValid && !saving;
+
+  const fieldError = (field: string): string | undefined =>
+    serverError !== null && serverError.field === field ? serverError.message : undefined;
 
   return (
     <Drawer
@@ -239,7 +247,7 @@ function TenantFormDrawer({
             setName(value);
             setTouched((prev) => ({ ...prev, name: true }));
           }}
-          error={touched.name === true && !nameValid ? "กรุณากรอกชื่อ-นามสกุล" : undefined}
+          error={fieldError("fullName") ?? (touched.name === true && !nameValid ? "กรุณากรอกชื่อ-นามสกุล" : undefined)}
         />
 
         <Field
@@ -250,7 +258,7 @@ function TenantFormDrawer({
             setTouched((prev) => ({ ...prev, phone: true }));
           }}
           inputMode="tel"
-          error={touched.phone === true && !phoneValid ? "กรุณากรอกเบอร์โทร" : undefined}
+          error={fieldError("phone") ?? (touched.phone === true && !phoneValid ? "กรุณากรอกเบอร์โทร" : undefined)}
         />
 
         <Select
@@ -258,7 +266,7 @@ function TenantFormDrawer({
           value={roomId}
           onChange={setRoomId}
           options={roomOptions}
-          helper={touched.room === true && !roomValid ? "กรุณาเลือกห้อง" : roomHelper}
+          helper={fieldError("roomId") ?? (touched.room === true && !roomValid ? "กรุณาเลือกห้อง" : roomHelper)}
         />
 
         <Field
@@ -266,8 +274,10 @@ function TenantFormDrawer({
           type="date"
           value={checkIn}
           onChange={setCheckIn}
-          error={touched.checkIn === true && !dateValid ? "กรุณาเลือกวันเข้า" : undefined}
+          error={fieldError("checkInDate") ?? (touched.checkIn === true && !dateValid ? "กรุณาเลือกวันเข้า" : undefined)}
         />
+
+        {serverError !== null && serverError.field === undefined && <p className="text-xs text-danger">{serverError.message}</p>}
       </div>
     </Drawer>
   );
@@ -275,11 +285,13 @@ function TenantFormDrawer({
 
 interface CheckoutDialogProps {
   tenant: Tenant | null;
+  saving: boolean;
+  error: string | null;
   onClose: () => void;
   onConfirm: (tenant: Tenant, dateIso: string) => void;
 }
 
-function CheckoutDialog({ tenant, onClose, onConfirm }: CheckoutDialogProps) {
+function CheckoutDialog({ tenant, saving, error, onClose, onConfirm }: CheckoutDialogProps) {
   const [date, setDate] = useState(todayIso());
   const [seededId, setSeededId] = useState<string | null>(null);
 
@@ -300,7 +312,7 @@ function CheckoutDialog({ tenant, onClose, onConfirm }: CheckoutDialogProps) {
     <Dialog
       open
       onClose={onClose}
-      title={`เช็คเอาท์ · ${tenant.name}`}
+      title={`เช็คเอาท์ · ${tenant.fullName}`}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -309,7 +321,7 @@ function CheckoutDialog({ tenant, onClose, onConfirm }: CheckoutDialogProps) {
           <Button
             variant="danger-soft"
             icon="logout"
-            disabled={date === ""}
+            disabled={date === "" || saving}
             onClick={() => {
               onConfirm(tenant, date);
             }}
@@ -320,12 +332,12 @@ function CheckoutDialog({ tenant, onClose, onConfirm }: CheckoutDialogProps) {
       }
     >
       <div className="grid gap-4">
-        <Field label="วันที่ออก" type="date" value={date} onChange={setDate} />
+        <Field label="วันที่ออก" type="date" value={date} onChange={setDate} error={error ?? undefined} />
 
         <div className="panel-muted">
           <p className="text-sm text-charcoal">หลังยืนยันเช็คเอาท์</p>
           <p className="mt-1 text-sm text-steel">
-            ห้อง {tenant.roomId} จะเปลี่ยนเป็นห้องว่าง แต่ประวัติผู้เช่าของ {tenant.name} จะยังถูกเก็บไว้ในระบบ
+            ห้อง {tenant.roomNumber} จะเปลี่ยนเป็นห้องว่าง แต่ประวัติผู้เช่าของ {tenant.fullName} จะยังถูกเก็บไว้ในระบบ
           </p>
         </div>
       </div>
@@ -334,8 +346,11 @@ function CheckoutDialog({ tenant, onClose, onConfirm }: CheckoutDialogProps) {
 }
 
 export function TenantsPage() {
-  const [tenantList, setTenantList] = useState<Tenant[]>(() => pinnedTenants.map((tenant) => ({ ...tenant })));
-  const [roomList, setRoomList] = useState<Room[]>(() => pinnedRooms.map((room) => ({ ...room })));
+  const [tenantList, setTenantList] = useState<Tenant[]>([]);
+  const [roomList, setRoomList] = useState<Room[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [pendingUsers, setPendingUsers] = useState<PendingLineUser[]>(() => seedPendingUsers());
   const [tab, setTab] = useState<TenantStatus>("current");
   const [pairingOpen, setPairingOpen] = useState(false);
@@ -343,12 +358,33 @@ export function TenantsPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Tenant | null>(null);
   const [checkoutTarget, setCheckoutTarget] = useState<Tenant | null>(null);
+  const [formError, setFormError] = useState<{ message: string; field?: string } | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const { query, setQuery } = useSearch();
 
   const showToast = useCallback((message: string) => {
     setToast(message);
   }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const [tenants, rooms] = await Promise.all([fetchTenants(), fetchRooms()]);
+      setTenantList(tenants);
+      setRoomList(rooms);
+    } catch (loadError) {
+      setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลผู้เช่าไม่สำเร็จ");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   useEffect(() => {
     if (toast === null) {
@@ -365,17 +401,27 @@ export function TenantsPage() {
   }, [toast]);
 
   const markPaired = (result: PairingResult) => {
-    setTenantList((prev) => prev.map((item) => (item.id === result.tenantId ? { ...item, lineLinked: true } : item)));
     setPendingUsers((prev) => prev.filter((user) => user.id !== result.pendingId));
     showToast(`เชื่อม LINE กับ คุณ${result.tenantName} แล้ว`);
   };
+
+  const pairingTenants: PinnedTenant[] = tenantList.map((tenant) => ({
+    id: tenant.id,
+    name: tenant.fullName,
+    roomId: tenant.roomNumber,
+    phone: tenant.phone,
+    checkIn: formatThaiDate(tenant.checkInDate),
+    lineLinked: tenant.lineUserId !== null,
+    status: tenant.status,
+    movedOutAt: tenant.checkOutDate === null ? null : formatThaiDate(tenant.checkOutDate),
+  }));
 
   if (pairingOpen) {
     return (
       <div>
         <PairingSurface
           pending={pendingUsers}
-          tenants={tenantList}
+          tenants={pairingTenants}
           onPaired={markPaired}
           onBack={() => {
             setPairingOpen(false);
@@ -389,15 +435,15 @@ export function TenantsPage() {
   const currentTenants = tenantList.filter((tenant) => tenant.status === "current");
   const movedOutTenants = tenantList.filter((tenant) => tenant.status === "moved-out");
   const visibleTenants = tab === "current" ? currentTenants : movedOutTenants;
-  const vacantRooms = roomList.filter((room) => !room.occupied);
+  const vacantRooms = roomList.filter((room) => room.status === "vacant");
   const selectedTenant = tenantList.find((tenant) => tenant.id === selectedId) ?? null;
 
   const needle = query.trim().toLowerCase();
   const filtered = visibleTenants.filter(
     (tenant) =>
       needle === "" ||
-      tenant.name.toLowerCase().includes(needle) ||
-      tenant.roomId.toLowerCase().includes(needle) ||
+      tenant.fullName.toLowerCase().includes(needle) ||
+      tenant.roomNumber.toLowerCase().includes(needle) ||
       tenant.phone.includes(needle),
   );
 
@@ -407,62 +453,88 @@ export function TenantsPage() {
     setSelectedId(tenant.id);
   };
 
-  const addTenant = (values: TenantFormValues) => {
-    const created: Tenant = {
-      id: `t-${values.roomId.toLowerCase()}-${String(Date.now())}`,
-      name: values.name,
-      roomId: values.roomId,
-      phone: values.phone,
-      checkIn: formatThaiDate(values.checkIn),
-      lineLinked: false,
-      status: "current",
-      movedOutAt: null,
-    };
-
-    setTenantList((prev) => [...prev, created]);
-    setRoomList((prev) => prev.map((room) => (room.id === values.roomId ? { ...room, occupied: true } : room)));
-    setAddOpen(false);
-    showToast(`เพิ่มผู้เช่า ${created.name} ห้อง ${created.roomId} แล้ว`);
+  const openAdd = () => {
+    setFormError(null);
+    setAddOpen(true);
   };
 
-  const saveEdit = (tenant: Tenant, values: TenantFormValues) => {
-    setTenantList((prev) =>
-      prev.map((item) =>
-        item.id === tenant.id
-          ? { ...item, name: values.name, phone: values.phone, roomId: values.roomId, checkIn: formatThaiDate(values.checkIn) }
-          : item,
-      ),
-    );
+  const openEdit = (tenant: Tenant) => {
+    setFormError(null);
+    setEditTarget(tenant);
+  };
 
-    if (values.roomId !== tenant.roomId) {
-      setRoomList((prev) =>
-        prev.map((room) => {
-          if (room.id === tenant.roomId) {
-            return { ...room, occupied: false };
-          }
+  const openCheckout = (tenant: Tenant) => {
+    setCheckoutError(null);
+    setCheckoutTarget(tenant);
+  };
 
-          if (room.id === values.roomId) {
-            return { ...room, occupied: true };
-          }
+  const addTenant = async (values: TenantFormValues) => {
+    setSaving(true);
+    setFormError(null);
 
-          return room;
-        }),
-      );
+    try {
+      const created = await createTenant({
+        fullName: values.name,
+        phone: values.phone,
+        roomId: values.roomId,
+        checkInDate: values.checkIn,
+      });
+      setAddOpen(false);
+      await load();
+      showToast(`เพิ่มผู้เช่า ${created.fullName} ห้อง ${created.roomNumber} แล้ว`);
+    } catch (saveError) {
+      const failure = saveFailureState(saveError, "เพิ่มผู้เช่าไม่สำเร็จ");
+      setFormError(failure.error);
+      if (failure.toast) {
+        showToast(failure.error.message);
+      }
+    } finally {
+      setSaving(false);
     }
-
-    setEditTarget(null);
-    showToast(`บันทึกข้อมูล ${values.name} แล้ว`);
   };
 
-  const confirmCheckout = (tenant: Tenant, dateIso: string) => {
-    setTenantList((prev) =>
-      prev.map((item) =>
-        item.id === tenant.id ? { ...item, status: "moved-out", movedOutAt: formatThaiDate(dateIso) } : item,
-      ),
-    );
-    setRoomList((prev) => prev.map((room) => (room.id === tenant.roomId ? { ...room, occupied: false } : room)));
-    setCheckoutTarget(null);
-    showToast(`เช็คเอาท์ ${tenant.name} แล้ว ห้อง ${tenant.roomId} กลายเป็นห้องว่าง`);
+  const saveEdit = async (tenant: Tenant, values: TenantFormValues) => {
+    setSaving(true);
+    setFormError(null);
+
+    try {
+      const updated = await updateTenant(tenant.id, {
+        fullName: values.name,
+        phone: values.phone,
+        checkInDate: values.checkIn,
+      });
+      setEditTarget(null);
+      await load();
+      showToast(`บันทึกข้อมูล ${updated.fullName} แล้ว`);
+    } catch (saveError) {
+      const failure = saveFailureState(saveError, "บันทึกข้อมูลผู้เช่าไม่สำเร็จ");
+      setFormError(failure.error);
+      if (failure.toast) {
+        showToast(failure.error.message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmCheckout = async (tenant: Tenant, dateIso: string) => {
+    setSaving(true);
+    setCheckoutError(null);
+
+    try {
+      const updated = await checkoutTenant(tenant.id, dateIso);
+      setCheckoutTarget(null);
+      await load();
+      showToast(`เช็คเอาท์ ${updated.fullName} แล้ว ห้อง ${updated.roomNumber} กลายเป็นห้องว่าง`);
+    } catch (checkoutFailure) {
+      const failure = saveFailureState(checkoutFailure, "เช็คเอาท์ผู้เช่าไม่สำเร็จ");
+      setCheckoutError(failure.error.message);
+      if (failure.toast) {
+        showToast(failure.error.message);
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const columns: DataTableColumn<Tenant>[] = [
@@ -471,14 +543,14 @@ export function TenantsPage() {
       header: "ผู้เช่า",
       render: (tenant) => (
         <button type="button" className="text-left" onClick={() => openDetail(tenant)}>
-          <span className="block font-medium text-charcoal hover:underline">{tenant.name}</span>
+          <span className="block font-medium text-charcoal hover:underline">{tenant.fullName}</span>
         </button>
       ),
     },
-    { key: "room", header: "ห้อง", render: (tenant) => <span className="num">{tenant.roomId}</span> },
+    { key: "room", header: "ห้อง", render: (tenant) => <span className="num">{tenant.roomNumber}</span> },
     { key: "phone", header: "เบอร์โทร", render: (tenant) => <span className="num">{tenant.phone}</span> },
-    { key: "checkIn", header: "วันที่เข้า", render: (tenant) => <span className="num">{tenant.checkIn}</span> },
-    { key: "line", header: "LINE", render: (tenant) => <LineStatusBadge linked={tenant.lineLinked} /> },
+    { key: "checkIn", header: "วันที่เข้า", render: (tenant) => <span className="num">{formatThaiDate(tenant.checkInDate)}</span> },
+    { key: "line", header: "LINE", render: (tenant) => <LineStatusBadge linked={tenant.lineUserId !== null} /> },
     { key: "status", header: "สถานะ", render: (tenant) => <TenantStatusBadge status={tenant.status} /> },
     {
       key: "action",
@@ -498,39 +570,32 @@ export function TenantsPage() {
   const editInitial: TenantFormValues =
     editTarget === null
       ? { name: "", phone: "", roomId: "", checkIn: todayIso() }
-      : { name: editTarget.name, phone: editTarget.phone, roomId: editTarget.roomId, checkIn: parseThaiDate(editTarget.checkIn) };
+      : { name: editTarget.fullName, phone: editTarget.phone, roomId: editTarget.roomId, checkIn: editTarget.checkInDate };
 
   const addRoomOptions =
     vacantRooms.length === 0
       ? [{ value: "", label: "ไม่เหลือห้องว่าง" }]
       : [
           { value: "", label: "ยังไม่ได้เลือก" },
-          ...vacantRooms.map((room) => ({ value: room.id, label: `ห้อง ${room.id}` })),
+          ...vacantRooms.map((room) => ({ value: room.id, label: `ห้อง ${room.roomNumber}` })),
         ];
 
   const editRoomOptions =
-    editTarget === null
-      ? []
-      : [
-          { value: editTarget.roomId, label: `ห้อง ${editTarget.roomId}` },
-          ...vacantRooms.map((room) => ({ value: room.id, label: `ห้อง ${room.id}` })),
-        ];
+    editTarget === null ? [] : [{ value: editTarget.roomId, label: `ห้อง ${editTarget.roomNumber}` }];
 
   return (
     <div>
       <PageHeader
         title="ผู้เช่า"
-        supporting={`ผู้เช่าปัจจุบัน ${currentTenants.length} คน · ย้ายออกแล้ว ${movedOutTenants.length} คน`}
+        supporting={
+          loading
+            ? "กำลังโหลดข้อมูล"
+            : `ผู้เช่าปัจจุบัน ${currentTenants.length} คน · ย้ายออกแล้ว ${movedOutTenants.length} คน`
+        }
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <TenantsTabs value={tab} onChange={setTab} />
-            <Button
-              variant="primary"
-              icon="add"
-              onClick={() => {
-                setAddOpen(true);
-              }}
-            >
+            <Button variant="primary" icon="add" onClick={openAdd}>
               เพิ่มผู้เช่า
             </Button>
           </div>
@@ -577,7 +642,36 @@ export function TenantsPage() {
       </Card>
 
       <div role="tabpanel" id="tenants-panel" aria-labelledby={`tenants-tab-${tab}`}>
-        {visibleTenants.length === 0 ? (
+        {loading ? (
+          <Card>
+            <div className="grid gap-3" aria-busy="true">
+              <Skeleton className="h-5 w-44" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-2/3" />
+            </div>
+          </Card>
+        ) : error !== null ? (
+          <Card>
+            <EmptyState
+              icon="cloud_off"
+              title="โหลดข้อมูลผู้เช่าไม่สำเร็จ"
+              description={error}
+              action={
+                <Button
+                  variant="secondary"
+                  icon="refresh"
+                  onClick={() => {
+                    void load();
+                  }}
+                >
+                  ลองใหม่
+                </Button>
+              }
+            />
+          </Card>
+        ) : visibleTenants.length === 0 ? (
           <Card>
             <EmptyState
               icon={tab === "current" ? "group" : "history"}
@@ -589,13 +683,7 @@ export function TenantsPage() {
               }
               action={
                 tab === "current" ? (
-                  <Button
-                    variant="primary"
-                    icon="add"
-                    onClick={() => {
-                      setAddOpen(true);
-                    }}
-                  >
+                  <Button variant="primary" icon="add" onClick={openAdd}>
                     เพิ่มผู้เช่า
                   </Button>
                 ) : undefined
@@ -628,16 +716,16 @@ export function TenantsPage() {
                 <Card key={tenant.id}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-charcoal">{tenant.name}</p>
+                      <p className="truncate text-sm font-medium text-charcoal">{tenant.fullName}</p>
                       <p className="num mt-0.5 text-xs text-fog">
-                        ห้อง {tenant.roomId} · {tenant.phone}
+                        ห้อง {tenant.roomNumber} · {tenant.phone}
                       </p>
                     </div>
                     <TenantStatusBadge status={tenant.status} />
                   </div>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                    <LineStatusBadge linked={tenant.lineLinked} />
-                    <span className="num text-xs text-fog">เข้า {tenant.checkIn}</span>
+                    <LineStatusBadge linked={tenant.lineUserId !== null} />
+                    <span className="num text-xs text-fog">เข้า {formatThaiDate(tenant.checkInDate)}</span>
                   </div>
                   <div className="mt-3">
                     <Button size="sm" variant="secondary" className="w-full" onClick={() => openDetail(tenant)}>
@@ -656,7 +744,7 @@ export function TenantsPage() {
         onClose={() => {
           setSelectedId(null);
         }}
-        title={selectedTenant === null ? "ข้อมูลผู้เช่า" : `ข้อมูลผู้เช่า · ${selectedTenant.name}`}
+        title={selectedTenant === null ? "ข้อมูลผู้เช่า" : `ข้อมูลผู้เช่า · ${selectedTenant.fullName}`}
         footer={
           selectedTenant === null ? undefined : (
             <>
@@ -672,7 +760,7 @@ export function TenantsPage() {
                 variant="secondary"
                 icon="edit"
                 onClick={() => {
-                  setEditTarget(selectedTenant);
+                  openEdit(selectedTenant);
                   setSelectedId(null);
                 }}
               >
@@ -683,7 +771,7 @@ export function TenantsPage() {
                   variant="danger-soft"
                   icon="logout"
                   onClick={() => {
-                    setCheckoutTarget(selectedTenant);
+                    openCheckout(selectedTenant);
                     setSelectedId(null);
                   }}
                 >
@@ -697,23 +785,25 @@ export function TenantsPage() {
         {selectedTenant !== null && (
           <div className="grid gap-5">
             <dl className="grid gap-2.5">
-              <DetailRow label="ชื่อ-นามสกุล" value={selectedTenant.name} />
-              <DetailRow label="ห้อง" value={selectedTenant.roomId} numeric />
+              <DetailRow label="ชื่อ-นามสกุล" value={selectedTenant.fullName} />
+              <DetailRow label="ห้อง" value={selectedTenant.roomNumber} numeric />
               <DetailRow label="เบอร์โทร" value={selectedTenant.phone} numeric />
-              <DetailRow label="วันที่เข้า" value={selectedTenant.checkIn} numeric />
-              {selectedTenant.movedOutAt !== null && <DetailRow label="วันที่ออก" value={selectedTenant.movedOutAt} numeric />}
+              <DetailRow label="วันที่เข้า" value={formatThaiDate(selectedTenant.checkInDate)} numeric />
+              {selectedTenant.checkOutDate !== null && (
+                <DetailRow label="วันที่ออก" value={formatThaiDate(selectedTenant.checkOutDate)} numeric />
+              )}
             </dl>
 
             <div>
               <p className="field-label">สถานะ LINE</p>
-              <LineStatusBadge linked={selectedTenant.lineLinked} />
+              <LineStatusBadge linked={selectedTenant.lineUserId !== null} />
               <p className="mt-1.5 text-xs text-fog">ให้ผู้เช่าแอดบอทและพิมพ์เลขห้อง</p>
             </div>
 
             <div>
               <CardHeader title="บิลล่าสุด" description="บิลจากข้อมูลที่ปักหมุดไว้" />
               {recentBills.length === 0 ? (
-                <p className="text-sm text-fog">ยังไม่มีบิลของผู้เช่ารายนี้ในระบบ</p>
+                <p className="text-sm text-fog">บิลจะแสดงที่นี่เมื่อระบบออกบิลพร้อมใช้งาน</p>
               ) : (
                 <ul className="grid gap-2">
                   {recentBills.map((bill) => (
@@ -747,37 +837,50 @@ export function TenantsPage() {
         roomLabel="ห้องว่าง"
         roomOptions={addRoomOptions}
         roomHelper={vacantRooms.length === 0 ? "ตอนนี้ไม่มีห้องว่าง กรุณาเช็คเอาท์ผู้เช่าเดิมก่อน" : "เลือกห้องว่างที่ผู้เช่าจะย้ายเข้า"}
+        saving={saving}
+        serverError={addOpen ? formError : null}
         onClose={() => {
           setAddOpen(false);
+          setFormError(null);
         }}
-        onSave={addTenant}
+        onSave={(values) => {
+          void addTenant(values);
+        }}
       />
 
       <TenantFormDrawer
         open={editTarget !== null}
         seedKey={editTarget === null ? "edit" : editTarget.id}
-        title={editTarget === null ? "แก้ไขข้อมูลผู้เช่า" : `แก้ไข · ${editTarget.name}`}
+        title={editTarget === null ? "แก้ไขข้อมูลผู้เช่า" : `แก้ไข · ${editTarget.fullName}`}
         submitLabel="บันทึกการแก้ไข"
         initial={editInitial}
         roomLabel="ห้อง"
         roomOptions={editRoomOptions}
-        roomHelper="เปลี่ยนห้องได้เมื่อย้ายผู้เช่าไปห้องอื่น"
+        roomHelper="ย้ายห้องไม่ได้ ต้องเช็คเอาท์ก่อนเพิ่มผู้เช่าใหม่"
+        saving={saving}
+        serverError={editTarget !== null ? formError : null}
         onClose={() => {
           setEditTarget(null);
+          setFormError(null);
         }}
         onSave={(values) => {
           if (editTarget !== null) {
-            saveEdit(editTarget, values);
+            void saveEdit(editTarget, values);
           }
         }}
       />
 
       <CheckoutDialog
         tenant={checkoutTarget}
+        saving={saving}
+        error={checkoutError}
         onClose={() => {
           setCheckoutTarget(null);
+          setCheckoutError(null);
         }}
-        onConfirm={confirmCheckout}
+        onConfirm={(tenant, dateIso) => {
+          void confirmCheckout(tenant, dateIso);
+        }}
       />
 
       <Toast message={toast ?? ""} open={toast !== null} />

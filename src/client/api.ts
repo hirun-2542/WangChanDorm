@@ -1,5 +1,6 @@
 export type ElectricMode = "meter" | "flat";
 export type RoomStatus = "vacant" | "occupied";
+export type TenantStatus = "current" | "moved-out";
 
 export interface Room {
   id: string;
@@ -11,6 +12,7 @@ export interface Room {
   waterMeterInit: number;
   electricMeterInit: number;
   status: RoomStatus;
+  occupiedBy: string | null;
 }
 
 export interface RoomInput {
@@ -21,6 +23,31 @@ export interface RoomInput {
   electricRate: number | null;
   waterMeterInit: number;
   electricMeterInit: number;
+}
+
+export interface Tenant {
+  id: string;
+  fullName: string;
+  phone: string;
+  roomId: string;
+  roomNumber: string;
+  checkInDate: string;
+  checkOutDate: string | null;
+  lineUserId: string | null;
+  status: TenantStatus;
+}
+
+export interface TenantInput {
+  fullName: string;
+  phone: string;
+  roomId: string;
+  checkInDate: string;
+}
+
+export interface TenantUpdate {
+  fullName?: string;
+  phone?: string;
+  checkInDate?: string;
 }
 
 interface ErrorPayload {
@@ -118,4 +145,24 @@ export async function createRoom(input: RoomInput): Promise<Room> {
 export async function updateRoom(id: string, input: RoomInput): Promise<Room> {
   const body = await apiPatch<{ ok: true; room: Room }>(`/api/rooms/${encodeURIComponent(id)}`, input);
   return body.room;
+}
+
+export async function fetchTenants(): Promise<Tenant[]> {
+  const body = await apiGet<{ ok: true; tenants: Tenant[] }>("/api/tenants");
+  return body.tenants;
+}
+
+export async function createTenant(input: TenantInput): Promise<Tenant> {
+  const body = await apiPost<{ ok: true; tenant: Tenant }>("/api/tenants", input);
+  return body.tenant;
+}
+
+export async function updateTenant(id: string, input: TenantUpdate): Promise<Tenant> {
+  const body = await apiPatch<{ ok: true; tenant: Tenant }>(`/api/tenants/${encodeURIComponent(id)}`, input);
+  return body.tenant;
+}
+
+export async function checkoutTenant(id: string, checkOutDate: string): Promise<Tenant> {
+  const body = await apiPost<{ ok: true; tenant: Tenant }>(`/api/tenants/${encodeURIComponent(id)}/checkout`, { checkOutDate });
+  return body.tenant;
 }
