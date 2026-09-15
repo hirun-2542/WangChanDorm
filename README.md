@@ -80,6 +80,7 @@ npm test
 - `test/rooms.test.ts` และ `test/tenants.test.ts` ยิง REST API จริงเข้า `/api/rooms` และ `/api/tenants` แล้วตรวจสถานะที่อ่านกลับได้
 - `test/settings.test.ts` ยิง `/api/settings` ตรวจค่าเริ่มต้น, subset PUT, การปฏิเสธค่าไม่ถูกต้อง, unknown key และการออกรหัสเจ้าของใหม่
 - `test/bills.test.ts` ยิง `/api/bills` ตรวจ meter sheet (เฉพาะห้องที่มีผู้เช่า + อัตราที่ใช้จริง), การสร้างบิลห้องมิเตอร์/ห้องเหมา/บิลที่มีค่าใช้จ่ายเพิ่ม, มิเตอร์ย้อนหลัง, สร้างซ้ำเดือนเดิม, ห้องว่าง, การ snapshot เลขมิเตอร์ลงบิลรอบถัดไป และการจัดการบิลหลังสร้าง (แก้/ลบ unpaid รวมค่าใช้จ่ายเพิ่มและยอดเหมา, ปฏิเสธ paid ด้วย `409`, ปิดบิลด้วย `mark-paid`, unknown id `404`)
+- `test/bills-render.test.ts` ตรวจ payload พร้อมเพย์ (CRC16 known vector + payload ที่ตรงกับ implementation อ้างอิง), ตัวสร้างแถวใบแจ้งหนี้ (ห้องมิเตอร์/ห้องเหมา/ค่าใช้จ่ายเพิ่ม) และ route สาธารณะ `/qr/:billId.png` กับ `/invoices/:billId.pdf` (สถานะ, content-type, PNG/PDF signature, ขนาดไฟล์, ยอดที่เปลี่ยนตามบิลหลัง `PATCH`, การฝังรูป QR ลงใน PDF โดยเทียบกับตอนยังไม่ตั้งพร้อมเพย์, unknown id `404`)
 - `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ — outbound `fetch` ไป LINE ถูกดักด้วย spy
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
@@ -95,6 +96,14 @@ npm test
 - `DELETE /api/bills/:id` — ลบบิลที่ยังไม่จ่ายพร้อมค่าใช้จ่ายทั้งหมดใน batch เดียว (`paid` ตอบ `409`, ไม่พบ `404`)
 - `POST /api/bills/:id/mark-paid {method: transfer|cash, paidAt?}` — ปิดบิลเอง ตั้ง `status = paid` พร้อม `paid_at`/`paid_method`; `paidAt` เป็น ISO `YYYY-MM-DD` หรือ timestamp เต็ม (ไม่ส่งใช้เวลาปัจจุบัน); ช่องทางผิด `400`, ปิดซ้ำ `409`, ไม่พบ `404`
 - บิลเก็บ snapshot อัตรา เลขมิเตอร์ โหมดค่าไฟ และค่าใช้จ่ายเพิ่ม ณ วันสร้าง แก้ settings หรือโหมดของห้องภายหลังไม่กระทบบิลเก่า
+
+## QR พร้อมเพย์ และใบแจ้งหนี้ PDF
+
+สอง route นี้เป็น **สาธารณะ** (อยู่นอก Cloudflare Access) เพราะลิงก์ถูกส่งไปในข้อความ LINE ของผู้เช่า — อย่าเพิ่ม policy บังคับล็อกอินกับสอง path นี้ และทั้งคู่ถูกใส่ใน `assets.run_worker_first` แล้ว จึงวิ่งเข้า Worker เสมอ
+
+- `GET /qr/:billId.png` — รูป QR พร้อมเพย์ของบิลนั้นเป็น PNG (`image/png`, `cache-control: public, max-age=60`) payload เป็น EMVCo/PromptPay ตามมาตรฐาน: พร้อมเพย์ไอดีและประเภทจาก `settings` (`phone` → sub-tag `01` รูปแบบ `0066xxxxxxxxx`, `citizen-id` → sub-tag `02` เลข 13 หลัก), ยอด = `total` ของบิล (รวมค่าใช้จ่ายเพิ่ม) ทศนิยม 2 ตำแหน่ง, สกุลเงิน `764` (THB), ประเทศ `TH` และ CRC16-CCITT (FALSE) ปิดท้าย; ยอดอ่านจากแถวบิลทุกครั้งที่เรียก แก้บิลแล้วรูปเปลี่ยนตาม; ไม่พบบิล `404` เป็น JSON; ยังไม่ได้ตั้ง `promptpay_id` ตอบ `500` (ไม่ยอมสร้าง QR ไปบัญชีอะไรก็ไม่รู้)
+- `GET /invoices/:billId.pdf` — ใบแจ้งหนี้ PDF สร้างสดจาก D1 ทุกครั้ง (`application/pdf`, `cache-control: no-store`, `content-disposition: inline; filename="B2569-09-A101.pdf"`) — ไม่มีไฟล์เก็บใน R2 และไม่มีความล้าสมัยของแคช; เนื้อหาตามโครงเอกสารใบแจ้งหนี้: เลขที่ (derive แบบเดียวกับ UI `B<พ.ศ.>-<MM>-<roomNumber>`), วันที่ออก (จาก `created_at`), ชื่อหอ/เจ้าของ/พร้อมเพย์, ห้อง · ผู้เช่า, ประจำเดือน, เลขมิเตอร์น้ำ/ไฟ, ตารางรายการ (ค่าห้อง, ค่าน้ำ หน่วย × อัตรา, ค่าไฟ หน่วย × อัตรา หรือเหมาจ่าย, ค่าใช้จ่ายเพิ่มทุกบรรทัดตามชื่อจริงบนบิล), ยอดรวมทั้งสิ้น และท้ายเอกสารฝังรูป QR พร้อมเพย์ของบิลพร้อมบรรทัดบอกผู้เช่าให้ส่งสลิปกลับในแชท LINE; ยอดเงินอ่านจาก snapshot ในแถวบิลเสมอ; ไม่พบบิล `404` เป็น JSON
+- ตัวเลขและฟอนต์: ทั้งสอง route ใช้ `src/worker/lib/` (payload พร้อมเพย์ + CRC16, ตัวเขียน PNG, ตัวสร้างเอกสาร, ตัวเรนเดอร์ PDF) — ฟอนต์ไทยฝังใน Worker ด้วย Wrangler module rule ชนิด `Data` สำหรับ `**/*.ttf` (`src/worker/fonts/IBMPlexSansThai-Regular.ttf` + `-Bold.ttf` จาก Google Fonts, สัญญาอนุญาต SIL OFL 1.1 ดู `src/worker/fonts/OFL.txt`) แล้ว embed ด้วย `pdf-lib` + `@pdf-lib/fontkit` แบบ subset — ฟอนต์นี้มีทั้งไทยและละติน/ตัวเลขในไฟล์เดียว จึงพิมพ์เลขที่ใบแจ้งหนี้กับยอดเงินได้ครบ (Noto Sans Thai รุ่น static ไม่มี glyph ละติน ใช้กับเอกสารที่มีตัวเลขไม่ได้); ตอน embed ปิดฟีเจอร์ `ccmp` ของฟอนต์เพื่อให้ Thai Sara Am คงรูปประกอบ (U+0E33) ทำให้ text layer ของ PDF (`pdftotext`/คัดลอกข้อความ) ได้ `ประจำเดือน` `มิเตอร์น้ำ` `ค่าน้ำ` ตรงกับต้นฉบับ ไม่ซ้ำสระ
 
 ## Typecheck / lint / full check
 
@@ -125,6 +134,7 @@ Local: คัดลอก `.dev.vars.example` เป็น `.dev.vars` แล้
 - `POST /webhook/line` เป็น path สาธารณะ (ไม่มี Access) ตรวจ `X-Line-Signature` แบบ HMAC-SHA256 จาก raw body ก่อนทุกอย่าง ถ้า signature ไม่ถูกต้องตอบ `403` และไม่แตะฐานข้อมูล
 - event `follow` → บอททักทายและขอเลขห้อง; ข้อความ text ที่ตรงกับเลขห้องของผู้เช่าปัจจุบันที่ยังไม่เชื่อม → ผูก `tenants.line_user_id`; ข้อความที่ตรงกับรหัส 6 หลักใน `settings.owner_link_code` → บันทึก `settings.owner_line_user_id`; ข้อความอื่น → เก็บในตาราง `line_pending` ให้เจ้าของจับคู่เอง
 - `/api/line/pending` (GET) และ `/api/line/pending/:lineUserId/link` (POST) อยู่หลัง Access ใช้โดยหน้าผู้เช่าในส่วนจัดการการเชื่อม LINE
+- ข้อความบิลที่บอท push เป็น Flex message ที่แนบรูป QR พร้อมเพย์และปุ่มเปิดใบแจ้งหนี้ PDF ของบิลนั้น — ทั้งคู่คือสอง route สาธารณะ `/qr/:billId.png` และ `/invoices/:billId.pdf` ด้านบน จึงต้องอยู่นอก Access
 - ตอบ `200` เสมอเมื่อ signature ถูกต้อง เพื่อไม่ให้ LINE ยิงซ้ำเพราะ timeout; การเรียก LINE API ขาออกล้มเหลวได้โดยไม่ทำให้ webhook พัง
 
 ## Deploy
@@ -142,18 +152,20 @@ npm run deploy
 1. ผูก custom domain ให้ Worker (เช่น `dorm.example.com`) — Access ครอบโดเมน `*.workers.dev` ไม่ได้ ต้องมี custom domain ก่อน
 2. สร้าง Access application ครอบโฮสต์นั้น
 3. เพิ่ม policy แบบ Allow เฉพาะอีเมลของเจ้าของ
-4. แยก path ที่ต้องเปิดสาธารณะออกจาก Access: `/webhook/*` (LINE เรียกเข้ามา), `/qr/*` และ `/slips/*` (ให้ LINE และ EasySlip ดึงรูป) — เช่นใช้ Bypass policy ตาม path
+4. แยก path ที่ต้องเปิดสาธารณะออกจาก Access: `/webhook/*` (LINE เรียกเข้ามา), `/qr/*` และ `/invoices/*` (ลิงก์รูป QR และใบแจ้งหนี้ PDF ที่ฝังในข้อความ LINE) และ `/slips/*` (ให้ EasySlip ดึงรูป) — เช่นใช้ Bypass policy ตาม path
 
 การจัดการ asset และ API:
 
-- `assets.run_worker_first` เป็น array ของ glob `["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*"]` ทำให้ path เหล่านี้วิ่งเข้า Worker เสมอ ส่วน path อื่นถูกเสิร์ฟเป็น static asset และ fallback เป็น SPA (`not_found_handling: "single-page-application"`)
+- `assets.run_worker_first` เป็น array ของ glob `["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*", "/invoices/*"]` ทำให้ path เหล่านี้วิ่งเข้า Worker เสมอ ส่วน path อื่นถูกเสิร์ฟเป็น static asset และ fallback เป็น SPA (`not_found_handling: "single-page-application"`)
 - ถ้าเพิ่ม path API ใหม่ ต้องเพิ่ม glob ใน `assets.run_worker_first` ด้วย ไม่งั้นจะได้ index.html แทน JSON
 
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe, bills-render)
 src/worker/line/  signature (HMAC-SHA256), LINE Messaging API client และข้อความภาษาไทย
+src/worker/lib/   ตรรกะที่ไม่ผูกกับ request: promptpay (payload + CRC16), png, qr, invoice (ตัวสร้างเอกสาร), pdf
+src/worker/fonts/ ฟอนต์ไทยสำหรับ PDF (IBM Plex Sans Thai Regular/Bold, OFL 1.1)
 src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)
 src/client/pages/ หน้าจอแต่ละหน้า (rooms, tenants, settings, bills, dashboard, ...)
 migrations/       D1 migrations

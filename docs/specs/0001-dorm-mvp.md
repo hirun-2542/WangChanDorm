@@ -71,7 +71,7 @@ status: ready
 ## Implementation Decisions
 
 - **แพลตฟอร์ม:** Cloudflare Workers (TypeScript + Hono) เสิร์ฟ React SPA (Vite) เป็น static assets, D1 เป็นฐานข้อมูล, R2 เก็บภาพสลิป — ไม่มี cron ทุกอย่างเป็น event-driven
-- **การยืนยันตัวตน:** Cloudflare Access ครอบทั้งแอป ยกเว้น path สาธารณะ 3 จุด: webhook ของ LINE, route รูป QR, route รูปสลิป (ให้ EasySlip ดึงได้)
+- **การยืนยันตัวตน:** Cloudflare Access ครอบทั้งแอป ยกเว้น path สาธารณะ 4 จุด: webhook ของ LINE, route รูป QR, route ใบแจ้งหนี้ PDF (ให้ปุ่มในข้อความ LINE เปิดได้) และ route รูปสลิป (ให้ EasySlip ดึงได้)
 - **โดเมน (จาก glossary ของโปรเจกต์):** ห้องพัก, ผู้เช่า, บิล, การอ่านมิเตอร์, ปิดบิล, สลิป, คิวรอตรวจ, การเชื่อม LINE, เจ้าของ
 - **Schema (D1) — สรุปโครงสร้างที่ฝังการตัดสินใจ:**
   - `rooms(room_number UNIQUE, rent, water_rate NULL, electric_mode: meter|flat, electric_rate NULL, water_meter_init, electric_meter_init, status)` — อัตรา NULL = ใช้ค่าทั้งหอ; `electric_mode = flat` = ค่าไฟเหมาจ่าย (rate ไม่ใช้)
@@ -96,10 +96,11 @@ status: ready
   - `POST /bills/generate {period, มิเตอร์รายห้อง, ยอดไฟเหมารายห้อง, ค่าใช้จ่ายเพิ่มเติมรายห้อง}` — เซิร์ฟเวอร์คิดยอดเงินเองทั้งหมด (อัตราที่ใช้จริง = override ของห้อง ?? ค่า default); `GET /bills?period`; `GET /bills/meter-sheet?period` (ห้องที่มีผู้เช่าทุกห้อง + เลขมิเตอร์ครั้งก่อน + อัตราที่ใช้จริง + `existingBillId` ของเดือนนั้น); `PATCH /bills/:id` (unpaid เท่านั้น — แก้มิเตอร์/ยอดเหมา/ค่าใช้จ่ายเพิ่มแล้วคำนวณใหม่จากอัตรา snapshot; ห้องเหมาส่ง `flatElectricAmount`, ห้องมิเตอร์ห้ามส่ง); `DELETE /bills/:id` (unpaid เท่านั้น — ลบบิลและค่าใช้จ่ายเพิ่มใน batch เดียว); `POST /bills/:id/send`; `POST /bills/send-all`; `POST /bills/:id/mark-paid {method: transfer|cash, paidAt?}` (paidAt เป็น ISO YYYY-MM-DD หรือ timestamp เต็ม; ไม่ส่งใช้เวลาปัจจุบัน)
   - `GET /review-queue`; `POST /slips/:id/resolve {settle|reject}`
   - `GET /stats/dashboard?period` — KPI + ค้างชำระ + กริดห้อง + กราฟ ตามเดือนที่เลือก
-  - Public: `POST /webhook/line` (ตรวจ X-Line-Signature แบบ HMAC-SHA256 timing-safe), `GET /qr/:billId.png`, `GET /slips/:imageKey.png` (imageKey สุ่ม 128-bit ไม่เดาได้)
+  - Public: `POST /webhook/line` (ตรวจ X-Line-Signature แบบ HMAC-SHA256 timing-safe), `GET /qr/:billId.png` (รูป QR พร้อมเพย์ยอดเท่ายอดรวมทั้งสิ้นของบิล สร้างสดจากแถวบิลปัจจุบัน), `GET /invoices/:billId.pdf` (ใบแจ้งหนี้ PDF สร้างสดจาก D1 ทุกครั้งที่เรียก — ไม่มีไฟล์เก็บไว้ใน R2 หรือที่อื่น ฝังฟอนต์ไทยและรูป QR พร้อมเพย์ของบิล), `GET /slips/:imageKey.png` (imageKey สุ่ม 128-bit ไม่เดาได้)
 - **หน้ารายละเอียดบิล (invoice):** แสดงเป็นเอกสาร invoice — แถวหัว (ชื่อหอ/เจ้าของ/พร้อมเพย์ + เลขที่บิล/วันที่ออก), บล็อกมิเตอร์ก่อนหน้า→ปัจจุบัน อยู่แผงซ้าย, ตารางรายการค่าใช้จ่าย (ค่าห้อง/น้ำ/ไฟ/ค่าใช้จ่ายเพิ่ม) อยู่ด้านขวา, ยอดรวมมีเส้นคู่, QR + ช่องทางชำระท้ายเอกสาร
-- **LINE Messaging API:** push บิลเป็น Flex message (แยกยอดครบรวมค่าใช้จ่ายเพิ่ม + รูป QR + ชี้นำส่งสลิปกลับ), reply สำหรับตอบ webhook, push ยืนยันการชำระ, push แจ้งเจ้าของ (สลิปรอตรวจ + สรุปหลังส่งบิลทั้งหอ)
-- **QR พร้อมเพย์:** สร้าง payload EMVCo (พร้อมเพย์ + ยอดรวมทั้งสิ้นของบิล) และเรนเดอร์เป็น PNG เองใน Worker เสิร์ฟจาก route สาธารณะ
+- **LINE Messaging API:** push บิลเป็น Flex message (แยกยอดครบรวมค่าใช้จ่ายเพิ่ม + รูป QR พร้อมเพย์ + ปุ่มเปิดใบแจ้งหนี้ PDF ของบิลนั้นผ่าน `GET /invoices/:billId.pdf` + ชี้นำส่งสลิปกลับ), reply สำหรับตอบ webhook, push ยืนยันการชำระ, push แจ้งเจ้าของ (สลิปรอตรวจ + สรุปหลังส่งบิลทั้งหอ)
+- **QR พร้อมเพย์:** สร้าง payload EMVCo (พร้อมเพย์ + ยอดรวมทั้งสิ้นของบิล) และเรนเดอร์เป็น PNG เองใน Worker เสิร์ฟจาก route สาธารณะ (`uqr` สำหรับเมทริกซ์ QR + ตัวเขียน PNG ขนาดเล็กของโปรเจกต์เอง)
+- **ใบแจ้งหนี้ PDF:** สร้างสดทุกครั้งที่เรียกจากแถวบิลใน D1 ด้วย `pdf-lib` + `@pdf-lib/fontkit` ฝัง IBM Plex Sans Thai (Regular/Bold, OFL 1.1) เป็น Wrangler module rule ชนิด `Data` — ข้อความไทยเป็น glyph จริง ท้ายเอกสารฝังรูป QR พร้อมเพย์ของบิลพร้อมบรรทัดบอกผู้เช่าให้ส่งสลิปกลับในแชท LINE; ตอน embed ปิดฟีเจอร์ `ccmp` ของฟอนต์เพื่อให้ Sara Am คงรูปประกอบ (U+0E33) ทำให้ text layer คัดลอก/ค้นหาได้ตรงกับต้นฉบับ; ไม่เก็บไฟล์ค้างและไม่มีความล้าสมัยของแคช
 - **EasySlip:** ส่ง URL รูปสลิป (จาก R2 ผ่าน route สาธารณะ) ให้ API ตรวจ; เก็บผลลัพธ์ดิบลง `slips.easyslip_result`
 - **Secrets:** `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_CHANNEL_SECRET`, `EASYSLIP_API_KEY` — ผ่าน wrangler secrets ไม่เก็บใน source; รหัสเชื่อมเจ้าของเก็บในตาราง `settings` และแสดงในหน้าตั้งค่า (ไม่ใช่ wrangler secret)
 - **UX:** ตาม prototype ที่ตกลงไว้ที่ `design/index.html` — minimal ขาว/น้ำเงิน, ฟอนต์ IBM Plex Sans Thai, 7 หน้า (แดชบอร์ดมี filter รายเดือน, ห้องพัก, ผู้เช่า, บิล, รอตรวจ, ข้อความ LINE, ตั้งค่า)

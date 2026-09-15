@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import bills from "./routes/bills";
+import { invoiceRoute, qrRoute } from "./routes/bills-render";
 import health from "./routes/health";
 import line, { lineAdmin } from "./routes/line";
 import rooms from "./routes/rooms";
@@ -17,5 +18,7 @@ app.route("/api/rooms", rooms);
 app.route("/api/settings", settings);
 app.route("/api/tenants", tenants);
 app.route("/webhook/line", line);
+app.route("/qr", qrRoute);
+app.route("/invoices", invoiceRoute);
 
 export default app;

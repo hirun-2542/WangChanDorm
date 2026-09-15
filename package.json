@@ -19,9 +19,12 @@
     "db:seed:remote": "wrangler d1 execute wangchan-dorm --remote --file seed/rooms.sql && wrangler d1 execute wangchan-dorm --remote --file seed/tenants.sql && wrangler d1 execute wangchan-dorm --remote --file seed/settings.sql"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "hono": "^4.13.7",
+    "pdf-lib": "^1.17.1",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "uqr": "^0.1.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
