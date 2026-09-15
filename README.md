@@ -79,10 +79,19 @@ npm test
 - `test/seam.test.ts` เทสต์ seam ของโปรเจกต์ ยิง `POST /api/seam-probe` แล้วตรวจ D1 write/read, R2 write/read + การลบ object หลังใช้ และ outbound fetch (URL, method และ body) ที่ถูกดักไว้
 - `test/rooms.test.ts` และ `test/tenants.test.ts` ยิง REST API จริงเข้า `/api/rooms` และ `/api/tenants` แล้วตรวจสถานะที่อ่านกลับได้
 - `test/settings.test.ts` ยิง `/api/settings` ตรวจค่าเริ่มต้น, subset PUT, การปฏิเสธค่าไม่ถูกต้อง, unknown key และการออกรหัสเจ้าของใหม่
+- `test/bills.test.ts` ยิง `/api/bills` ตรวจ meter sheet (เฉพาะห้องที่มีผู้เช่า + อัตราที่ใช้จริง), การสร้างบิลห้องมิเตอร์/ห้องเหมา/บิลที่มีค่าใช้จ่ายเพิ่ม, มิเตอร์ย้อนหลัง, สร้างซ้ำเดือนเดิม, ห้องว่าง และการ snapshot เลขมิเตอร์ลงบิลรอบถัดไป
 - `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ — outbound `fetch` ไป LINE ถูกดักด้วย spy
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
 `POST /api/seam-probe` ถูกปิดใน production ด้วย var `SEAM_PROBE` (ค่า `0` ใน `wrangler.jsonc`) และเปิดเฉพาะในเทสต์ด้วย miniflare binding override ใน `vitest.config.ts`
+
+## บิลรายเดือน
+
+- `period` เป็น ค.ศ. รูปแบบ `YYYY-MM` (เช่น `2026-09` = กันยายน 2569) เก็บในตาราง `bills` ฝั่ง client เป็นหน้าที่แปลงเป็น พ.ศ.
+- `GET /api/bills?period=YYYY-MM` — บิลของเดือนนั้น เรียงตามเลขห้อง พร้อมชื่อห้อง/ผู้เช่าและค่าใช้จ่ายเพิ่มเติม (camelCase, แบน)
+- `GET /api/bills/meter-sheet?period=YYYY-MM` — เฉพาะห้องที่มีผู้เช่าปัจจุบัน เรียงตามเลขห้อง พร้อม `waterPrevious`/`electricPrevious` จากบิลล่าสุดของห้อง (หรือเลขเริ่มต้นตอนสร้างห้อง), อัตราที่ใช้จริง (override ของห้อง ?? ค่า default จาก settings) และ `existingBillId` เมื่อห้องนั้นมีบิลของเดือนนี้แล้ว
+- `POST /api/bills/generate {period, entries:[{roomId, waterCurrent, electricCurrent, flatElectricAmount?, charges?}]}` — เซิร์ฟเวอร์คิดยอดเงินเองทั้งหมด (หน่วย × อัตรา ปัดด้วย `Math.round`, ห้องเหมาใช้ยอดที่ส่งมา, total = ค่าห้อง + น้ำ + ไฟ + ผลรวมค่าใช้จ่ายเพิ่ม) แล้วเขียนบิลและค่าใช้จ่ายเพิ่มใน `DB.batch` เดียว; ตรวจทั้งหมดก่อนเขียน (ถ้าไม่ผ่านจะไม่เขียนอะไรเลย) — มิเตอร์ย้อนหลัง `400`, ห้องว่าง/ไม่พบห้อง `400`, สร้างซ้ำเดือนเดิม `409`
+- บิลเก็บ snapshot อัตรา เลขมิเตอร์ โหมดค่าไฟ และค่าใช้จ่ายเพิ่ม ณ วันสร้าง แก้ settings หรือโหมดของห้องภายหลังไม่กระทบบิลเก่า
 
 ## Typecheck / lint / full check
 
@@ -140,7 +149,7 @@ npm run deploy
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, settings, line, seam-probe)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe)
 src/worker/line/  signature (HMAC-SHA256), LINE Messaging API client และข้อความภาษาไทย
 src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)
 src/client/pages/ หน้าจอแต่ละหน้า (rooms, tenants, settings, bills, dashboard, ...)

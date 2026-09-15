@@ -5,11 +5,14 @@ const settings = new Hono<{ Bindings: Env }>();
 
 type PromptpayType = "phone" | "citizen-id";
 
+export const defaultWaterRate = 18;
+export const defaultElectricRate = 7;
+
 const defaultSettings = {
   dorm_name: "หอพักวังจันทร์",
   owner_name: "สมศักดิ์ ใจดี",
-  default_water_rate: "18",
-  default_electric_rate: "7",
+  default_water_rate: String(defaultWaterRate),
+  default_electric_rate: String(defaultElectricRate),
   promptpay_type: "phone",
   promptpay_id: "081-234-5678",
   promptpay_name: "สมศักดิ์ ใจดี",

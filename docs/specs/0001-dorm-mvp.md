@@ -76,7 +76,7 @@ status: ready
 - **Schema (D1) — สรุปโครงสร้างที่ฝังการตัดสินใจ:**
   - `rooms(room_number UNIQUE, rent, water_rate NULL, electric_mode: meter|flat, electric_rate NULL, water_meter_init, electric_meter_init, status)` — อัตรา NULL = ใช้ค่าทั้งหอ; `electric_mode = flat` = ค่าไฟเหมาจ่าย (rate ไม่ใช้)
   - `tenants(room_id, check_in_date, check_out_date NULL, line_user_id NULL UNIQUE, status)` — line_user_id ผูกกับคน ไม่ใช่ห้อง
-  - `bills(UNIQUE(room_id, period), rent, water_prev/curr/rate/units/amount, electric_prev/curr/rate NULL/units NULL/amount, total, status, paid_at, paid_method, sent_at)` — snapshot ทุกค่า ณ วันสร้าง; ห้องเหมา: บันทึก prev/curr มิเตอร์ไฟด้วย แต่ rate/units เป็น NULL และ amount = ยอดเต็มที่กรอก
+  - `bills(room_id, period YYYY-MM ค.ศ. UNIQUE(room_id, period), rent, water_prev/curr/rate/units/amount, electric_mode, electric_prev/curr/rate NULL/units NULL/amount, total, status, paid_at, paid_method, sent_at)` — snapshot ทุกค่า ณ วันสร้าง; `period` เป็น ค.ศ. รูปแบบ `YYYY-MM` (client แสดง พ.ศ. เช่น `2026-09` = กันยายน 2569); `electric_mode` เป็น snapshot อีกคอลัมน์ เพื่อให้เคสเหมาจ่ายชัดเจนจากตัวมันเอง ไม่ต้องอนุมานจาก rate/units ที่เป็น NULL; ห้องเหมา: บันทึก prev/curr มิเตอร์ไฟด้วย แต่ rate/units เป็น NULL และ amount = ยอดเต็มที่กรอก
   - `bill_charges(id, bill_id, name, amount, position)` — ค่าใช้จ่ายเพิ่มเติมต่อบิล เช่น ค่าอินเทอร์เน็ต ค่าจัดการขยะ
   - `slips(bill_id NULL, line_user_id, image_key, easyslip_result, amount NULL, status)` — สลิปหนึ่งใบปิดได้บิลเดียว
   - `settings(key, value)` — อัตรา default, promptpay_id, owner_line_user_id, ชื่อหอ, รหัสเชื่อมเจ้าของ
@@ -93,7 +93,7 @@ status: ready
   - การปิดบิลอัตโนมัติ: สลิปต้องผ่าน EasySlip (สถานะ success) และยอดตรงกับยอดรวมทั้งสิ้น (รวมค่าใช้จ่ายเพิ่มเติมแล้ว) ของบิล unpaid ล่าสุดของห้องผู้ส่งเท่านั้น; ไม่ตรง → คิวรอตรวจ; สลิปใบหนึ่งใช้ปิดบิลได้ไม่เกินหนึ่งใบ
 - **API contract (REST, อยู่หลัง Access):**
   - `rooms` CRUD (รวม electric_mode); `tenants` CRUD; `GET/PUT /settings` + ออกรหัสเจ้าของใหม่; `GET /api/line/pending` และ `POST /api/line/pending/:lineUserId/link` สำหรับจับคู่ pending LINE
-  - `POST /bills/generate {period, มิเตอร์รายห้อง, ยอดไฟเหมารายห้อง, ค่าใช้จ่ายเพิ่มเติมรายห้อง}`; `GET /bills?period`; `PATCH/DELETE /bills/:id` (unpaid เท่านั้น, แก้ extras ได้); `POST /bills/:id/send`; `POST /bills/send-all`; `POST /bills/:id/mark-paid {method}`
+  - `POST /bills/generate {period, มิเตอร์รายห้อง, ยอดไฟเหมารายห้อง, ค่าใช้จ่ายเพิ่มเติมรายห้อง}` — เซิร์ฟเวอร์คิดยอดเงินเองทั้งหมด (อัตราที่ใช้จริง = override ของห้อง ?? ค่า default); `GET /bills?period`; `GET /bills/meter-sheet?period` (ห้องที่มีผู้เช่าทุกห้อง + เลขมิเตอร์ครั้งก่อน + อัตราที่ใช้จริง + `existingBillId` ของเดือนนั้น); `PATCH/DELETE /bills/:id` (unpaid เท่านั้น, แก้ extras ได้); `POST /bills/:id/send`; `POST /bills/send-all`; `POST /bills/:id/mark-paid {method}`
   - `GET /review-queue`; `POST /slips/:id/resolve {settle|reject}`
   - `GET /stats/dashboard?period` — KPI + ค้างชำระ + กริดห้อง + กราฟ ตามเดือนที่เลือก
   - Public: `POST /webhook/line` (ตรวจ X-Line-Signature แบบ HMAC-SHA256 timing-safe), `GET /qr/:billId.png`, `GET /slips/:imageKey.png` (imageKey สุ่ม 128-bit ไม่เดาได้)

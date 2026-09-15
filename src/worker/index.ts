@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import bills from "./routes/bills";
 import health from "./routes/health";
 import line, { lineAdmin } from "./routes/line";
 import rooms from "./routes/rooms";
@@ -10,6 +11,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.route("/health", health);
 app.route("/api", api);
+app.route("/api/bills", bills);
 app.route("/api/line", lineAdmin);
 app.route("/api/rooms", rooms);
 app.route("/api/settings", settings);

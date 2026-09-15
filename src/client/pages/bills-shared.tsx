@@ -1,182 +1,125 @@
 import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
-import {
-  bills as pinnedBills,
-  currentTenants,
-  dorm,
-  monthSummaries,
-  occupiedRooms,
-  type Bill,
-  type ElectricMode,
-  type ExtraCharge,
-  type Room,
-  type Tenant,
-} from "../mock-data";
+import { type Bill, type BillCharge, type ElectricMode } from "../api";
 import { Badge, IconButton } from "../ui";
 
-export const periods = ["กันยายน 2569", "สิงหาคม 2569", "กรกฎาคม 2569"] as const;
+const thaiMonths = [
+  "มกราคม",
+  "กุมภาพันธ์",
+  "มีนาคม",
+  "เมษายน",
+  "พฤษภาคม",
+  "มิถุนายน",
+  "กรกฎาคม",
+  "สิงหาคม",
+  "กันยายน",
+  "ตุลาคม",
+  "พฤศจิกายน",
+  "ธันวาคม",
+];
 
 const thaiMonthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+
+const buddhistYearOffset = 543;
 
 export function baht(value: number): string {
   return Math.round(value).toLocaleString("en-US");
 }
 
-export function nowLabel(): string {
+export function periodLabel(period: string): string {
+  const [yearPart, monthPart] = period.split("-");
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+  const monthName = thaiMonths[month - 1];
+
+  if (!Number.isInteger(year) || !Number.isInteger(month) || monthName === undefined) {
+    return period;
+  }
+
+  return `${monthName} ${year + buddhistYearOffset}`;
+}
+
+export function periodCode(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export function periodAt(monthOffset: number): string {
   const now = new Date();
-  const month = thaiMonthsShort[now.getMonth()] ?? "";
-  const year = String((now.getFullYear() + 543) % 100).padStart(2, "0");
-  const hours = String(now.getHours()).padStart(2, "0");
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  return `${now.getDate()} ${month} ${year} · ${hours}:${minutes}`;
+  return periodCode(new Date(now.getFullYear(), now.getMonth() + monthOffset, 1));
+}
+
+export function recentPeriods(count: number): string[] {
+  const list: string[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    list.push(periodAt(-index));
+  }
+
+  return list;
+}
+
+export function stampLabel(value: string): string {
+  const [datePart = "", timePart = ""] = value.split(/[T ]/);
+  const [yearPart, monthPart, dayPart] = datePart.split("-");
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+  const day = Number(dayPart);
+  const monthName = thaiMonthsShort[month - 1];
+
+  if (!Number.isInteger(year) || !Number.isInteger(day) || monthName === undefined) {
+    return value;
+  }
+
+  const stamp = `${day} ${monthName} ${String((year + buddhistYearOffset) % 100).padStart(2, "0")}`;
+  const time = timePart.slice(0, 5);
+
+  return time === "" ? stamp : `${stamp} · ${time}`;
 }
 
 export function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export const tenantById = new Map<string, Tenant>(currentTenants.map((tenant) => [tenant.id, tenant]));
-export const tenantByRoom = new Map<string, Tenant>(currentTenants.map((tenant) => [tenant.roomId, tenant]));
-export const roomById = new Map<string, Room>(occupiedRooms.map((room) => [room.id, room]));
-
-export function monthCode(periodLabel: string): string {
-  if (periodLabel === "สิงหาคม 2569") {
-    return "08";
-  }
-
-  if (periodLabel === "กรกฎาคม 2569") {
-    return "07";
-  }
-
-  return "09";
-}
-
-function historyBills(): Bill[] {
-  const out: Bill[] = [];
-  const labels = ["สิงหาคม 2569", "กรกฎาคม 2569"];
-
-  for (const month of labels) {
-    const summary = monthSummaries.find((item) => item.month === month);
-    const unpaidRooms = summary?.unpaidRoomIds ?? [];
-    const monthShort = month === "สิงหาคม 2569" ? "ส.ค." : "ก.ค.";
-
-    occupiedRooms.forEach((room, index) => {
-      const tenant = tenantByRoom.get(room.id);
-
-      if (tenant === undefined) {
-        return;
-      }
-
-      const waterUnits = 14 + ((index * 5) % 24);
-      const waterPrevious = room.previousWater - waterUnits;
-      const waterCurrent = room.previousWater;
-      const waterAmount = waterUnits * room.waterRate;
-      const isFlat = room.electricMode === "flat";
-      const electricUnits = isFlat ? null : 45 + ((index * 9) % 85);
-      const electricPrevious = isFlat || electricUnits === null ? null : room.previousElectric - electricUnits;
-      const electricCurrent = isFlat ? null : room.previousElectric;
-      const electricAmount = isFlat ? room.flatElectricAmount : (electricUnits ?? 0) * room.electricRate;
-      const minutes = String(10 + (index % 45)).padStart(2, "0");
-
-      out.push({
-        id: `${room.id}-2569-${monthCode(month)}`,
-        period: month,
-        roomId: room.id,
-        tenantId: tenant.id,
-        tenantName: tenant.name,
-        rent: room.rent,
-        waterRate: room.waterRate,
-        waterPrevious,
-        waterCurrent,
-        waterUnits,
-        waterAmount,
-        electricMode: room.electricMode,
-        electricRate: room.electricRate,
-        electricPrevious,
-        electricCurrent,
-        electricUnits,
-        electricAmount,
-        extraCharges: [],
-        total: room.rent + waterAmount + electricAmount,
-        status: unpaidRooms.includes(room.id) ? "unpaid" : "paid",
-        lineSentAt: tenant.lineLinked ? `5 ${monthShort} 68 · 09:${minutes}` : null,
-      });
-    });
-  }
-
-  return out;
-}
-
-export const seedBills: Bill[] = [...pinnedBills, ...historyBills()];
-
 export type LineState = "sent" | "unsent" | "blocked";
 
-export function lineStateOf(bill: Bill): LineState {
-  const tenant = tenantById.get(bill.tenantId);
-
-  if (tenant === undefined || !tenant.lineLinked) {
-    return "blocked";
+export function lineStateOf(sentAt: string | null, connected: boolean | null): LineState {
+  if (sentAt !== null) {
+    return "sent";
   }
 
-  return bill.lineSentAt === null ? "unsent" : "sent";
+  return connected === false ? "blocked" : "unsent";
 }
 
-export function LineStateBadge({ bill }: { bill: Bill }) {
-  const state = lineStateOf(bill);
-
-  if (state === "blocked") {
-    return (
-      <Badge tone="review" icon="error">
-        ยังไม่เชื่อม LINE
-      </Badge>
-    );
-  }
-
-  if (state === "unsent") {
-    return (
-      <Badge tone="neutral" icon="schedule">
-        ยังไม่ส่ง
-      </Badge>
-    );
-  }
+export function LineStateBadge({ sentAt, connected }: { sentAt: string | null; connected: boolean | null }) {
+  const state = lineStateOf(sentAt, connected);
 
   return (
-    <Badge tone="paid" icon="check_circle">
-      ส่งแล้ว
-    </Badge>
+    <span className="flex flex-wrap items-center gap-1">
+      {state === "sent" ? (
+        <Badge tone="paid" icon="check_circle">
+          ส่งแล้ว
+        </Badge>
+      ) : (
+        <Badge tone="neutral" icon="schedule">
+          ยังไม่ส่ง
+        </Badge>
+      )}
+      {state === "blocked" && (
+        <Badge tone="review" icon="error">
+          ยังไม่เชื่อม LINE
+        </Badge>
+      )}
+    </span>
   );
 }
 
 export interface PaymentRecord {
-  method: "โอน" | "เงินสด";
+  method: string;
   when: string;
   note: string;
-  hasSlip: boolean;
-}
-
-export function seedPayments(all: Bill[]): Record<string, PaymentRecord[]> {
-  const out: Record<string, PaymentRecord[]> = {};
-
-  for (const bill of all) {
-    if (bill.status !== "paid" || bill.lineSentAt === null) {
-      continue;
-    }
-
-    const datePart = bill.lineSentAt.split(" · ")[0] ?? bill.lineSentAt;
-    out[bill.id] = [
-      {
-        method: "โอน",
-        when: `${datePart} · 11:30`,
-        note: "ปิดบิลอัตโนมัติเมื่อสลิปยอดตรง",
-        hasSlip: true,
-      },
-    ];
-  }
-
-  return out;
 }
 
 export interface InvoiceData {
-  roomId: string;
+  roomNumber: string;
   tenantName: string;
   period: string;
   rent: number;
@@ -189,15 +132,15 @@ export interface InvoiceData {
   electricPrevious: number | null;
   electricCurrent: number | null;
   electricUnits: number | null;
-  electricRate: number;
+  electricRate: number | null;
   electricAmount: number;
-  extraCharges: ExtraCharge[];
+  charges: BillCharge[];
   total: number;
 }
 
 export function toInvoice(bill: Bill): InvoiceData {
   return {
-    roomId: bill.roomId,
+    roomNumber: bill.roomNumber,
     tenantName: bill.tenantName,
     period: bill.period,
     rent: bill.rent,
@@ -212,7 +155,7 @@ export function toInvoice(bill: Bill): InvoiceData {
     electricUnits: bill.electricUnits,
     electricRate: bill.electricRate,
     electricAmount: bill.electricAmount,
-    extraCharges: bill.extraCharges,
+    charges: bill.charges,
     total: bill.total,
   };
 }
@@ -234,7 +177,7 @@ function electricLine(data: InvoiceData): string {
     return "ยังไม่กรอกมิเตอร์";
   }
 
-  return `${data.electricPrevious} → ${data.electricCurrent} · ${data.electricUnits} หน่วย × ${data.electricRate}`;
+  return `${data.electricPrevious} → ${data.electricCurrent} · ${data.electricUnits} หน่วย × ${data.electricRate ?? 0}`;
 }
 
 function qrCell(x: number, y: number, size: number): boolean {
@@ -307,19 +250,19 @@ function Line({ label, detail, value }: { label: string; detail: string; value: 
   );
 }
 
-export function InvoicePreview({ data }: { data: InvoiceData }) {
+export function InvoicePreview({ data, dormName }: { data: InvoiceData; dormName: string | null }) {
   return (
     <div className="card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-charcoal">{dorm.name}</p>
+          {dormName !== null && dormName !== "" && <p className="truncate text-sm font-semibold text-charcoal">{dormName}</p>}
           <p className="mt-0.5 text-xs text-fog">ใบแจ้งหนี้ค่าที่พัก</p>
         </div>
-        <span className="chip">ห้อง {data.roomId}</span>
+        <span className="chip">ห้อง {data.roomNumber}</span>
       </div>
 
       <p className="mt-3 text-xs text-fog">ประจำเดือน</p>
-      <p className="text-sm text-charcoal">{data.period}</p>
+      <p className="text-sm text-charcoal">{periodLabel(data.period)}</p>
 
       <dl className="mt-3 grid gap-2.5 border-t border-ash pt-3 text-sm">
         <div className="flex items-start justify-between gap-3">
@@ -329,8 +272,8 @@ export function InvoicePreview({ data }: { data: InvoiceData }) {
         <Line label="ค่าเช่าห้อง" detail="รายเดือน" value={data.rent} />
         <Line label="ค่าน้ำ" detail={waterLine(data)} value={data.waterAmount} />
         <Line label="ค่าไฟ" detail={electricLine(data)} value={data.electricAmount} />
-        {data.extraCharges.map((charge) => (
-          <Line key={charge.label} label={charge.label} detail="ค่าใช้จ่ายเพิ่มเติม" value={charge.amount} />
+        {data.charges.map((charge, index) => (
+          <Line key={`${charge.name}-${index}`} label={charge.name} detail="ค่าใช้จ่ายเพิ่มเติม" value={charge.amount} />
         ))}
       </dl>
 

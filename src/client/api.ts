@@ -57,6 +57,62 @@ export interface PendingLink {
   lastSeenAt: string;
 }
 
+export interface BillCharge {
+  name: string;
+  amount: number;
+}
+
+export type BillStatus = "paid" | "unpaid";
+
+export interface Bill {
+  id: string;
+  roomId: string;
+  roomNumber: string;
+  tenantId: string;
+  tenantName: string;
+  period: string;
+  rent: number;
+  waterPrevious: number;
+  waterCurrent: number;
+  waterUnits: number;
+  waterRate: number;
+  waterAmount: number;
+  electricMode: ElectricMode;
+  electricPrevious: number;
+  electricCurrent: number;
+  electricUnits: number | null;
+  electricRate: number | null;
+  electricAmount: number;
+  charges: BillCharge[];
+  total: number;
+  status: BillStatus;
+  paidAt: string | null;
+  paidMethod: string | null;
+  sentAt: string | null;
+}
+
+export interface MeterSheetRow {
+  roomId: string;
+  roomNumber: string;
+  tenantId: string;
+  tenantName: string;
+  rent: number;
+  waterRate: number;
+  electricMode: ElectricMode;
+  electricRate: number | null;
+  waterPrevious: number;
+  electricPrevious: number;
+  existingBillId: string | null;
+}
+
+export interface BillEntryInput {
+  roomId: string;
+  waterCurrent: number;
+  electricCurrent: number;
+  flatElectricAmount?: number;
+  charges?: BillCharge[];
+}
+
 export type PromptpayType = "phone" | "citizen-id";
 
 export interface SettingsIntegrations {
@@ -234,4 +290,21 @@ export async function updateSettings(input: SettingsUpdate): Promise<Settings> {
 export async function regenerateOwnerCode(): Promise<string> {
   const body = await apiPost<{ ok: true; ownerLinkCode: string }>("/api/settings/owner-code", {});
   return body.ownerLinkCode;
+}
+
+export async function fetchBills(period: string): Promise<Bill[]> {
+  const body = await apiGet<{ ok: true; period: string; bills: Bill[] }>(`/api/bills?period=${encodeURIComponent(period)}`);
+  return body.bills;
+}
+
+export async function fetchMeterSheet(period: string): Promise<MeterSheetRow[]> {
+  const body = await apiGet<{ ok: true; period: string; rows: MeterSheetRow[] }>(
+    `/api/bills/meter-sheet?period=${encodeURIComponent(period)}`,
+  );
+  return body.rows;
+}
+
+export async function generateBills(period: string, entries: BillEntryInput[]): Promise<Bill[]> {
+  const body = await apiPost<{ ok: true; bills: Bill[] }>("/api/bills/generate", { period, entries });
+  return body.bills;
 }

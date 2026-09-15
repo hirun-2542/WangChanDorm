@@ -8,8 +8,10 @@ import {
   period,
   reviewQueue,
   rooms,
+  tenants,
+  type Tenant,
 } from "../mock-data";
-import { baht, tenantByRoom } from "./bills-shared";
+import { baht } from "./bills-shared";
 import { RevenueChart } from "./dashboard-chart";
 
 type RoomStatus = "paid" | "unpaid" | "vacant" | "review";
@@ -30,6 +32,10 @@ const monthShort: Record<string, string> = {
 };
 
 const overdueAgeDays: Record<string, number> = { A103: 17, A107: 21, A112: 9 };
+
+const tenantByRoom = new Map<string, Tenant>(
+  tenants.filter((tenant) => tenant.status === "current").map((tenant) => [tenant.roomId, tenant]),
+);
 
 interface OverdueRow {
   roomId: string;
