@@ -1,4 +1,7 @@
 import { Hono } from "hono";
+import { lineChannelConfigured, pushMessage } from "../line/api";
+import { buildBillFlexMessage, type BillMessageIssuer } from "../line/bill-message";
+import { formatBaht, thaiPeriodLabel } from "../lib/invoice";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
 import { asRecord, errorBody, isIsoDate, readJsonObject } from "./shared";
 
@@ -335,6 +338,81 @@ async function loadBill(env: Env, id: string): Promise<BillPayload | null> {
     .all<ChargePayload>();
 
   return toBill(row, charges.results);
+}
+
+interface SkippedBill {
+  roomNumber: string;
+  tenantName: string;
+}
+
+interface SendSummary {
+  period: string;
+  count: number;
+  total: number;
+  sent: number;
+  failed: number;
+  failedRooms: string[];
+  skipped: SkippedBill[];
+}
+
+function publicBaseUrl(requestUrl: string): string {
+  const origin = new URL(requestUrl).origin;
+
+  if (!origin.startsWith("https://")) {
+    console.warn(JSON.stringify({ message: "bill link origin is not https", origin }));
+  }
+
+  return origin;
+}
+
+async function loadBillIssuer(env: Env): Promise<BillMessageIssuer> {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'promptpay_name'").first<{ value: string }>();
+  return { promptpayName: row?.value ?? "" };
+}
+
+async function loadLinkedTenants(env: Env): Promise<Map<string, string>> {
+  const result = await env.DB.prepare("SELECT id, line_user_id FROM tenants WHERE line_user_id IS NOT NULL").all<{
+    id: string;
+    line_user_id: string;
+  }>();
+
+  return new Map(result.results.map((row) => [row.id, row.line_user_id]));
+}
+
+async function loadOwnerLineUserId(env: Env): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'owner_line_user_id'").first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+function ownerSummaryText(summary: SendSummary): string {
+  const lines = [
+    `สรุปการส่งบิลทาง LINE ประจำเดือน ${thaiPeriodLabel(summary.period)}`,
+    `บิลทั้งหมด ${summary.count} ใบ`,
+    `ยอดรวม ${formatBaht(summary.total)} บาท`,
+    `ส่งสำเร็จ ${summary.sent} ใบ`,
+  ];
+
+  if (summary.failed > 0) {
+    lines.push(`ส่งไม่สำเร็จ ${summary.failed} ใบ: ${summary.failedRooms.join(", ")}`);
+  }
+
+  if (summary.skipped.length > 0) {
+    lines.push(
+      `ยังไม่เชื่อม LINE ${summary.skipped.length} ห้อง: ${summary.skipped.map((item) => `${item.roomNumber} ${item.tenantName}`).join(" · ")}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+async function sendOwnerSummary(env: Env, summary: SendSummary): Promise<void> {
+  const ownerId = await loadOwnerLineUserId(env);
+
+  if (ownerId === null || ownerId.trim() === "") {
+    return;
+  }
+
+  await pushMessage(env, ownerId, [{ type: "text", text: ownerSummaryText(summary) }]);
 }
 
 function parsePaidAt(value: unknown): string | null {
@@ -816,6 +894,153 @@ bills.post("/:id/mark-paid", async (c) => {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "mark bill paid failed", billId: id, error: detail }));
     return c.json(errorBody("INTERNAL", "ปิดบิลไม่สำเร็จ"), 500);
+  }
+});
+
+bills.post("/send-all", async (c) => {
+  const body = await readJsonObject(c.req.raw);
+
+  if (body === null) {
+    return c.json(errorBody("VALIDATION", "รูปแบบข้อมูลไม่ถูกต้อง"), 400);
+  }
+
+  const period = body.period;
+
+  if (!isPeriod(period)) {
+    return c.json(errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"), 400);
+  }
+
+  try {
+    const list = await loadBills(c.env, period);
+
+    if (list.length === 0) {
+      return c.json(errorBody("VALIDATION", `ยังไม่มีบิลของเดือน ${thaiPeriodLabel(period)}`, "period"), 400);
+    }
+
+    let targets = list;
+    const rawBillIds = body.billIds;
+
+    if (rawBillIds !== undefined) {
+      if (!Array.isArray(rawBillIds) || rawBillIds.some((value) => typeof value !== "string")) {
+        return c.json(errorBody("VALIDATION", "รายการบิลที่จะส่งไม่ถูกต้อง", "billIds"), 400);
+      }
+
+      const requested = rawBillIds as string[];
+      const unknown = requested.filter((billId) => !list.some((bill) => bill.id === billId));
+
+      if (unknown.length > 0) {
+        return c.json(errorBody("VALIDATION", `ไม่พบบิลของเดือนนี้ในรายการ: ${unknown.join(", ")}`, "billIds"), 400);
+      }
+
+      const selected = new Set(requested);
+      targets = list.filter((bill) => selected.has(bill.id));
+    }
+
+    if (!lineChannelConfigured(c.env)) {
+      console.error(JSON.stringify({ message: "send all bills failed", period, reason: "line channel is not configured" }));
+      return c.json(errorBody("UPSTREAM", "ช่องทาง LINE ของหอยังไม่ได้ตั้งค่า"), 503);
+    }
+
+    const issuer = await loadBillIssuer(c.env);
+    const baseUrl = publicBaseUrl(c.req.url);
+    const links = await loadLinkedTenants(c.env);
+
+    let sent = 0;
+    let failed = 0;
+    const failedRooms: string[] = [];
+    const failedIds: string[] = [];
+    const skipped: SkippedBill[] = [];
+    const sentIds: string[] = [];
+
+    for (const bill of targets) {
+      const lineUserId = links.get(bill.tenantId);
+
+      if (lineUserId === undefined) {
+        skipped.push({ roomNumber: bill.roomNumber, tenantName: bill.tenantName });
+        continue;
+      }
+
+      const delivered = await pushMessage(c.env, lineUserId, [buildBillFlexMessage(bill, issuer, baseUrl)]);
+
+      if (delivered === null) {
+        failed += 1;
+        failedRooms.push(bill.roomNumber);
+        failedIds.push(bill.id);
+        continue;
+      }
+
+      sent += 1;
+      sentIds.push(bill.id);
+    }
+
+    if (sentIds.length > 0) {
+      const sentAt = new Date().toISOString();
+      await c.env.DB.batch(sentIds.map((billId) => c.env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?").bind(sentAt, billId)));
+    }
+
+    const total = targets.reduce((sum, bill) => sum + bill.total, 0);
+
+    await sendOwnerSummary(c.env, { period, count: targets.length, total, sent, failed, failedRooms, skipped });
+
+    return c.json({ ok: true, period, sent, failed, failedIds, skipped }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "send all bills failed", period, error: detail }));
+    return c.json(errorBody("INTERNAL", "ส่งบิลทาง LINE ไม่สำเร็จ"), 500);
+  }
+});
+
+bills.post("/:id/send", async (c) => {
+  const id = c.req.param("id");
+
+  try {
+    const bill = await loadBill(c.env, id);
+
+    if (bill === null) {
+      return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการส่ง"), 404);
+    }
+
+    if (bill.status === "paid") {
+      return c.json(errorBody("CONFLICT", "บิลที่จ่ายแล้วส่งเป็นใบแจ้งหนี้ไม่ได้"), 409);
+    }
+
+    if (!lineChannelConfigured(c.env)) {
+      console.error(JSON.stringify({ message: "send bill failed", billId: id, reason: "line channel is not configured" }));
+      return c.json(errorBody("UPSTREAM", "ช่องทาง LINE ของหอยังไม่ได้ตั้งค่า"), 503);
+    }
+
+    const link = await c.env.DB.prepare("SELECT line_user_id FROM tenants WHERE id = ?")
+      .bind(bill.tenantId)
+      .first<{ line_user_id: string | null }>();
+    const lineUserId = link?.line_user_id ?? null;
+
+    if (lineUserId === null || lineUserId === "") {
+      return c.json(errorBody("CONFLICT", "ผู้เช่ารายนี้ยังไม่เชื่อม LINE ส่งบิลไม่ได้"), 409);
+    }
+
+    const issuer = await loadBillIssuer(c.env);
+    const baseUrl = publicBaseUrl(c.req.url);
+    const delivered = await pushMessage(c.env, lineUserId, [buildBillFlexMessage(bill, issuer, baseUrl)]);
+
+    if (delivered === null) {
+      console.error(JSON.stringify({ message: "send bill failed", billId: id, reason: "line push failed" }));
+      return c.json(errorBody("UPSTREAM", "ส่งบิลทาง LINE ไม่สำเร็จ"), 502);
+    }
+
+    await c.env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?").bind(new Date().toISOString(), id).run();
+
+    const updated = await loadBill(c.env, id);
+
+    if (updated === null) {
+      console.error(JSON.stringify({ message: "send bill readback failed", billId: id }));
+      return c.json(errorBody("INTERNAL", "บันทึกสถานะการส่งบิลไม่สำเร็จ"), 500);
+    }
+
+    return c.json({ ok: true, bill: updated }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "send bill failed", billId: id, error: detail }));
+    return c.json(errorBody("INTERNAL", "ส่งบิลไม่สำเร็จ"), 500);
   }
 });
 

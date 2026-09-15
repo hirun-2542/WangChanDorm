@@ -3,6 +3,8 @@ export interface LineProfile {
   displayName: string;
 }
 
+export type LineOutboundMessage = { type: string; [key: string]: unknown };
+
 const lineApiBase = "https://api.line.me/v2/bot";
 
 function logLineFailure(message: string, detail: string): void {
@@ -16,6 +18,10 @@ function failureDetail(error: unknown): string {
 function accessToken(env: Env): string {
   const token = env.LINE_CHANNEL_ACCESS_TOKEN;
   return typeof token === "string" ? token.trim() : "";
+}
+
+export function lineChannelConfigured(env: Env): boolean {
+  return accessToken(env) !== "";
 }
 
 export async function replyMessage(env: Env, replyToken: string, text: string): Promise<void> {
@@ -43,6 +49,38 @@ export async function replyMessage(env: Env, replyToken: string, text: string): 
     }
   } catch (error) {
     logLineFailure("line reply failed", failureDetail(error));
+  }
+}
+
+export async function pushMessage(env: Env, to: string, messages: readonly LineOutboundMessage[]): Promise<true | null> {
+  const token = accessToken(env);
+
+  if (token === "") {
+    logLineFailure("line push skipped", "LINE_CHANNEL_ACCESS_TOKEN is not configured");
+    return null;
+  }
+
+  if (to === "") {
+    logLineFailure("line push skipped", "target user id is empty");
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${lineApiBase}/message/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ to, messages }),
+    });
+
+    if (!response.ok) {
+      logLineFailure("line push failed", `status ${String(response.status)}`);
+      return null;
+    }
+
+    return true;
+  } catch (error) {
+    logLineFailure("line push failed", failureDetail(error));
+    return null;
   }
 }
 

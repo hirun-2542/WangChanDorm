@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  fetchBills,
   fetchMeterSheet,
   generateBills,
+  sendBills,
   type Bill,
   type BillCharge,
   type BillEntryInput,
   type MeterSheetRow,
+  type SendAllResult,
   type Settings,
   type Tenant,
 } from "../api";
@@ -15,6 +18,7 @@ import {
   Button,
   Card,
   DataTable,
+  Dialog,
   EmptyState,
   Field,
   IconButton,
@@ -25,6 +29,7 @@ import {
 } from "../ui";
 import {
   InvoicePreview,
+  LineStateBadge,
   Sheet,
   baht,
   chargesTotal as sumCharges,
@@ -183,6 +188,18 @@ function roomNumberFromMessage(message: string): string | null {
   return match === null ? null : (match[1] ?? null);
 }
 
+function sendAllResultLabel(result: SendAllResult): string {
+  if (result.sent > 0) {
+    return `ส่งบิลทาง LINE แล้ว ${result.sent} ใบ`;
+  }
+
+  if (result.failed > 0) {
+    return `ส่งบิลทาง LINE ไม่สำเร็จ ${result.failed} ใบ`;
+  }
+
+  return "ไม่มีบิลที่ส่งได้ในเดือนนี้";
+}
+
 function toDraftInvoice(entry: Entry, period: string): InvoiceData {
   const { row, calc } = entry;
 
@@ -311,6 +328,10 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
   const [submitting, setSubmitting] = useState(false);
   const [rowError, setRowError] = useState<RowError | null>(null);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [sendingAll, setSendingAll] = useState(false);
+  const [sendAllError, setSendAllError] = useState<string | null>(null);
+  const [sendAllResult, setSendAllResult] = useState<SendAllResult | null>(null);
+  const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (period === "") {
@@ -759,6 +780,34 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
     setReloadKey((value) => value + 1);
   };
 
+  const refreshCreatedBills = () => {
+    const ids = new Set(createdBills.map((bill) => bill.id));
+
+    void fetchBills(period)
+      .then((list) => {
+        setCreatedBills(list.filter((bill) => ids.has(bill.id)));
+      })
+      .catch(() => undefined);
+  };
+
+  const sendCreatedBills = (billIds?: string[]) => {
+    setSendingAll(true);
+    setSendAllError(null);
+    setSendConfirmOpen(false);
+
+    void sendBills(period, billIds)
+      .then((result) => {
+        setSendAllResult(result);
+        refreshCreatedBills();
+      })
+      .catch((error: unknown) => {
+        setSendAllError(error instanceof ApiError ? error.message : "ส่งบิลทาง LINE ไม่สำเร็จ");
+      })
+      .finally(() => {
+        setSendingAll(false);
+      });
+  };
+
   return (
     <div>
       <PageHeader title="สร้างบิล" supporting="กรอกเลขมิเตอร์ ตรวจยอด แล้วสร้างบิลทั้งหอ" />
@@ -1040,7 +1089,7 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
                   <p className="mt-1 text-sm text-steel">
                     {unconnectedEntries.map((entry) => `${entry.row.sheet.roomNumber} ${entry.row.sheet.tenantName}`).join(" · ")}
                   </p>
-                  <p className="mt-1 text-xs text-fog">บิลยังสร้างได้ การส่งบิลทาง LINE จะมาในงานถัดไป</p>
+                  <p className="mt-1 text-xs text-fog">บิลยังสร้างได้ แต่ผู้เช่าเหล่านี้จะยังไม่ได้รับบิลทาง LINE</p>
                 </div>
               </div>
             </div>
@@ -1127,7 +1176,7 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
                 <p className="mt-0.5 text-sm text-steel">
                   {`บิลเดือน ${periodLabel(period)} ถูกบันทึกแล้ว ${createdBills.length} ใบ`}
                 </p>
-                <p className="mt-1 text-sm text-steel">การส่งบิลทาง LINE จะมาในงานถัดไป</p>
+                <p className="mt-1 text-sm text-steel">ส่งบิลให้ผู้เช่าที่เชื่อม LINE แล้วได้จากปุ่มด้านล่าง</p>
               </div>
             </div>
           </Card>
@@ -1149,7 +1198,7 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
 
           <Card className="mt-4">
             <DataTable
-              minWidth={640}
+              minWidth={760}
               getRowKey={(bill) => bill.id}
               rows={createdBills}
               columns={[
@@ -1158,15 +1207,70 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
                 { key: "water", header: "ค่าน้ำ", align: "right", render: (bill) => baht(bill.waterAmount) },
                 { key: "electric", header: "ค่าไฟ", align: "right", render: (bill) => baht(bill.electricAmount) },
                 { key: "total", header: "รวม", align: "right", render: (bill) => <span className="font-medium">{baht(bill.total)}</span> },
+                {
+                  key: "line",
+                  header: "LINE",
+                  render: (bill) => <LineStateBadge sentAt={bill.sentAt} connected={connectedOf(bill.tenantId)} />,
+                },
               ]}
             />
           </Card>
+
+          {sendAllError !== null && (
+            <div className="mt-4 rounded-xl border border-danger bg-danger-soft px-4 py-3" role="alert">
+              <p className="text-sm font-medium text-charcoal">ส่งบิลทาง LINE ไม่สำเร็จ</p>
+              <p className="mt-1 text-sm text-steel">{sendAllError}</p>
+            </div>
+          )}
+
+          {sendAllResult !== null && (
+            <div className="panel-muted mt-4">
+              <div className="flex items-start gap-3">
+                {sendAllResult.sent > 0 ? (
+                  <span className="ms mt-0.5 text-[20px] text-status-paid-fg" aria-hidden="true">
+                    task_alt
+                  </span>
+                ) : sendAllResult.failed > 0 ? (
+                  <span className="ms mt-0.5 text-[20px] text-danger" aria-hidden="true">
+                    error
+                  </span>
+                ) : (
+                  <span className="ms mt-0.5 text-[20px] text-steel" aria-hidden="true">
+                    schedule
+                  </span>
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-charcoal">{sendAllResultLabel(sendAllResult)}</p>
+                  {sendAllResult.failed > 0 && <p className="mt-1 text-sm text-steel">{`ส่งไม่สำเร็จ ${sendAllResult.failed} ใบ`}</p>}
+                  {sendAllResult.skipped.length > 0 && (
+                    <p className="mt-1 text-xs text-fog">
+                      {`ยังไม่เชื่อม LINE ${sendAllResult.skipped.length} ห้อง: ${sendAllResult.skipped.map((item) => `${item.roomNumber} ${item.tenantName}`).join(" · ")}`}
+                    </p>
+                  )}
+                  {sendAllResult.failedIds.length > 0 && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon="refresh"
+                      className="mt-2"
+                      disabled={sendingAll}
+                      onClick={() => {
+                        sendCreatedBills(sendAllResult.failedIds);
+                      }}
+                    >
+                      ส่งซ้ำเฉพาะที่ล้มเหลว
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {createdUnconnected.length > 0 && (
             <div className="panel-muted mt-4">
               <h3 className="text-sm font-medium text-charcoal">ห้องที่ยังไม่เชื่อม LINE</h3>
               <p className="mt-1 text-xs text-fog">
-                ผู้เช่าเหล่านี้จะยังไม่ได้รับบิลทาง LINE เมื่อการส่งบิลเปิดใช้งานในงานถัดไป
+                ผู้เช่าเหล่านี้จะยังไม่ได้รับบิลทาง LINE จนกว่าจะเชื่อม LINE กับหอ
               </p>
               <ul className="mt-3 grid gap-2">
                 {createdUnconnected.map((bill) => (
@@ -1181,11 +1285,60 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
             </div>
           )}
 
-          <div className="mt-4 flex flex-wrap justify-end">
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
             <Button variant="secondary" icon="arrow_back" onClick={onFinish}>
               กลับรายการบิล
             </Button>
+            <Button
+              variant="primary"
+              icon="send"
+              disabled={sendingAll || createdBills.length === 0}
+              onClick={() => {
+                setSendConfirmOpen(true);
+              }}
+            >
+              {sendingAll ? "กำลังส่งบิล" : "ส่ง LINE ทั้งหมด"}
+            </Button>
           </div>
+
+          <Dialog
+            open={sendConfirmOpen}
+            onClose={() => {
+              setSendConfirmOpen(false);
+            }}
+            title={`ส่งบิลทาง LINE · ${periodLabel(period)}`}
+            footer={
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setSendConfirmOpen(false);
+                  }}
+                >
+                  ยกเลิก
+                </Button>
+                <Button
+                  variant="primary"
+                  icon="send"
+                  disabled={sendingAll || createdBills.length === 0}
+                  onClick={() => {
+                    sendCreatedBills();
+                  }}
+                >
+                  {sendingAll ? "กำลังส่งบิล" : `ส่งบิล ${createdBills.length} ใบ`}
+                </Button>
+              </div>
+            }
+          >
+            <div className="grid gap-2 text-sm">
+              <p className="text-steel">ระบบจะส่งบิลของเดือนนี้ให้ผู้เช่าที่เชื่อม LINE แล้ว และส่งสรุปยอดให้เจ้าของทาง LINE</p>
+              {createdUnconnected.length > 0 && (
+                <p className="text-fog">
+                  {`ยังไม่เชื่อม LINE ${createdUnconnected.length} ห้อง: ${createdUnconnected.map((bill) => `${bill.roomNumber} ${bill.tenantName}`).join(" · ")}`}
+                </p>
+              )}
+            </div>
+          </Dialog>
         </>
       )}
     </div>

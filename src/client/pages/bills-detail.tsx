@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { type Bill } from "../api";
+import { ApiError, sendBill, type Bill } from "../api";
 import { Button, PageHeader, StatusBadge } from "../ui";
 import {
   InvoicePreview,
@@ -23,6 +23,8 @@ export interface BillDetailProps {
   connected: boolean | null;
   onBack: () => void;
   onSaved: (bill: Bill) => void;
+  onSent: (bill: Bill) => void;
+  onSendError: (message: string) => void;
   onDeleted: () => void;
 }
 
@@ -51,15 +53,38 @@ export function BillDetail({
   connected,
   onBack,
   onSaved,
+  onSent,
+  onSendError,
   onDeleted,
 }: BillDetailProps) {
   const [editOpen, setEditOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [sending, setSending] = useState(false);
 
   const history = paymentHistory(bill);
   const isPaid = bill.status === "paid";
   const number = billNumber(bill);
+  const sendBlockedReason = connected === null ? "ยังไม่ทราบสถานะ LINE ของผู้เช่า" : "ผู้เช่ายังไม่เชื่อม LINE";
+
+  const handleSend = () => {
+    if (connected === false || sending) {
+      return;
+    }
+
+    setSending(true);
+
+    void sendBill(bill.id)
+      .then((updated) => {
+        onSent(updated);
+      })
+      .catch((error: unknown) => {
+        onSendError(error instanceof ApiError ? error.message : "ส่งบิลทาง LINE ไม่สำเร็จ");
+      })
+      .finally(() => {
+        setSending(false);
+      });
+  };
 
   const handleSaved = (updated: Bill) => {
     setEditOpen(false);
@@ -118,14 +143,21 @@ export function BillDetail({
               <div className="mt-4 grid gap-2">
                 <Button
                   variant="secondary"
-                  icon="sync"
+                  icon="send"
                   className="w-full justify-start"
-                  disabled
-                  title="ยังไม่เปิดใช้งาน"
+                  disabled={connected === false || sending}
+                  title={connected === false || connected === null ? sendBlockedReason : undefined}
+                  onClick={handleSend}
                 >
-                  ส่ง LINE อีกครั้ง
+                  {sending ? "กำลังส่งบิล" : "ส่ง LINE อีกครั้ง"}
                 </Button>
-                <p className="text-[11px] text-fog">การส่งบิลทาง LINE จะมาในงานถัดไป</p>
+                {connected === false ? (
+                  <p className="text-[11px] text-fog">{sendBlockedReason}</p>
+                ) : (
+                  <p className="text-[11px] text-fog">
+                    {bill.sentAt === null ? "ยังไม่ได้ส่งบิลนี้ทาง LINE" : `ส่งล่าสุด ${stampLabel(bill.sentAt)}`}
+                  </p>
+                )}
 
                 <Button
                   variant="secondary"

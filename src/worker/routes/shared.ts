@@ -1,4 +1,4 @@
-export type ErrorCode = "VALIDATION" | "CONFLICT" | "DUPLICATE" | "NOT_FOUND" | "INTERNAL";
+export type ErrorCode = "VALIDATION" | "CONFLICT" | "DUPLICATE" | "NOT_FOUND" | "INTERNAL" | "UPSTREAM";
 
 export interface ErrorBody {
   ok: false;

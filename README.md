@@ -81,6 +81,7 @@ npm test
 - `test/settings.test.ts` ยิง `/api/settings` ตรวจค่าเริ่มต้น, subset PUT, การปฏิเสธค่าไม่ถูกต้อง, unknown key และการออกรหัสเจ้าของใหม่
 - `test/bills.test.ts` ยิง `/api/bills` ตรวจ meter sheet (เฉพาะห้องที่มีผู้เช่า + อัตราที่ใช้จริง), การสร้างบิลห้องมิเตอร์/ห้องเหมา/บิลที่มีค่าใช้จ่ายเพิ่ม, มิเตอร์ย้อนหลัง, สร้างซ้ำเดือนเดิม, ห้องว่าง, การ snapshot เลขมิเตอร์ลงบิลรอบถัดไป และการจัดการบิลหลังสร้าง (แก้/ลบ unpaid รวมค่าใช้จ่ายเพิ่มและยอดเหมา, ปฏิเสธ paid ด้วย `409`, ปิดบิลด้วย `mark-paid`, unknown id `404`)
 - `test/bills-render.test.ts` ตรวจ payload พร้อมเพย์ (CRC16 known vector + payload ที่ตรงกับ implementation อ้างอิง), ตัวสร้างแถวใบแจ้งหนี้ (ห้องมิเตอร์/ห้องเหมา/ค่าใช้จ่ายเพิ่ม) และ route สาธารณะ `/qr/:billId.png` กับ `/invoices/:billId.pdf` (สถานะ, content-type, PNG/PDF signature, ขนาดไฟล์, ยอดที่เปลี่ยนตามบิลหลัง `PATCH`, การฝังรูป QR ลงใน PDF โดยเทียบกับตอนยังไม่ตั้งพร้อมเพย์, unknown id `404`)
+- `test/bills-send.test.ts` ยิง endpoint ส่งบิลจริงโดยดัก outbound `fetch` ไป LINE ด้วย spy ตรวจว่า push ไป userId ของผู้เช่าเป็น flex ที่มียอดครบ (ห้องเหมา + ค่าใช้จ่ายเพิ่ม), QR/PDF URL, altText, `sent_at` ถูกตั้ง, ผู้เช่าที่ยังไม่เชื่อม `409` / ถูกข้าม, unknown id `404`, `send-all` นับ sent/failed/skipped และส่งสรุปถึงเจ้าของ (ไม่ส่งเมื่อเจ้าของยังไม่เชื่อม), push ล้มเหลวไม่บันทึก `sent_at` และเดือนที่ไม่มีบิล `400`
 - `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ — outbound `fetch` ไป LINE ถูกดักด้วย spy
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
@@ -96,6 +97,14 @@ npm test
 - `DELETE /api/bills/:id` — ลบบิลที่ยังไม่จ่ายพร้อมค่าใช้จ่ายทั้งหมดใน batch เดียว (`paid` ตอบ `409`, ไม่พบ `404`)
 - `POST /api/bills/:id/mark-paid {method: transfer|cash, paidAt?}` — ปิดบิลเอง ตั้ง `status = paid` พร้อม `paid_at`/`paid_method`; `paidAt` เป็น ISO `YYYY-MM-DD` หรือ timestamp เต็ม (ไม่ส่งใช้เวลาปัจจุบัน); ช่องทางผิด `400`, ปิดซ้ำ `409`, ไม่พบ `404`
 - บิลเก็บ snapshot อัตรา เลขมิเตอร์ โหมดค่าไฟ และค่าใช้จ่ายเพิ่ม ณ วันสร้าง แก้ settings หรือโหมดของห้องภายหลังไม่กระทบบิลเก่า
+
+### ส่งบิลทาง LINE
+
+- `POST /api/bills/:id/send` — push บิลใบนั้นเป็น Flex message ให้ผู้เช่าที่เชื่อม LINE แล้ว; ไม่พบบิล `404`, ผู้เช่ายังไม่เชื่อม `409` (ไม่ส่งอะไร), LINE ปฏิเสธ/เชื่อมไม่ได้ `502` และ**ไม่**บันทึก `sent_at`; สำเร็จ `{ok:true, bill}` พร้อม `sentAt` ใหม่
+- `POST /api/bills/send-all {period}` — push ให้ทุกบิลของเดือนนั้นที่ผู้เช่าเชื่อมแล้ว ตั้ง `sent_at` เฉพาะใบที่ส่งสำเร็จ นับใบที่ล้มเหลวไว้โดยไม่หยุดทั้งชุด แล้ว push สรุปให้เจ้าของ (จำนวนบิล, ยอดรวม, ส่งสำเร็จกี่ใบ, ใครยังไม่เชื่อม); เดือนที่ไม่มีบิล `400`; คืน `{ok, period, sent, failed, skipped:[{roomNumber, tenantName}]}` — เจ้าของยังไม่เชื่อม LINE ก็ยังส่งให้ผู้เช่าได้และไม่ push สรุป
+- ลิงก์ QR/PDF ในข้อความสร้างจาก **origin ของ request เอง** (`new URL(c.req.url).origin`) ไม่ hardcode โฮสต์ production จึงใช้ได้ทั้ง workers.dev, custom domain และ local dev
+- ถ้า origin ของ request ไม่ใช่ https เซิร์ฟเวอร์จะ log คำเตือน เพราะ LINE ปฏิเสธ URL รูปที่ไม่ใช่ https — เกิดเฉพาะตอน dev บน local http เท่านั้น
+- Flex message ยึดโครงข้อความของ ticket 08: หัวข้อพื้นทึบ `#2563eb` ตัวอักษรขาว (`ใบแจ้งหนี้ / INVOICE` + `ห้อง … | ประจำเดือน …`), เนื้อมี `ผู้เช่า`, แถว `ออกบิลเมื่อ`, ค่าห้อง/น้ำ/ไฟ (หน่วย × อัตรา หรือ `เหมาจ่าย`) และค่าใช้จ่ายเพิ่มทุกรายการตามชื่อบนบิล, ยอดรวมตัวหนาสีแดง `#dc2626`; ท้ายมีรูป QR `/qr/:billId.png`, ปุ่ม `เปิดใบแจ้งหนี้ PDF` ไปที่ `/invoices/:billId.pdf` และบรรทัดบอกให้ส่งสลิปกลับในแชท — โมดูล builder อยู่ที่ `src/worker/line/bill-message.ts`
 
 ## QR พร้อมเพย์ และใบแจ้งหนี้ PDF
 

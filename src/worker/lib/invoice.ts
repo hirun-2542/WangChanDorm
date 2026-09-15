@@ -24,23 +24,26 @@ export interface InvoiceCharge {
   amount: number;
 }
 
-export interface InvoiceBill {
-  roomNumber: string;
-  tenantName: string;
-  period: string;
+export interface InvoiceAmountSource {
   rent: number;
-  waterPrevious: number;
-  waterCurrent: number;
   waterUnits: number;
   waterRate: number;
   waterAmount: number;
   electricMode: ElectricMode;
-  electricPrevious: number;
-  electricCurrent: number;
   electricUnits: number | null;
   electricRate: number | null;
   electricAmount: number;
   charges: InvoiceCharge[];
+}
+
+export interface InvoiceBill extends InvoiceAmountSource {
+  roomNumber: string;
+  tenantName: string;
+  period: string;
+  waterPrevious: number;
+  waterCurrent: number;
+  electricPrevious: number;
+  electricCurrent: number;
   total: number;
   createdAt: string;
 }
@@ -110,7 +113,7 @@ export function thaiDateLabel(value: string): string {
   return `${day} ${monthName} ${year + buddhistYearOffset}`;
 }
 
-function waterRow(bill: InvoiceBill): InvoiceRow {
+function waterRow(bill: InvoiceAmountSource): InvoiceRow {
   return {
     label: "ค่าน้ำ",
     detail: `${formatUnits(bill.waterUnits)} หน่วย × ${formatUnits(bill.waterRate)} บาท/หน่วย`,
@@ -118,7 +121,7 @@ function waterRow(bill: InvoiceBill): InvoiceRow {
   };
 }
 
-function electricRow(bill: InvoiceBill): InvoiceRow {
+function electricRow(bill: InvoiceAmountSource): InvoiceRow {
   if (bill.electricMode === "flat") {
     return { label: "ค่าไฟ", detail: `เหมาจ่าย ${formatBaht(bill.electricAmount)} บาท`, amount: bill.electricAmount };
   }
@@ -130,7 +133,7 @@ function electricRow(bill: InvoiceBill): InvoiceRow {
   };
 }
 
-export function buildInvoiceRows(bill: InvoiceBill): InvoiceRow[] {
+export function buildInvoiceRows(bill: InvoiceAmountSource): InvoiceRow[] {
   const rows: InvoiceRow[] = [
     { label: "ค่าเช่าห้อง", detail: "รายเดือน", amount: bill.rent },
     waterRow(bill),

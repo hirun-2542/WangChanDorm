@@ -341,3 +341,30 @@ export async function markBillPaid(id: string, input: BillPaidInput): Promise<Bi
   const body = await apiPost<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}/mark-paid`, input);
   return body.bill;
 }
+
+export interface SkippedBill {
+  roomNumber: string;
+  tenantName: string;
+}
+
+export interface SendAllResult {
+  period: string;
+  sent: number;
+  failed: number;
+  failedIds: string[];
+  skipped: SkippedBill[];
+}
+
+export async function sendBill(id: string): Promise<Bill> {
+  const body = await apiPost<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}/send`, {});
+  return body.bill;
+}
+
+export async function sendBills(period: string, billIds?: string[]): Promise<SendAllResult> {
+  const body = await apiPost<{ ok: true; period: string; sent: number; failed: number; failedIds: string[]; skipped: SkippedBill[] }>(
+    "/api/bills/send-all",
+    billIds === undefined ? { period } : { period, billIds },
+  );
+
+  return { period: body.period, sent: body.sent, failed: body.failed, failedIds: body.failedIds, skipped: body.skipped };
+}
