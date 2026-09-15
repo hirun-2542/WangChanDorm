@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   DataTable,
+  Dialog,
   EmptyState,
   Field,
   PageHeader,
@@ -12,75 +13,47 @@ import {
   Skeleton,
   StatBlock,
   StatusBadge,
+  Toast,
   type DataTableColumn,
   type PageProps,
 } from "../ui";
-import { LineStateBadge, baht, periodLabel, recentPeriods } from "./bills-shared";
+import { LineStateBadge, baht, chargesTotal, monthCount, periodLabel, recentPeriods } from "./bills-shared";
+import { BillEditDrawer, DeleteBillDialog, MarkPaidDialog } from "./bills-actions";
 import { BillDetail } from "./bills-detail";
 import { CreateWizard } from "./bills-create";
 
-const monthCount = 3;
-
 interface BillListProps {
+  bills: Bill[];
+  loading: boolean;
+  error: string | null;
+  period: string;
+  periods: string[];
   connectedIds: Set<string> | null;
+  statusFilter: string;
+  onPeriodChange: (period: string) => void;
+  onStatusFilterChange: (value: string) => void;
   onOpen: (bill: Bill) => void;
+  onManage: (bill: Bill) => void;
   onCreate: () => void;
+  onRetry: () => void;
 }
 
-function chargesTotal(bill: Bill): number {
-  return bill.charges.reduce((sum, charge) => sum + charge.amount, 0);
-}
-
-function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
+function BillList({
+  bills,
+  loading,
+  error,
+  period,
+  periods,
+  connectedIds,
+  statusFilter,
+  onPeriodChange,
+  onStatusFilterChange,
+  onOpen,
+  onManage,
+  onCreate,
+  onRetry,
+}: BillListProps) {
   const { query, setQuery } = useSearch();
-  const [periods] = useState<string[]>(() => recentPeriods(monthCount));
-  const [period, setPeriod] = useState<string>(() => periods[0] ?? "");
-  const [bills, setBills] = useState<Bill[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
-  const [statusFilter, setStatusFilter] = useState("all");
-
-  useEffect(() => {
-    if (period === "") {
-      return;
-    }
-
-    let active = true;
-    setLoading(true);
-    setError(null);
-
-    void fetchBills(period)
-      .then((list) => {
-        if (!active) {
-          return;
-        }
-
-        setBills(list);
-      })
-      .catch((loadError: unknown) => {
-        if (!active) {
-          return;
-        }
-
-        setBills([]);
-        setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลบิลไม่สำเร็จ");
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [period, reloadKey]);
-
-  const retry = useCallback(() => {
-    setReloadKey((value) => value + 1);
-  }, []);
-
   const connectedOf = (bill: Bill): boolean | null => (connectedIds === null ? null : connectedIds.has(bill.tenantId));
   const paidCount = bills.filter((bill) => bill.status === "paid").length;
   const unpaidCount = bills.length - paidCount;
@@ -123,7 +96,7 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
       header: "ค่าใช้จ่ายเพิ่ม",
       align: "right",
       render: (bill) => {
-        const extraTotal = chargesTotal(bill);
+        const extraTotal = chargesTotal(bill.charges);
         return extraTotal === 0 ? <span className="text-fog">—</span> : baht(extraTotal);
       },
     },
@@ -135,10 +108,15 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
       header: "จัดการ",
       align: "right",
       render: (bill) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
           <Button size="sm" variant="secondary" onClick={() => onOpen(bill)}>
             ดูบิล
           </Button>
+          {bill.status === "unpaid" && (
+            <Button size="sm" variant="ghost" icon="more_horiz" onClick={() => onManage(bill)}>
+              จัดการ
+            </Button>
+          )}
         </div>
       ),
     },
@@ -165,7 +143,7 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
               className="input w-auto"
               value={period}
               onChange={(event) => {
-                setPeriod(event.target.value);
+                onPeriodChange(event.target.value);
               }}
             >
               {periods.map((option) => (
@@ -198,7 +176,7 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
             title="โหลดข้อมูลบิลไม่สำเร็จ"
             description={error}
             action={
-              <Button variant="secondary" icon="refresh" onClick={retry}>
+              <Button variant="secondary" icon="refresh" onClick={onRetry}>
                 ลองใหม่
               </Button>
             }
@@ -224,7 +202,7 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
                 <Select
                   label="สถานะบิล"
                   value={statusFilter}
-                  onChange={setStatusFilter}
+                  onChange={onStatusFilterChange}
                   options={[
                     { value: "all", label: "ทั้งหมด" },
                     { value: "unpaid", label: "ยังไม่จ่าย" },
@@ -255,7 +233,7 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
                   columns={columns}
                   rows={filtered}
                   getRowKey={(bill) => bill.id}
-                  minWidth={900}
+                  minWidth={940}
                   emptyMessage="ไม่พบบิลที่ตรงกับเงื่อนไข"
                 />
               </Card>
@@ -287,6 +265,11 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
                       <Button size="sm" variant="secondary" onClick={() => onOpen(bill)}>
                         ดูบิล
                       </Button>
+                      {bill.status === "unpaid" && (
+                        <Button size="sm" variant="ghost" icon="more_horiz" onClick={() => onManage(bill)}>
+                          จัดการ
+                        </Button>
+                      )}
                     </div>
                   </Card>
                 ))}
@@ -300,9 +283,21 @@ function BillList({ connectedIds, onOpen, onCreate }: BillListProps) {
 }
 
 export function BillsPage({ view }: PageProps) {
-  const [selected, setSelected] = useState<Bill | null>(null);
+  const [periods] = useState<string[]>(() => recentPeriods(monthCount));
+  const [period, setPeriod] = useState<string>(() => periods[0] ?? "");
+  const [bills, setBills] = useState<Bill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tenantList, setTenantList] = useState<Tenant[] | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [menuBillId, setMenuBillId] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<Bill | null>(null);
+  const [payTarget, setPayTarget] = useState<Bill | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Bill | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -336,11 +331,78 @@ export function BillsPage({ view }: PageProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (period === "") {
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+    setError(null);
+
+    void fetchBills(period)
+      .then((list) => {
+        if (active) {
+          setBills(list);
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (!active) {
+          return;
+        }
+
+        setBills([]);
+        setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลบิลไม่สำเร็จ");
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [period, reloadKey]);
+
+  useEffect(() => {
+    if (toast === null) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setToast(null);
+    }, 3000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [toast]);
+
+  const refresh = useCallback(() => {
+    setReloadKey((value) => value + 1);
+  }, []);
+
+  const applyBill = useCallback((updated: Bill) => {
+    setBills((prev) => prev.map((bill) => (bill.id === updated.id ? updated : bill)));
+  }, []);
+
   const connectedIds =
     tenantList === null ? null : new Set(tenantList.filter((tenant) => tenant.lineUserId !== null).map((tenant) => tenant.id));
 
   const go = (hash: string) => {
     window.location.hash = hash;
+  };
+
+  const selectedBill = bills.find((bill) => bill.id === selectedId) ?? null;
+  const menuBill = bills.find((bill) => bill.id === menuBillId) ?? null;
+
+  const handleSaved = (message: string) => (updated: Bill) => {
+    setEditTarget(null);
+    setPayTarget(null);
+    applyBill(updated);
+    refresh();
+    setToast(message);
   };
 
   if (view === "create") {
@@ -356,7 +418,7 @@ export function BillsPage({ view }: PageProps) {
   }
 
   if (view === "detail") {
-    if (selected === null) {
+    if (selectedBill === null) {
       return (
         <Card>
           <EmptyState
@@ -379,28 +441,156 @@ export function BillsPage({ view }: PageProps) {
       );
     }
 
+    const detailBill = selectedBill;
+
     return (
       <BillDetail
-        bill={selected}
+        bill={detailBill}
         dormName={settings?.dormName ?? null}
-        connected={connectedIds === null ? null : connectedIds.has(selected.tenantId)}
+        ownerName={settings?.ownerName ?? null}
+        promptpayId={settings?.promptpayId ?? null}
+        connected={connectedIds === null ? null : connectedIds.has(detailBill.tenantId)}
         onBack={() => {
           go("#bills");
+        }}
+        onSaved={(updated) => {
+          applyBill(updated);
+          refresh();
+          setToast(updated.status === "paid" ? "ปิดบิลแล้ว" : "บันทึกบิลแล้ว");
+        }}
+        onDeleted={() => {
+          setBills((prev) => prev.filter((bill) => bill.id !== detailBill.id));
+          setSelectedId(null);
+          refresh();
+          go("#bills");
+          setToast("ลบบิลแล้ว");
         }}
       />
     );
   }
 
   return (
-    <BillList
-      connectedIds={connectedIds}
-      onOpen={(bill) => {
-        setSelected(bill);
-        go("#bills/detail");
-      }}
-      onCreate={() => {
-        go("#bills/create");
-      }}
-    />
+    <>
+      <BillList
+        bills={bills}
+        loading={loading}
+        error={error}
+        period={period}
+        periods={periods}
+        connectedIds={connectedIds}
+        statusFilter={statusFilter}
+        onPeriodChange={setPeriod}
+        onStatusFilterChange={setStatusFilter}
+        onOpen={(bill) => {
+          setSelectedId(bill.id);
+          go("#bills/detail");
+        }}
+        onManage={(bill) => {
+          setMenuBillId(bill.id);
+        }}
+        onCreate={() => {
+          go("#bills/create");
+        }}
+        onRetry={refresh}
+      />
+
+      <Dialog
+        open={menuBill !== null}
+        onClose={() => {
+          setMenuBillId(null);
+        }}
+        title={menuBill === null ? "จัดการบิล" : `จัดการบิลห้อง ${menuBill.roomNumber}`}
+        footer={
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setMenuBillId(null);
+            }}
+          >
+            ปิด
+          </Button>
+        }
+      >
+        {menuBill !== null && (
+          <div className="grid gap-2">
+            <Button
+              variant="secondary"
+              icon="edit"
+              className="w-full justify-start"
+              onClick={() => {
+                setEditTarget(menuBill);
+                setMenuBillId(null);
+              }}
+            >
+              แก้ไขบิล
+            </Button>
+            <Button
+              variant="primary"
+              icon="check_circle"
+              className="w-full justify-start"
+              onClick={() => {
+                setPayTarget(menuBill);
+                setMenuBillId(null);
+              }}
+            >
+              ปิดบิลด้วยมือ
+            </Button>
+            <Button variant="secondary" icon="sync" className="w-full justify-start" disabled title="ยังไม่เปิดใช้งาน">
+              ส่ง LINE อีกครั้ง
+            </Button>
+            <p className="text-[11px] text-fog">การส่งบิลทาง LINE จะมาในงานถัดไป</p>
+            <Button
+              variant="danger-soft"
+              icon="delete"
+              className="mt-2 w-full justify-start"
+              onClick={() => {
+                setDeleteTarget(menuBill);
+                setMenuBillId(null);
+              }}
+            >
+              ลบบิล
+            </Button>
+          </div>
+        )}
+      </Dialog>
+
+      <BillEditDrawer
+        open={editTarget !== null}
+        bill={editTarget}
+        onClose={() => {
+          setEditTarget(null);
+        }}
+        onSaved={handleSaved("บันทึกบิลแล้ว")}
+      />
+
+      <MarkPaidDialog
+        open={payTarget !== null}
+        bill={payTarget}
+        onClose={() => {
+          setPayTarget(null);
+        }}
+        onPaid={handleSaved("ปิดบิลแล้ว")}
+      />
+
+      <DeleteBillDialog
+        open={deleteTarget !== null}
+        bill={deleteTarget}
+        onClose={() => {
+          setDeleteTarget(null);
+        }}
+        onDeleted={() => {
+          if (deleteTarget !== null) {
+            const removedId = deleteTarget.id;
+            setBills((prev) => prev.filter((bill) => bill.id !== removedId));
+          }
+
+          setDeleteTarget(null);
+          refresh();
+          setToast("ลบบิลแล้ว");
+        }}
+      />
+
+      <Toast message={toast ?? ""} open={toast !== null} />
+    </>
   );
 }

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
-import { asRecord, errorBody, readJsonObject } from "./shared";
+import { asRecord, errorBody, isIsoDate, readJsonObject } from "./shared";
 
 const bills = new Hono<{ Bindings: Env }>();
 
@@ -9,8 +9,10 @@ type BillStatus = "paid" | "unpaid";
 
 const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
 
+const isoTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/;
+
 const billColumns =
-  "b.id, b.room_id, r.room_number, b.tenant_id, t.full_name AS tenant_name, b.period, b.rent, b.water_previous, b.water_current, b.water_units, b.water_rate, b.water_amount, b.electric_mode, b.electric_previous, b.electric_current, b.electric_units, b.electric_rate, b.electric_amount, b.total, b.status, b.paid_at, b.paid_method, b.sent_at";
+  "b.id, b.room_id, r.room_number, b.tenant_id, t.full_name AS tenant_name, b.period, b.rent, b.water_previous, b.water_current, b.water_units, b.water_rate, b.water_amount, b.electric_mode, b.electric_previous, b.electric_current, b.electric_units, b.electric_rate, b.electric_amount, b.total, b.status, b.paid_at, b.paid_method, b.sent_at, b.created_at";
 
 const billFrom = "FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id";
 
@@ -23,6 +25,13 @@ const insertBillSql =
   "INSERT INTO bills (id, room_id, tenant_id, period, rent, water_previous, water_current, water_units, water_rate, water_amount, electric_mode, electric_previous, electric_current, electric_units, electric_rate, electric_amount, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 const insertChargeSql = "INSERT INTO bill_charges (id, bill_id, name, amount, position) VALUES (?, ?, ?, ?, ?)";
+
+const updateBillSql =
+  "UPDATE bills SET water_current = ?, water_units = ?, water_amount = ?, electric_current = ?, electric_units = ?, electric_rate = ?, electric_amount = ?, total = ? WHERE id = ?";
+
+const deleteChargesSql = "DELETE FROM bill_charges WHERE bill_id = ?";
+
+const deleteBillSql = "DELETE FROM bills WHERE id = ?";
 
 interface BillRow {
   id: string;
@@ -48,6 +57,7 @@ interface BillRow {
   paid_at: string | null;
   paid_method: string | null;
   sent_at: string | null;
+  created_at: string;
 }
 
 interface ChargePayload {
@@ -80,6 +90,7 @@ interface BillPayload {
   paidAt: string | null;
   paidMethod: string | null;
   sentAt: string | null;
+  createdAt: string;
 }
 
 interface MeterRowPayload {
@@ -299,6 +310,7 @@ function toBill(row: BillRow, charges: ChargePayload[]): BillPayload {
     paidAt: row.paid_at,
     paidMethod: row.paid_method,
     sentAt: row.sent_at,
+    createdAt: row.created_at,
   };
 }
 
@@ -309,6 +321,38 @@ async function loadBills(env: Env, period: string): Promise<BillPayload[]> {
   const charges = await loadCharges(env, period);
 
   return result.results.map((row) => toBill(row, charges.get(row.id) ?? []));
+}
+
+async function loadBill(env: Env, id: string): Promise<BillPayload | null> {
+  const row = await env.DB.prepare(`SELECT ${billColumns} ${billFrom} WHERE b.id = ?`).bind(id).first<BillRow>();
+
+  if (row === null) {
+    return null;
+  }
+
+  const charges = await env.DB.prepare("SELECT name, amount FROM bill_charges WHERE bill_id = ? ORDER BY position ASC")
+    .bind(id)
+    .all<ChargePayload>();
+
+  return toBill(row, charges.results);
+}
+
+function parsePaidAt(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  if (isoTimestampPattern.test(trimmed)) {
+    if (!isIsoDate(trimmed.slice(0, 10))) {
+      return null;
+    }
+
+    return Number.isNaN(new Date(trimmed).getTime()) ? null : trimmed;
+  }
+
+  return isIsoDate(trimmed) ? trimmed : null;
 }
 
 function roomLabel(rooms: Map<string, OccupiedRoomRow>, roomId: string): string {
@@ -551,6 +595,227 @@ bills.post("/generate", async (c) => {
     }
 
     return c.json(errorBody("INTERNAL", "สร้างบิลไม่สำเร็จ"), 500);
+  }
+});
+
+bills.patch("/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await readJsonObject(c.req.raw);
+
+  if (body === null) {
+    return c.json(errorBody("VALIDATION", "รูปแบบข้อมูลไม่ถูกต้อง"), 400);
+  }
+
+  try {
+    const existing = await loadBill(c.env, id);
+
+    if (existing === null) {
+      return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการแก้ไข"), 404);
+    }
+
+    if (existing.status === "paid") {
+      return c.json(errorBody("CONFLICT", "บิลที่จ่ายแล้วแก้ไขไม่ได้"), 409);
+    }
+
+    let waterCurrent = existing.waterCurrent;
+
+    if (body.waterCurrent !== undefined) {
+      const parsed = parseReading(body.waterCurrent);
+
+      if (parsed === null) {
+        return c.json(errorBody("VALIDATION", "เลขมิเตอร์น้ำต้องเป็นตัวเลขไม่ติดลบ", "waterCurrent"), 400);
+      }
+
+      if (parsed < existing.waterPrevious) {
+        return c.json(
+          errorBody("VALIDATION", `เลขมิเตอร์น้ำต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${existing.roomNumber})`, "waterCurrent"),
+          400,
+        );
+      }
+
+      waterCurrent = parsed;
+    }
+
+    let electricCurrent = existing.electricCurrent;
+
+    if (body.electricCurrent !== undefined) {
+      const parsed = parseReading(body.electricCurrent);
+
+      if (parsed === null) {
+        return c.json(errorBody("VALIDATION", "เลขมิเตอร์ไฟต้องเป็นตัวเลขไม่ติดลบ", "electricCurrent"), 400);
+      }
+
+      if (parsed < existing.electricPrevious) {
+        return c.json(
+          errorBody("VALIDATION", `เลขมิเตอร์ไฟต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${existing.roomNumber})`, "electricCurrent"),
+          400,
+        );
+      }
+
+      electricCurrent = parsed;
+    }
+
+    let charges = existing.charges;
+    let chargesProvided = false;
+
+    if (body.charges !== undefined) {
+      const parsed = parseCharges(body.charges);
+
+      if (parsed === null) {
+        return c.json(errorBody("VALIDATION", "ค่าใช้จ่ายเพิ่มเติมต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ", "charges"), 400);
+      }
+
+      charges = parsed;
+      chargesProvided = true;
+    }
+
+    let electricUnits = existing.electricUnits;
+    let electricRate = existing.electricRate;
+    let electricAmount = existing.electricAmount;
+
+    if (existing.electricMode === "flat") {
+      const rawFlat = body.flatElectricAmount;
+
+      if (rawFlat === undefined) {
+        return c.json(errorBody("VALIDATION", `กรุณากรอกยอดค่าไฟเหมาจ่าย (ห้อง ${existing.roomNumber})`, "flatElectricAmount"), 400);
+      }
+
+      if (typeof rawFlat !== "number" || !Number.isFinite(rawFlat) || rawFlat < 0) {
+        return c.json(errorBody("VALIDATION", "ยอดค่าไฟเหมาจ่ายต้องเป็นตัวเลขไม่ติดลบ", "flatElectricAmount"), 400);
+      }
+
+      electricUnits = null;
+      electricRate = null;
+      electricAmount = Math.round(rawFlat);
+    } else {
+      if (body.flatElectricAmount !== undefined) {
+        return c.json(errorBody("VALIDATION", "บิลห้องมิเตอร์ไม่ใช้ยอดค่าไฟเหมาจ่าย", "flatElectricAmount"), 400);
+      }
+
+      if (body.electricCurrent !== undefined) {
+        const units = electricCurrent - existing.electricPrevious;
+        electricUnits = units;
+        electricRate = existing.electricRate;
+        electricAmount = Math.round(units * (existing.electricRate ?? 0));
+      }
+    }
+
+    const waterUnits = waterCurrent - existing.waterPrevious;
+    const waterAmount = Math.round(waterUnits * existing.waterRate);
+    const chargeTotal = charges.reduce((sum, charge) => sum + charge.amount, 0);
+    const total = existing.rent + waterAmount + electricAmount + chargeTotal;
+
+    const statements: D1PreparedStatement[] = [
+      c.env.DB.prepare(updateBillSql).bind(waterCurrent, waterUnits, waterAmount, electricCurrent, electricUnits, electricRate, electricAmount, total, id),
+    ];
+
+    if (chargesProvided) {
+      statements.push(c.env.DB.prepare(deleteChargesSql).bind(id));
+
+      charges.forEach((charge, index) => {
+        statements.push(c.env.DB.prepare(insertChargeSql).bind(crypto.randomUUID(), id, charge.name, charge.amount, index));
+      });
+    }
+
+    await c.env.DB.batch(statements);
+
+    const bill = await loadBill(c.env, id);
+
+    if (bill === null) {
+      console.error(JSON.stringify({ message: "update bill readback failed", billId: id }));
+      return c.json(errorBody("INTERNAL", "บันทึกบิลไม่สำเร็จ"), 500);
+    }
+
+    return c.json({ ok: true, bill }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "update bill failed", billId: id, error: detail }));
+    return c.json(errorBody("INTERNAL", "บันทึกบิลไม่สำเร็จ"), 500);
+  }
+});
+
+bills.delete("/:id", async (c) => {
+  const id = c.req.param("id");
+
+  try {
+    const existing = await loadBill(c.env, id);
+
+    if (existing === null) {
+      return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการลบ"), 404);
+    }
+
+    if (existing.status === "paid") {
+      return c.json(errorBody("CONFLICT", "บิลที่จ่ายแล้วลบไม่ได้"), 409);
+    }
+
+    await c.env.DB.batch([
+      c.env.DB.prepare(deleteChargesSql).bind(id),
+      c.env.DB.prepare(deleteBillSql).bind(id),
+    ]);
+
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "delete bill failed", billId: id, error: detail }));
+    return c.json(errorBody("INTERNAL", "ลบบิลไม่สำเร็จ"), 500);
+  }
+});
+
+bills.post("/:id/mark-paid", async (c) => {
+  const id = c.req.param("id");
+  const body = await readJsonObject(c.req.raw);
+
+  if (body === null) {
+    return c.json(errorBody("VALIDATION", "รูปแบบข้อมูลไม่ถูกต้อง"), 400);
+  }
+
+  try {
+    const existing = await loadBill(c.env, id);
+
+    if (existing === null) {
+      return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการปิด"), 404);
+    }
+
+    if (existing.status === "paid") {
+      return c.json(errorBody("CONFLICT", "บิลนี้ปิดไปแล้ว"), 409);
+    }
+
+    const method = body.method;
+
+    if (method !== "transfer" && method !== "cash") {
+      return c.json(errorBody("VALIDATION", "ช่องทางชำระต้องเป็น transfer หรือ cash", "method"), 400);
+    }
+
+    let paidAt: string;
+
+    if (body.paidAt === undefined) {
+      paidAt = new Date().toISOString();
+    } else {
+      const parsed = parsePaidAt(body.paidAt);
+
+      if (parsed === null) {
+        return c.json(errorBody("VALIDATION", "วันเวลาที่ชำระไม่ถูกต้อง", "paidAt"), 400);
+      }
+
+      paidAt = parsed;
+    }
+
+    await c.env.DB.prepare("UPDATE bills SET status = 'paid', paid_at = ?, paid_method = ? WHERE id = ?")
+      .bind(paidAt, method, id)
+      .run();
+
+    const bill = await loadBill(c.env, id);
+
+    if (bill === null) {
+      console.error(JSON.stringify({ message: "mark bill paid readback failed", billId: id }));
+      return c.json(errorBody("INTERNAL", "ปิดบิลไม่สำเร็จ"), 500);
+    }
+
+    return c.json({ ok: true, bill }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "mark bill paid failed", billId: id, error: detail }));
+    return c.json(errorBody("INTERNAL", "ปิดบิลไม่สำเร็จ"), 500);
   }
 });
 

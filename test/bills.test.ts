@@ -51,6 +51,7 @@ interface BillPayload {
   paidAt: string | null;
   paidMethod: string | null;
   sentAt: string | null;
+  createdAt: string;
 }
 
 interface MeterRowPayload {
@@ -151,6 +152,32 @@ async function meterSheet(period: string): Promise<MeterRowPayload[]> {
   const response = await SELF.fetch(`${billsUrl}/meter-sheet?period=${period}`);
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; period: string; rows: MeterRowPayload[] }>()).rows;
+}
+
+function patchBill(id: string, payload: Record<string, unknown>): Promise<Response> {
+  return SELF.fetch(`${billsUrl}/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function deleteBill(id: string): Promise<Response> {
+  return SELF.fetch(`${billsUrl}/${id}`, { method: "DELETE" });
+}
+
+function markPaid(id: string, payload: Record<string, unknown>): Promise<Response> {
+  return post(`${billsUrl}/${id}/mark-paid`, payload);
+}
+
+async function generatedBill(roomId: string, entry: Record<string, unknown>): Promise<BillPayload> {
+  const response = await generate({ period: "2026-09", entries: [{ roomId, ...entry }] });
+  expect(response.status).toBe(201);
+  return first((await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
+}
+
+async function findBill(period: string, id: string): Promise<BillPayload> {
+  return pick(await listBills(period), (item) => item.id === id);
 }
 
 describe("monthly bill generation", () => {
@@ -582,5 +609,301 @@ describe("monthly bill generation", () => {
     const badChargeBody = await badCharge.json<ErrorBody>();
     expect(badChargeBody.error.field).toBe("charges");
     expect(badChargeBody.error.message.length).toBeGreaterThan(0);
+  });
+});
+
+describe("bill management", () => {
+  it("corrects an unpaid metered bill's readings from the snapshot rate", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B230", { rent: 3500, waterRate: 17.5, waterMeterInit: 10, electricMeterInit: 20 });
+    const bill = await generatedBill(room.id, { waterCurrent: 13, electricCurrent: 25 });
+    expect(bill.waterRate).toBe(17.5);
+    expect(bill.electricRate).toBe(7);
+    expect(bill.createdAt.length).toBeGreaterThan(0);
+
+    const response = await patchBill(bill.id, { waterCurrent: 20, electricCurrent: 30 });
+    expect(response.status).toBe(200);
+
+    const patched = (await response.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(patched.id).toBe(bill.id);
+    expect(patched.waterPrevious).toBe(10);
+    expect(patched.waterCurrent).toBe(20);
+    expect(patched.waterUnits).toBeCloseTo(10);
+    expect(patched.waterRate).toBe(17.5);
+    expect(patched.waterAmount).toBe(Math.round(10 * 17.5));
+    expect(patched.electricPrevious).toBe(20);
+    expect(patched.electricCurrent).toBe(30);
+    expect(patched.electricUnits).toBeCloseTo(10);
+    expect(patched.electricRate).toBe(7);
+    expect(patched.electricAmount).toBe(70);
+    expect(patched.total).toBe(3500 + 175 + 70);
+    expect(patched.status).toBe("unpaid");
+
+    const listed = await findBill("2026-09", bill.id);
+    expect(listed.waterCurrent).toBe(20);
+    expect(listed.waterAmount).toBe(175);
+    expect(listed.total).toBe(3745);
+  });
+
+  it("replaces a bill's extra charges and counts them into the total", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B231", { rent: 4000, waterMeterInit: 10, electricMeterInit: 20 });
+    const bill = await generatedBill(room.id, { waterCurrent: 12, electricCurrent: 24 });
+    expect(bill.total).toBe(4000 + 36 + 28);
+
+    const added = await patchBill(bill.id, {
+      charges: [
+        { name: "ค่าอินเทอร์เน็ต", amount: 200 },
+        { name: "ค่าจัดการขยะ", amount: 40 },
+      ],
+    });
+    expect(added.status).toBe(200);
+
+    const withCharges = (await added.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(withCharges.charges).toEqual([
+      { name: "ค่าอินเทอร์เน็ต", amount: 200 },
+      { name: "ค่าจัดการขยะ", amount: 40 },
+    ]);
+    expect(withCharges.total).toBe(4000 + 36 + 28 + 240);
+
+    const listed = await findBill("2026-09", bill.id);
+    expect(listed.charges).toEqual(withCharges.charges);
+    expect(listed.total).toBe(withCharges.total);
+
+    const cleared = await patchBill(bill.id, { charges: [] });
+    expect(cleared.status).toBe(200);
+
+    const empty = (await cleared.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(empty.charges).toEqual([]);
+    expect(empty.total).toBe(4000 + 36 + 28);
+    expect((await findBill("2026-09", bill.id)).charges).toEqual([]);
+  });
+
+  it("updates a flat bill's amount while keeping its units and rate null", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "B232", rent: 3800, electricMode: "flat", waterMeterInit: 130, electricMeterInit: 460 });
+    await newTenant(room.id, "ผู้เช่า B232");
+    const bill = await generatedBill(room.id, { waterCurrent: 135, electricCurrent: 470, flatElectricAmount: 600 });
+    expect(bill.electricUnits).toBeNull();
+    expect(bill.electricRate).toBeNull();
+    expect(bill.total).toBe(3800 + 90 + 600);
+
+    const response = await patchBill(bill.id, { flatElectricAmount: 720 });
+    expect(response.status).toBe(200);
+
+    const patched = (await response.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(patched.electricMode).toBe("flat");
+    expect(patched.electricUnits).toBeNull();
+    expect(patched.electricRate).toBeNull();
+    expect(patched.electricAmount).toBe(720);
+    expect(patched.waterAmount).toBe(5 * 18);
+    expect(patched.total).toBe(3800 + 90 + 720);
+
+    const listed = await findBill("2026-09", bill.id);
+    expect(listed.electricAmount).toBe(720);
+    expect(listed.electricUnits).toBeNull();
+    expect(listed.total).toBe(4610);
+  });
+
+  it("rejects a corrected reading below the bill's previous one and changes nothing", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B233", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const water = await patchBill(bill.id, { waterCurrent: 99 });
+    expect(water.status).toBe(400);
+
+    const waterBody = await water.json<ErrorBody>();
+    expect(waterBody.error.code).toBe("VALIDATION");
+    expect(waterBody.error.field).toBe("waterCurrent");
+    expect(waterBody.error.message).toContain("B233");
+
+    const electric = await patchBill(bill.id, { electricCurrent: 199 });
+    expect(electric.status).toBe(400);
+    expect((await electric.json<ErrorBody>()).error.field).toBe("electricCurrent");
+
+    expect(await findBill("2026-09", bill.id)).toEqual(bill);
+  });
+
+  it("refuses to edit or delete a paid bill", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B234", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const paidResponse = await markPaid(bill.id, { method: "cash" });
+    expect(paidResponse.status).toBe(200);
+    const paidBill = (await paidResponse.json<{ ok: boolean; bill: BillPayload }>()).bill;
+
+    const patch = await patchBill(bill.id, { waterCurrent: 120 });
+    expect(patch.status).toBe(409);
+    expect((await patch.json<ErrorBody>()).error.code).toBe("CONFLICT");
+
+    const removed = await deleteBill(bill.id);
+    expect(removed.status).toBe(409);
+    expect((await removed.json<ErrorBody>()).error.code).toBe("CONFLICT");
+
+    expect(await findBill("2026-09", bill.id)).toEqual(paidBill);
+  });
+
+  it("deletes an unpaid bill with its charges and frees the room for the period", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B235", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, {
+      waterCurrent: 110,
+      electricCurrent: 215,
+      charges: [{ name: "ค่าอินเทอร์เน็ต", amount: 200 }],
+    });
+    expect((await findBill("2026-09", bill.id)).charges).toHaveLength(1);
+
+    const response = await deleteBill(bill.id);
+    expect(response.status).toBe(200);
+    expect((await response.json<{ ok: boolean }>()).ok).toBe(true);
+
+    const after = await listBills("2026-09");
+    expect(after.some((item) => item.id === bill.id)).toBe(false);
+    expect(after.filter((item) => item.roomId === room.id)).toHaveLength(0);
+
+    const again = await generate({ period: "2026-09", entries: [{ roomId: room.id, waterCurrent: 112, electricCurrent: 218 }] });
+    expect(again.status).toBe(201);
+
+    const regenerated = first((await again.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
+    expect(regenerated.roomId).toBe(room.id);
+    expect(regenerated.charges).toEqual([]);
+    expect((await findBill("2026-09", regenerated.id)).charges).toEqual([]);
+  });
+
+  it("marks a bill paid and rejects a repeat or a bad method", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B236", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const badMethod = await markPaid(bill.id, { method: "cheque" });
+    expect(badMethod.status).toBe(400);
+    expect((await badMethod.json<ErrorBody>()).error.field).toBe("method");
+
+    const response = await markPaid(bill.id, { method: "transfer" });
+    expect(response.status).toBe(200);
+
+    const paid = (await response.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(paid.status).toBe("paid");
+    expect(paid.paidMethod).toBe("transfer");
+    expect(typeof paid.paidAt).toBe("string");
+    expect(paid.paidAt).not.toBeNull();
+
+    const listed = await findBill("2026-09", bill.id);
+    expect(listed.status).toBe("paid");
+    expect(listed.paidMethod).toBe("transfer");
+    expect(listed.paidAt).toBe(paid.paidAt);
+
+    const again = await markPaid(bill.id, { method: "cash" });
+    expect(again.status).toBe(409);
+    expect((await again.json<ErrorBody>()).error.code).toBe("CONFLICT");
+  });
+
+  it("stores the given paid date and rejects a malformed one", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B237", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const bad = await markPaid(bill.id, { method: "cash", paidAt: "30/09/2026" });
+    expect(bad.status).toBe(400);
+    expect((await bad.json<ErrorBody>()).error.field).toBe("paidAt");
+
+    const ok = await markPaid(bill.id, { method: "cash", paidAt: "2026-09-30" });
+    expect(ok.status).toBe(200);
+
+    const paid = (await ok.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(paid.paidAt).toBe("2026-09-30");
+    expect(paid.paidMethod).toBe("cash");
+    expect((await findBill("2026-09", bill.id)).paidAt).toBe("2026-09-30");
+  });
+
+  it("answers 404 for an unknown bill on patch, delete and mark-paid", async () => {
+    const missing = "bill-does-not-exist";
+
+    const patch = await patchBill(missing, { waterCurrent: 1 });
+    expect(patch.status).toBe(404);
+    expect((await patch.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const removed = await deleteBill(missing);
+    expect(removed.status).toBe(404);
+    expect((await removed.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const paid = await markPaid(missing, { method: "transfer" });
+    expect(paid.status).toBe(404);
+    expect((await paid.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+  });
+
+  it("rejects malformed extra charges on a correction", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B238", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const emptyName = await patchBill(bill.id, { charges: [{ name: "   ", amount: 10 }] });
+    expect(emptyName.status).toBe(400);
+    expect((await emptyName.json<ErrorBody>()).error.field).toBe("charges");
+
+    const fractional = await patchBill(bill.id, { charges: [{ name: "ค่าอินเทอร์เน็ต", amount: 12.5 }] });
+    expect(fractional.status).toBe(400);
+    expect((await fractional.json<ErrorBody>()).error.field).toBe("charges");
+
+    const negative = await patchBill(bill.id, { charges: [{ name: "ค่าอินเทอร์เน็ต", amount: -1 }] });
+    expect(negative.status).toBe(400);
+    expect((await negative.json<ErrorBody>()).error.field).toBe("charges");
+
+    expect(await findBill("2026-09", bill.id)).toEqual(bill);
+  });
+
+  it("rejects a flat amount on a meter bill and a flat bill without one", async () => {
+    await putRates(18, 7);
+    const metered = await occupiedRoom("B239", { waterMeterInit: 100, electricMeterInit: 200 });
+    const meterBill = await generatedBill(metered.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const onMeter = await patchBill(meterBill.id, { flatElectricAmount: 500 });
+    expect(onMeter.status).toBe(400);
+    expect((await onMeter.json<ErrorBody>()).error.field).toBe("flatElectricAmount");
+
+    const flatRoom = await newRoom({ roomNumber: "B240", rent: 3800, electricMode: "flat", waterMeterInit: 130, electricMeterInit: 460 });
+    await newTenant(flatRoom.id, "ผู้เช่า B240");
+    const flatBill = await generatedBill(flatRoom.id, { waterCurrent: 135, electricCurrent: 470, flatElectricAmount: 600 });
+
+    const missing = await patchBill(flatBill.id, { charges: [] });
+    expect(missing.status).toBe(400);
+    expect((await missing.json<ErrorBody>()).error.field).toBe("flatElectricAmount");
+
+    expect(await findBill("2026-09", meterBill.id)).toEqual(meterBill);
+    expect(await findBill("2026-09", flatBill.id)).toEqual(flatBill);
+  });
+
+  it("answers 409 instead of 400 when an already-paid bill is marked paid with a bad method", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B241", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const paid = await markPaid(bill.id, { method: "cash" });
+    expect(paid.status).toBe(200);
+
+    const conflict = await markPaid(bill.id, { method: "cheque" });
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json<ErrorBody>()).error.code).toBe("CONFLICT");
+  });
+
+  it("rejects an impossible paid timestamp but stores a valid one as given", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B242", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const impossible = await markPaid(bill.id, { method: "cash", paidAt: "2026-02-30T10:00Z" });
+    expect(impossible.status).toBe(400);
+    expect((await impossible.json<ErrorBody>()).error.field).toBe("paidAt");
+    expect((await findBill("2026-09", bill.id)).status).toBe("unpaid");
+
+    const response = await markPaid(bill.id, { method: "cash", paidAt: "2026-09-30T10:00Z" });
+    expect(response.status).toBe(200);
+
+    const paid = (await response.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(paid.paidAt).toBe("2026-09-30T10:00Z");
+    expect(paid.paidMethod).toBe("cash");
+    expect((await findBill("2026-09", bill.id)).paidAt).toBe("2026-09-30T10:00Z");
   });
 });

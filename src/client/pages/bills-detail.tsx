@@ -1,12 +1,29 @@
+import { useState } from "react";
 import { type Bill } from "../api";
-import { PageHeader, StatusBadge } from "../ui";
-import { InvoicePreview, LineStateBadge, baht, periodLabel, stampLabel, toInvoice, type PaymentRecord } from "./bills-shared";
+import { Button, PageHeader, StatusBadge } from "../ui";
+import {
+  InvoicePreview,
+  LineStateBadge,
+  baht,
+  billNumber,
+  dateLabel,
+  paidMethodLabel,
+  periodLabel,
+  stampLabel,
+  toInvoice,
+  type PaymentRecord,
+} from "./bills-shared";
+import { BillEditDrawer, DeleteBillDialog, MarkPaidDialog } from "./bills-actions";
 
 export interface BillDetailProps {
   bill: Bill;
   dormName: string | null;
+  ownerName: string | null;
+  promptpayId: string | null;
   connected: boolean | null;
   onBack: () => void;
+  onSaved: (bill: Bill) => void;
+  onDeleted: () => void;
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -23,12 +40,37 @@ function paymentHistory(bill: Bill): PaymentRecord[] {
     return [];
   }
 
-  return [{ method: bill.paidMethod ?? "ไม่ระบุ", when: stampLabel(bill.paidAt), note: "ปิดบิลแล้ว" }];
+  return [{ method: paidMethodLabel(bill.paidMethod), when: stampLabel(bill.paidAt), note: "ปิดบิลด้วยมือ" }];
 }
 
-export function BillDetail({ bill, dormName, connected, onBack }: BillDetailProps) {
+export function BillDetail({
+  bill,
+  dormName,
+  ownerName,
+  promptpayId,
+  connected,
+  onBack,
+  onSaved,
+  onDeleted,
+}: BillDetailProps) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
   const history = paymentHistory(bill);
   const isPaid = bill.status === "paid";
+  const number = billNumber(bill);
+
+  const handleSaved = (updated: Bill) => {
+    setEditOpen(false);
+    setPayOpen(false);
+    onSaved(updated);
+  };
+
+  const handleDeleted = () => {
+    setDeleteOpen(false);
+    onDeleted();
+  };
 
   return (
     <div>
@@ -41,16 +83,83 @@ export function BillDetail({ bill, dormName, connected, onBack }: BillDetailProp
 
       <PageHeader
         title={`บิลห้อง ${bill.roomNumber}`}
-        supporting={`${bill.tenantName} · ${periodLabel(bill.period)} · เลขที่บิล ${bill.id}`}
+        supporting={`${bill.tenantName} · ${periodLabel(bill.period)} · เลขที่บิล ${number}`}
         actions={<StatusBadge status={bill.status} />}
       />
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_360px]">
-        <InvoicePreview data={toInvoice(bill)} dormName={dormName} />
+        <InvoicePreview
+          data={toInvoice(bill)}
+          dormName={dormName}
+          meta={{
+            ownerName,
+            promptpayId,
+            number,
+            issueDate: dateLabel(bill.createdAt),
+          }}
+        />
 
         <aside className="card lg:sticky lg:top-20">
-          <h2 className="text-[15px] text-charcoal">การจัดการบิล</h2>
-          <p className="mt-1.5 text-sm text-steel">การแก้ไข ปิดบิล และลบบิล จะมาในงานถัดไป</p>
+          {isPaid ? (
+            <div>
+              <h2 className="text-[15px] text-charcoal">ข้อมูลการชำระเงิน</h2>
+              <div className="mt-3 grid gap-2">
+                <InfoRow label="ช่องทาง" value={paidMethodLabel(bill.paidMethod)} />
+                <InfoRow label="เวลาที่ปิดบิล" value={bill.paidAt === null ? "ไม่ระบุ" : stampLabel(bill.paidAt)} />
+                <InfoRow label="ยอดที่ชำระ" value={`${baht(bill.total)} บาท`} />
+              </div>
+              <p className="mt-3 text-xs text-fog">บิลที่จ่ายแล้วแก้ไขหรือลบไม่ได้</p>
+            </div>
+          ) : (
+            <div>
+              <h2 className="text-[15px] text-charcoal">การจัดการบิล</h2>
+              <p className="mt-1.5 text-sm text-steel">แก้ไขมิเตอร์และค่าใช้จ่าย ปิดบิลด้วยมือ หรือลบบิลที่ยังไม่จ่าย</p>
+
+              <div className="mt-4 grid gap-2">
+                <Button
+                  variant="secondary"
+                  icon="sync"
+                  className="w-full justify-start"
+                  disabled
+                  title="ยังไม่เปิดใช้งาน"
+                >
+                  ส่ง LINE อีกครั้ง
+                </Button>
+                <p className="text-[11px] text-fog">การส่งบิลทาง LINE จะมาในงานถัดไป</p>
+
+                <Button
+                  variant="secondary"
+                  icon="edit"
+                  className="mt-2 w-full justify-start"
+                  onClick={() => {
+                    setEditOpen(true);
+                  }}
+                >
+                  แก้ไขบิล
+                </Button>
+                <Button
+                  variant="primary"
+                  icon="check_circle"
+                  className="w-full justify-start"
+                  onClick={() => {
+                    setPayOpen(true);
+                  }}
+                >
+                  ปิดบิลด้วยมือ
+                </Button>
+                <Button
+                  variant="danger-soft"
+                  icon="delete"
+                  className="mt-2 w-full justify-start"
+                  onClick={() => {
+                    setDeleteOpen(true);
+                  }}
+                >
+                  ลบบิล
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="mt-4 border-t border-ash pt-4">
             <div className="flex items-center justify-between gap-3">
@@ -61,16 +170,6 @@ export function BillDetail({ bill, dormName, connected, onBack }: BillDetailProp
               {bill.sentAt === null ? "ยังไม่ได้ส่งบิลทาง LINE" : `ส่งล่าสุด ${stampLabel(bill.sentAt)}`}
             </p>
           </div>
-
-          {isPaid && (
-            <div className="mt-4 border-t border-ash pt-4">
-              <h3 className="text-sm text-charcoal">ข้อมูลการชำระเงิน</h3>
-              <div className="mt-2 grid gap-2">
-                <InfoRow label="ช่องทาง" value={bill.paidMethod ?? "ไม่ระบุ"} />
-                <InfoRow label="เวลาที่ปิดบิล" value={bill.paidAt === null ? "ไม่ระบุ" : stampLabel(bill.paidAt)} />
-              </div>
-            </div>
-          )}
 
           <div className="mt-4 border-t border-ash pt-4">
             <h3 className="text-sm text-charcoal">ประวัติการชำระ</h3>
@@ -93,6 +192,33 @@ export function BillDetail({ bill, dormName, connected, onBack }: BillDetailProp
           </div>
         </aside>
       </div>
+
+      <BillEditDrawer
+        open={editOpen}
+        bill={bill}
+        onClose={() => {
+          setEditOpen(false);
+        }}
+        onSaved={handleSaved}
+      />
+
+      <MarkPaidDialog
+        open={payOpen}
+        bill={bill}
+        onClose={() => {
+          setPayOpen(false);
+        }}
+        onPaid={handleSaved}
+      />
+
+      <DeleteBillDialog
+        open={deleteOpen}
+        bill={bill}
+        onClose={() => {
+          setDeleteOpen(false);
+        }}
+        onDeleted={handleDeleted}
+      />
     </div>
   );
 }

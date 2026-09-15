@@ -89,6 +89,21 @@ export interface Bill {
   paidAt: string | null;
   paidMethod: string | null;
   sentAt: string | null;
+  createdAt: string;
+}
+
+export type BillPaidMethod = "transfer" | "cash";
+
+export interface BillUpdate {
+  waterCurrent?: number;
+  electricCurrent?: number;
+  flatElectricAmount?: number;
+  charges?: BillCharge[];
+}
+
+export interface BillPaidInput {
+  method: BillPaidMethod;
+  paidAt?: string;
 }
 
 export interface MeterSheetRow {
@@ -225,6 +240,10 @@ export function apiPatch<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
+export function apiDelete<T>(path: string): Promise<T> {
+  return request<T>(path, { method: "DELETE" });
+}
+
 export function apiPut<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: "PUT",
@@ -307,4 +326,18 @@ export async function fetchMeterSheet(period: string): Promise<MeterSheetRow[]> 
 export async function generateBills(period: string, entries: BillEntryInput[]): Promise<Bill[]> {
   const body = await apiPost<{ ok: true; bills: Bill[] }>("/api/bills/generate", { period, entries });
   return body.bills;
+}
+
+export async function updateBill(id: string, input: BillUpdate): Promise<Bill> {
+  const body = await apiPatch<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}`, input);
+  return body.bill;
+}
+
+export async function deleteBill(id: string): Promise<void> {
+  await apiDelete<{ ok: true }>(`/api/bills/${encodeURIComponent(id)}`);
+}
+
+export async function markBillPaid(id: string, input: BillPaidInput): Promise<Bill> {
+  const body = await apiPost<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}/mark-paid`, input);
+  return body.bill;
 }

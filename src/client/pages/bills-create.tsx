@@ -23,9 +23,16 @@ import {
   Skeleton,
   type DataTableColumn,
 } from "../ui";
-import { InvoicePreview, Sheet, baht, periodLabel, recentPeriods, type InvoiceData } from "./bills-shared";
-
-const monthCount = 3;
+import {
+  InvoicePreview,
+  Sheet,
+  baht,
+  chargesTotal as sumCharges,
+  monthCount,
+  periodLabel,
+  recentPeriods,
+  type InvoiceData,
+} from "./bills-shared";
 
 export interface CreateWizardProps {
   settings: Settings | null;
@@ -140,7 +147,7 @@ function computeRow(row: MeterRow): RowCalc {
   const resolvedCharges = row.charges.map(toBillCharge);
   const charges = resolvedCharges.filter((charge): charge is BillCharge => charge !== null);
   const chargeInvalid = resolvedCharges.some((charge) => charge === null);
-  const chargesTotal = charges.reduce((sum, charge) => sum + charge.amount, 0);
+  const chargesTotal = sumCharges(charges);
 
   const filled = waterCurrent !== null && electricCurrent !== null && (!isFlat || flatAmount !== null);
   const status: RowStatus =
