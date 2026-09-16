@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
-import { type MonthlyRevenue } from "../mock-data";
 import { baht } from "./bills-shared";
+
+export interface MonthlyRevenue {
+  month: string;
+  amount: number;
+}
 
 export interface RevenueChartProps {
   points: MonthlyRevenue[];

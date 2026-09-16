@@ -431,3 +431,61 @@ export const reviewQueueChangedEvent = "wangchan:review-queue-changed";
 export function announceReviewQueueChanged(): void {
   window.dispatchEvent(new Event(reviewQueueChangedEvent));
 }
+
+export interface DashboardKpis {
+  bills: number;
+  dueAmount: number;
+  collectedAmount: number;
+  unpaidAmount: number;
+  unpaidRooms: number;
+  vacantRooms: number;
+  totalRooms: number;
+  sentCount: number;
+  paidCount: number;
+}
+
+export interface RevenuePoint {
+  period: string;
+  amount: number;
+}
+
+export interface UnpaidBillStat {
+  id: string;
+  roomNumber: string;
+  tenantName: string;
+  total: number;
+  createdAt: string;
+  sentAt: string | null;
+  hasPendingSlip: boolean;
+}
+
+export type DashboardRoomStatus = "paid" | "unpaid" | "vacant";
+
+export interface DashboardRoom {
+  id: string;
+  roomNumber: string;
+  status: DashboardRoomStatus;
+  hasPendingSlip: boolean;
+}
+
+export interface DashboardStats {
+  period: string;
+  kpis: DashboardKpis;
+  revenue: RevenuePoint[];
+  unpaidBills: UnpaidBillStat[];
+  rooms: DashboardRoom[];
+}
+
+export async function fetchDashboardStats(period: string): Promise<DashboardStats> {
+  const body = await apiGet<{ ok: true } & DashboardStats>(
+    `/api/stats/dashboard?period=${encodeURIComponent(period)}`,
+  );
+
+  return {
+    period: body.period,
+    kpis: body.kpis,
+    revenue: body.revenue,
+    unpaidBills: body.unpaidBills,
+    rooms: body.rooms,
+  };
+}
