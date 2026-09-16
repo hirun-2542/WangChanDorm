@@ -1,37 +1,137 @@
-import { useEffect, useState } from "react";
-import { Badge, Button, Card, CardHeader, EmptyState, PageHeader, Toast, type BadgeTone } from "../ui";
-import { reviewQueue, type ReviewReason, type SlipReview } from "../mock-data";
-import { baht } from "./bills-shared";
+import { useCallback, useEffect, useState } from "react";
+import {
+  ApiError,
+  announceReviewQueueChanged,
+  fetchSlips,
+  resolveSlip,
+  type Slip,
+  type SlipReason,
+  type SlipResolveAction,
+} from "../api";
+import { Badge, Button, Card, CardHeader, Dialog, EmptyState, PageHeader, Skeleton, Toast, type BadgeTone } from "../ui";
+import { baht, periodLabel, stampLabel } from "./bills-shared";
 
-type FilterId = "all" | "mismatch" | "failed";
+type FilterId = "all" | "mismatch" | "not_verified";
 
 const filterOptions: { id: FilterId; label: string }[] = [
   { id: "all", label: "ทั้งหมด" },
   { id: "mismatch", label: "ยอดไม่ตรง" },
-  { id: "failed", label: "ตรวจไม่ผ่าน" },
+  { id: "not_verified", label: "ตรวจไม่ผ่าน" },
 ];
 
-const reasonByFilter: Record<Exclude<FilterId, "all">, ReviewReason> = {
+const reasonLabels: Record<SlipReason, string> = {
   mismatch: "ยอดไม่ตรง",
-  failed: "ตรวจไม่ผ่าน",
+  not_verified: "ตรวจไม่ผ่าน",
+  no_unpaid_bill: "ไม่มีบิลค้างให้เทียบ",
+  duplicate_slip: "สลิปซ้ำ",
 };
 
-function easySlipTone(state: string): BadgeTone {
-  return state === "สลิปจริง" ? "paid" : "danger";
+const reasonTones: Record<SlipReason, BadgeTone> = {
+  mismatch: "unpaid",
+  not_verified: "danger",
+  no_unpaid_bill: "review",
+  duplicate_slip: "review",
+};
+
+const unknownRoom = "ไม่ทราบห้อง";
+const unknownTenant = "ไม่ระบุผู้เช่า";
+
+const settleBlockedReason =
+  "สลิปนี้ไม่มีบิลที่ระบบเทียบไว้ ปิดบิลด้วยสลิปนี้ไม่ได้เพราะระบุบิลไม่ได้ กรุณาปฏิเสธสลิปหรือปิดบิลด้วยมือจากหน้าบิล";
+
+const queueLoadFailed = "โหลดคิวสลิปไม่สำเร็จ";
+const resolveFailed = "ตัดสินสลิปไม่สำเร็จ";
+
+function roomLabel(slip: Slip): string {
+  return slip.bill === null ? unknownRoom : slip.bill.roomNumber;
 }
 
-function slipAmountLabel(amount: number | null): string {
-  return amount === null ? "ไม่มียอด" : `${baht(amount)} บาท`;
+function tenantLabel(slip: Slip): string {
+  const name = slip.bill?.tenantName ?? "";
+  return name === "" ? unknownTenant : name;
 }
 
-function SlipThumb() {
+function reasonLabel(reason: SlipReason | null): string {
+  return reason === null ? "ไม่ระบุสาเหตุ" : reasonLabels[reason];
+}
+
+function reasonTone(reason: SlipReason | null): BadgeTone {
+  return reason === null ? "neutral" : reasonTones[reason];
+}
+
+function billTotalLabel(slip: Slip): string {
+  return slip.bill === null ? "ไม่มีบิลเทียบ" : `${baht(slip.bill.total)} บาท`;
+}
+
+function amountLabel(value: number | null): string {
+  return value === null ? "ไม่มียอด" : `${baht(value)} บาท`;
+}
+
+function deltaOf(slip: Slip): number | null {
+  if (slip.slipAmount === null || slip.bill === null) {
+    return null;
+  }
+
+  return slip.slipAmount - slip.bill.total;
+}
+
+function deltaLabel(delta: number | null): string {
+  if (delta === null) {
+    return "เทียบไม่ได้";
+  }
+
+  if (delta === 0) {
+    return "ยอดตรงกัน";
+  }
+
+  return `${delta > 0 ? "+" : ""}${baht(delta)} บาท`;
+}
+
+function deltaTone(delta: number | null): string {
+  if (delta === null) {
+    return "text-fog";
+  }
+
+  if (delta === 0) {
+    return "text-vivid-green";
+  }
+
+  return delta < 0 ? "text-danger" : "text-tangerine";
+}
+
+function easyslipLabel(slip: Slip): string {
+  return slip.verified ? "สลิปจริง" : "EasySlip ตรวจไม่ผ่าน";
+}
+
+function transRefLabel(slip: Slip): string {
+  const transRef = slip.easyslip.transRef;
+
+  return transRef === null ? "ไม่พบเลขอ้างอิงการโอน" : `เลขอ้างอิง ${transRef}`;
+}
+
+function transferLabel(slip: Slip): string {
+  const when = slip.transferAt ?? slip.easyslip.date;
+
+  return when === null ? "ไม่พบเวลาที่โอน" : stampLabel(when);
+}
+
+function SlipThumb({ slip }: { slip: Slip }) {
   return (
-    <span className="grid h-14 w-14 shrink-0 place-items-center gap-0.5 rounded-lg border border-ash bg-paper-mist text-center">
-      <span className="ms text-[20px] text-silver" aria-hidden="true">
-        receipt_long
-      </span>
-      <span className="text-[10px] leading-none text-fog">ตัวอย่าง</span>
-    </span>
+    <img
+      src={slip.imageUrl}
+      alt={`สลิปของห้อง ${roomLabel(slip)}`}
+      loading="lazy"
+      className="h-14 w-14 shrink-0 rounded-lg border border-ash bg-paper-mist object-cover"
+    />
+  );
+}
+
+function ConfirmRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <span className="text-steel">{label}</span>
+      <span className="num text-right text-charcoal">{value}</span>
+    </div>
   );
 }
 
@@ -65,10 +165,39 @@ function FilterTabs({ value, onChange }: FilterTabsProps) {
 }
 
 export function ReviewPage() {
-  const [items, setItems] = useState<SlipReview[]>(() => reviewQueue.map((item) => ({ ...item })));
+  const [items, setItems] = useState<Slip[] | null>(null);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [filter, setFilter] = useState<FilterId>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(() => reviewQueue[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<Slip | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    void fetchSlips()
+      .then((list) => {
+        if (active) {
+          setItems(list);
+          setQueueError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
+
+        setItems((prev) => prev ?? []);
+        setQueueError(error instanceof ApiError ? error.message : queueLoadFailed);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [reloadKey]);
 
   useEffect(() => {
     if (toast === null) {
@@ -77,200 +206,357 @@ export function ReviewPage() {
 
     const timer = window.setTimeout(() => {
       setToast(null);
-    }, 2800);
+    }, 3200);
 
     return () => {
       window.clearTimeout(timer);
     };
   }, [toast]);
 
-  const visible = items.filter((item) => filter === "all" || item.reason === reasonByFilter[filter]);
-  const selected = visible.find((item) => item.id === selectedId) ?? visible[0] ?? null;
-  const mismatchCount = items.filter((item) => item.reason === "ยอดไม่ตรง").length;
-  const failedCount = items.filter((item) => item.reason === "ตรวจไม่ผ่าน").length;
+  const refreshQuietly = useCallback(() => {
+    setReloadKey((value) => value + 1);
+  }, []);
 
-  const resolve = (item: SlipReview, message: string) => {
-    const next = items.filter((entry) => entry.id !== item.id);
-    setItems(next);
-    setSelectedId(next[0]?.id ?? null);
-    setToast(message);
+  const retryLoad = useCallback(() => {
+    setItems(null);
+    setQueueError(null);
+    setReloadKey((value) => value + 1);
+  }, []);
+
+  const visible = (items ?? []).filter((item) => filter === "all" || item.reason === filter);
+  const selected = visible.find((item) => item.id === selectedId) ?? visible[0] ?? null;
+  const selectedKey = selected === null ? null : selected.id;
+  const mismatchCount = (items ?? []).filter((item) => item.reason === "mismatch").length;
+  const notVerifiedCount = (items ?? []).filter((item) => item.reason === "not_verified").length;
+
+  useEffect(() => {
+    setActionError(null);
+  }, [selectedKey]);
+
+  const runResolve = (slip: Slip, action: SlipResolveAction) => {
+    if (busy) {
+      return;
+    }
+
+    const room = roomLabel(slip);
+    const total = slip.bill === null ? null : slip.bill.total;
+
+    setBusy(true);
+    setActionError(null);
+
+    void resolveSlip(slip.id, action)
+      .then((updated) => {
+        setConfirming(null);
+        setItems((prev) => (prev ?? []).filter((item) => item.id !== updated.id));
+        setSelectedId(null);
+        refreshQuietly();
+        announceReviewQueueChanged();
+        setToast(
+          action === "settle"
+            ? `ปิดบิลห้อง ${room} ยอด ${total === null ? "" : `${baht(total)} บาท `}ด้วยสลิปนี้แล้ว บิลเป็นจ่ายแล้ว และผู้เช่าได้รับการยืนยันทาง LINE`
+            : `ปฏิเสธสลิปห้อง ${room} แล้ว บิลไม่เปลี่ยนแปลง`,
+        );
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof ApiError ? error.message : resolveFailed;
+
+        setConfirming(null);
+        setActionError(message);
+        setToast(message);
+        refreshQuietly();
+        announceReviewQueueChanged();
+      })
+      .finally(() => {
+        setBusy(false);
+      });
   };
+
+  const loading = items === null;
+  const list = items ?? [];
+  const supporting = loading
+    ? "กำลังโหลดคิวสลิป"
+    : `${list.length} รายการรอตรวจ · ยอดไม่ตรง ${mismatchCount} · ตรวจไม่ผ่าน ${notVerifiedCount}`;
 
   return (
     <div>
-      <PageHeader
-        title="รอตรวจ"
-        supporting={`${items.length} รายการรอตรวจ · ยอดไม่ตรง ${mismatchCount} · ตรวจไม่ผ่าน ${failedCount}`}
-        actions={<FilterTabs value={filter} onChange={setFilter} />}
-      />
+      <PageHeader title="รอตรวจ" supporting={supporting} actions={<FilterTabs value={filter} onChange={setFilter} />} />
 
-      {items.length === 0 ? (
-        <Card>
-          <EmptyState
-            icon="check_circle"
-            title="ไม่มีสลิปรอตรวจ"
-            description="สลิปที่ยอดไม่ตรงหรือ EasySlip ตรวจไม่ผ่าน พร้อมยอดเทียบก่อนปิดบิล จะแสดงที่นี่"
-          />
-        </Card>
-      ) : (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <Card className="lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto">
-            <CardHeader title="คิวสลิป" description={`แสดง ${visible.length} จาก ${items.length} รายการ`} />
-            {visible.length === 0 ? (
-              <p className="py-6 text-center text-sm text-fog">ไม่พบสลิปที่ตรงกับตัวกรองที่เลือก</p>
-            ) : (
-              <ul className="grid gap-2">
-                {visible.map((item) => {
-                  const active = item.id === selected?.id;
-
-                  return (
-                    <li key={item.id}>
-                      <button
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => {
-                          setSelectedId(item.id);
-                        }}
-                        className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                          active ? "border-pebble bg-paper-mist" : "border-ash hover:bg-paper-mist"
-                        }`}
-                      >
-                        <SlipThumb />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-medium text-charcoal">ห้อง {item.roomId}</span>
-                            <span className="chip">{item.reason}</span>
-                          </span>
-                          <span className="mt-0.5 block truncate text-xs text-fog">{item.tenantName}</span>
-                          <span className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-steel">
-                            <span>
-                              สลิป <span className="num text-charcoal">{slipAmountLabel(item.slipAmount)}</span>
-                            </span>
-                            <span>
-                              บิล <span className="num text-charcoal">{baht(item.billAmount)} บาท</span>
-                            </span>
-                          </span>
-                          <span className="mt-1 block text-[11px] text-fog">ส่งเมื่อ {item.submittedAt}</span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+      {loading ? (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]" aria-busy="true">
+          <Card>
+            <div className="grid gap-3">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-2/3" />
+            </div>
           </Card>
-
-          {selected === null ? (
-            <Card>
-              <EmptyState
-                icon="fact_check"
-                title="ยังไม่ได้เลือกสลิป"
-                description="เลือกสลิปจากคิวด้านซ้ายเพื่อดูรายละเอียดและเทียบยอดก่อนปิดบิล"
-              />
-            </Card>
-          ) : (
-            <Card>
-              <CardHeader
-                title={`สลิปห้อง ${selected.roomId}`}
-                description={`${selected.tenantName} · ส่งเมื่อ ${selected.submittedAt}`}
-                actions={<Badge tone="neutral">ตัวอย่าง</Badge>}
-              />
-
-              <div className="grid gap-3">
-                <div className="panel-muted">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm text-charcoal">สลิปโอนเงินที่ส่งมา</span>
-                    <Badge tone="neutral">ตัวอย่าง</Badge>
-                  </div>
-                  <div className="mt-3 grid h-40 place-items-center rounded-lg border border-ash bg-canvas-white text-center">
-                    <span>
-                      <span className="ms block text-[32px] text-silver" aria-hidden="true">
-                        receipt_long
-                      </span>
-                      <span className="mt-1 block text-xs text-fog">ตัวอย่างสลิป ไม่ใช่ภาพจริง</span>
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs text-fog">
-                    {selected.bank ?? "ไม่ระบุธนาคาร"} · โอนเมื่อ {selected.transferredAt ?? "ไม่พบเวลาธุรกรรม"}
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2">
-                  <span className="text-sm text-steel">ผลตรวจจาก EasySlip</span>
-                  <Badge tone={easySlipTone(selected.easySlipState)} icon="verified">
-                    {selected.easySlipState}
-                  </Badge>
-                </div>
-
-                <div className="rounded-lg border border-ash p-4">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div>
-                      <p className="text-xs text-fog">ยอดโอนจากสลิป</p>
-                      <p className="num mt-1 text-lg text-charcoal">
-                        {selected.slipAmount === null ? "—" : baht(selected.slipAmount)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-fog">ยอดบิล</p>
-                      <p className="num mt-1 text-lg text-charcoal">{baht(selected.billAmount)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-fog">ผลต่าง</p>
-                      <p
-                        className={`num mt-1 text-lg ${
-                          selected.delta === null ? "text-fog" : selected.delta === 0 ? "text-vivid-green" : "text-danger"
-                        }`}
-                      >
-                        {selected.delta === null
-                          ? "ตรวจไม่ได้"
-                          : `${selected.delta > 0 ? "+" : ""}${baht(selected.delta)} บาท`}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 border-t border-ash pt-3">
-                    <p className="text-xs text-fog">บิลที่นำมาเทียบ</p>
-                    <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-sm text-charcoal">
-                        ห้อง {selected.roomId} · {selected.tenantName}
-                      </span>
-                      <a href="#bills" className="text-sm">
-                        ดูบิล
-                      </a>
-                    </div>
-                    <p className="mt-0.5 text-xs text-fog">เลขที่บิล {selected.billId}</p>
-                  </div>
-                </div>
-
-                <p className="text-xs text-steel">
-                  ระบบเทียบยอดสลิปกับบิลล่าสุดของห้องนี้แล้ว ตรวจทานยอดให้ตรงก่อนตัดสินใจ
-                </p>
-
-                <div className="flex flex-wrap justify-end gap-2 border-t border-ash pt-3">
-                  <Button
-                    variant="danger-soft"
-                    icon="block"
-                    onClick={() => {
-                      resolve(selected, `ปฏิเสธสลิปห้อง ${selected.roomId} แล้ว`);
-                    }}
-                  >
-                    ปฏิเสธสลิป
-                  </Button>
-                  <Button
-                    variant="primary"
-                    icon="task_alt"
-                    onClick={() => {
-                      resolve(selected, `ปิดบิลห้อง ${selected.roomId} ด้วยสลิปนี้แล้ว`);
-                    }}
-                  >
-                    ปิดบิลด้วยสลิปนี้
-                  </Button>
-                </div>
+          <Card>
+            <div className="grid gap-3">
+              <Skeleton className="h-5 w-44" />
+              <Skeleton className="h-56 w-full" />
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          </Card>
+        </div>
+      ) : list.length === 0 ? (
+        queueError === null ? (
+          <Card>
+            <EmptyState
+              icon="check_circle"
+              title="ไม่มีสลิปรอตรวจ"
+              description="สลิปที่ยอดไม่ตรงหรือ EasySlip ตรวจไม่ผ่าน พร้อมยอดเทียบก่อนปิดบิล จะแสดงที่นี่"
+            />
+          </Card>
+        ) : (
+          <Card>
+            <EmptyState
+              icon="cloud_off"
+              title="โหลดคิวสลิปไม่สำเร็จ"
+              description={queueError}
+              action={
+                <Button variant="secondary" icon="refresh" onClick={retryLoad}>
+                  ลองใหม่
+                </Button>
+              }
+            />
+          </Card>
+        )
+      ) : (
+        <>
+          {queueError !== null && (
+            <Card className="mb-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-danger">{`โหลดคิวสลิปไม่สำเร็จ: ${queueError}`}</p>
+                <Button variant="secondary" size="sm" icon="refresh" onClick={retryLoad}>
+                  ลองใหม่
+                </Button>
               </div>
             </Card>
           )}
-        </div>
+
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+            <Card className="lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto">
+              <CardHeader title="คิวสลิป" description={`แสดง ${visible.length} จาก ${list.length} รายการ`} />
+              {visible.length === 0 ? (
+                <p className="py-6 text-center text-sm text-fog">ไม่พบสลิปที่ตรงกับตัวกรองที่เลือก</p>
+              ) : (
+                <ul className="grid gap-2">
+                  {visible.map((item) => {
+                    const active = selected !== null && item.id === selected.id;
+
+                    return (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => {
+                            setSelectedId(item.id);
+                          }}
+                          className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                            active ? "border-pebble bg-paper-mist" : "border-ash hover:bg-paper-mist"
+                          }`}
+                        >
+                          <SlipThumb slip={item} />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center justify-between gap-2">
+                              <span className="truncate text-sm font-medium text-charcoal">{`ห้อง ${roomLabel(item)}`}</span>
+                              <Badge tone={reasonTone(item.reason)}>{reasonLabel(item.reason)}</Badge>
+                            </span>
+                            <span className="mt-0.5 block truncate text-xs text-fog">{tenantLabel(item)}</span>
+                            <span className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-steel">
+                              <span>
+                                สลิป <span className="num text-charcoal">{amountLabel(item.slipAmount)}</span>
+                              </span>
+                              <span>
+                                บิล <span className="num text-charcoal">{billTotalLabel(item)}</span>
+                              </span>
+                            </span>
+                            <span className="mt-1 block text-[11px] text-fog">{`ส่งเมื่อ ${stampLabel(item.createdAt)}`}</span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Card>
+
+            {selected === null ? (
+              <Card>
+                <EmptyState
+                  icon="fact_check"
+                  title="ยังไม่ได้เลือกสลิป"
+                  description="เลือกสลิปจากคิวด้านซ้ายเพื่อดูรายละเอียดและเทียบยอดก่อนปิดบิล"
+                />
+              </Card>
+            ) : (
+              <Card>
+                <CardHeader
+                  title={`สลิปห้อง ${roomLabel(selected)}`}
+                  description={`${tenantLabel(selected)} · ส่งเมื่อ ${stampLabel(selected.createdAt)}`}
+                  actions={<Badge tone={reasonTone(selected.reason)} icon="fact_check">{reasonLabel(selected.reason)}</Badge>}
+                />
+
+                <div className="grid gap-3">
+                  <div className="panel-muted">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm text-charcoal">สลิปโอนเงินที่ผู้เช่าส่งมา</span>
+                      <Badge tone={selected.verified ? "paid" : "danger"}>{easyslipLabel(selected)}</Badge>
+                    </div>
+                    <a href={selected.imageUrl} target="_blank" rel="noreferrer" className="mt-3 block">
+                      <img
+                        src={selected.imageUrl}
+                        alt={`สลิปโอนเงินของห้อง ${roomLabel(selected)}`}
+                        className="mx-auto max-h-[420px] w-full rounded-lg border border-ash bg-canvas-white object-contain"
+                      />
+                    </a>
+                    <p className="mt-2 text-xs text-fog">{`กดที่รูปเพื่อเปิดสลิปขนาดเต็ม · โอนเมื่อ ${transferLabel(selected)}`}</p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2">
+                    <span className="text-sm text-steel">ผลตรวจจาก EasySlip</span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <Badge tone={selected.verified ? "paid" : "danger"} icon={selected.verified ? "verified" : "error"}>
+                        {selected.verified ? "สลิปจริง" : "ตรวจไม่ผ่าน"}
+                      </Badge>
+                      <span className="num text-xs text-fog">{transRefLabel(selected)}</span>
+                    </span>
+                  </div>
+
+                  <div className="rounded-lg border border-ash p-4">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <p className="text-xs text-fog">ยอดโอนจากสลิป</p>
+                        <p className="num mt-1 text-lg text-charcoal">
+                          {selected.slipAmount === null ? "—" : baht(selected.slipAmount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-fog">ยอดบิล</p>
+                        <p className="num mt-1 text-lg text-charcoal">
+                          {selected.bill === null ? "—" : baht(selected.bill.total)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-fog">ผลต่าง</p>
+                        <p className={`num mt-1 text-lg ${deltaTone(deltaOf(selected))}`}>{deltaLabel(deltaOf(selected))}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 border-t border-ash pt-3">
+                      <p className="text-xs text-fog">บิลที่นำมาเทียบ</p>
+                      {selected.bill === null ? (
+                        <p className="mt-1 text-sm text-charcoal">
+                          สลิปนี้ไม่มีบิลให้เทียบ เพราะตอนส่งสลิปห้องนี้ยังไม่มีบิลค้าง หรือบิลถูกลบไปแล้ว
+                        </p>
+                      ) : (
+                        <>
+                          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm text-charcoal">
+                              {`ห้อง ${selected.bill.roomNumber} · ${tenantLabel(selected)}`}
+                            </span>
+                            <a href="#bills" className="text-sm">
+                              ดูบิล
+                            </a>
+                          </div>
+                          <p className="mt-0.5 text-xs text-fog">
+                            {`รอบบิล ${periodLabel(selected.bill.period)} · เลขที่บิล ${selected.bill.id}`}
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-3 border-t border-ash pt-3">
+                      <p className="text-xs text-fog">วันเวลาที่โอน</p>
+                      <p className="num mt-1 text-sm text-charcoal">{transferLabel(selected)}</p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-steel">
+                    ระบบเทียบยอดสลิปกับบิลล่าสุดของห้องนี้แล้ว ตรวจทานยอดให้ตรงก่อนตัดสินใจ
+                  </p>
+
+                  {actionError !== null && <p className="text-sm text-danger">{actionError}</p>}
+
+                  <div className="flex flex-wrap justify-end gap-2 border-t border-ash pt-3">
+                    <Button
+                      variant="danger-soft"
+                      icon="block"
+                      disabled={busy}
+                      onClick={() => {
+                        runResolve(selected, "reject");
+                      }}
+                    >
+                      ปฏิเสธสลิป
+                    </Button>
+                    <Button
+                      variant="primary"
+                      icon="task_alt"
+                      disabled={busy || selected.bill === null}
+                      title={selected.bill === null ? settleBlockedReason : undefined}
+                      onClick={() => {
+                        setConfirming(selected);
+                      }}
+                    >
+                      ปิดบิลด้วยสลิปนี้
+                    </Button>
+                  </div>
+
+                  {selected.bill === null && <p className="text-xs text-fog">{settleBlockedReason}</p>}
+                </div>
+              </Card>
+            )}
+          </div>
+        </>
       )}
+
+      <Dialog
+        open={confirming !== null}
+        onClose={() => {
+          setConfirming(null);
+        }}
+        title="ยืนยันปิดบิลใบนี้"
+        footer={
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(null);
+              }}
+            >
+              ยกเลิก
+            </Button>
+            <Button
+              variant="primary"
+              icon="task_alt"
+              disabled={busy}
+              onClick={() => {
+                if (confirming !== null) {
+                  runResolve(confirming, "settle");
+                }
+              }}
+            >
+              {busy ? "กำลังปิดบิล" : "ยืนยันปิดบิล"}
+            </Button>
+          </div>
+        }
+      >
+        {confirming !== null && (
+          <div className="grid gap-3 text-sm">
+            <dl className="grid gap-2">
+              <ConfirmRow label="ห้อง" value={roomLabel(confirming)} />
+              <ConfirmRow label="ผู้เช่า" value={tenantLabel(confirming)} />
+              <ConfirmRow label="ยอดในสลิป" value={amountLabel(confirming.slipAmount)} />
+              <ConfirmRow label="ยอดบิล" value={billTotalLabel(confirming)} />
+              <ConfirmRow label="ผลต่าง" value={deltaLabel(deltaOf(confirming))} />
+            </dl>
+            <p className="text-steel">ปิดบิลแล้วย้อนกลับไม่ได้ ระบบจะแจ้งผลให้ผู้เช่าทาง LINE</p>
+          </div>
+        )}
+      </Dialog>
 
       <Toast message={toast ?? ""} open={toast !== null} />
     </div>

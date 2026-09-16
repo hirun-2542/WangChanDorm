@@ -261,4 +261,3 @@ export const lineEvents: LineEvent[] = [
 export const occupiedRooms = rooms.filter((room) => room.occupied);
 export const vacantRooms = rooms.filter((room) => !room.occupied);
 export const movedOutTenants = tenants.filter((tenant) => tenant.status === "moved-out");
-export const pendingReviewCount = reviewQueue.length;

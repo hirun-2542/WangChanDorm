@@ -41,3 +41,23 @@ export function slipPendingReviewMessage(): string {
 export function slipDuplicateMessage(): string {
   return "สลิปนี้ถูกใช้ปิดบิลไปแล้ว กรุณาส่งสลิปของรายการใหม่หรือติดต่อเจ้าของหอ";
 }
+
+function bahtText(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+
+  return Number.isInteger(rounded)
+    ? formatBaht(rounded)
+    : rounded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+export function ownerSlipPendingMessage(
+  roomNumber: string,
+  tenantName: string,
+  slipAmount: number | null,
+  billTotal: number | null,
+): string {
+  const amountText = slipAmount === null ? "ยอดในสลิปอ่านไม่ได้" : `ยอดในสลิป ${bahtText(slipAmount)} บาท`;
+  const compareText = billTotal === null ? "ยังไม่มีบิลค้างให้เทียบ" : `เทียบกับยอดบิล ${bahtText(billTotal)} บาท`;
+
+  return `มีสลิปใหม่รอตรวจจากห้อง ${roomNumber} คุณ${tenantName} ${amountText} ${compareText} เปิดหน้าคิวรอตรวจเพื่อปิดบิลหรือปฏิเสธ`;
+}

@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { ApiError, sendBill, type Bill } from "../api";
-import { Button, PageHeader, StatusBadge } from "../ui";
+import { useEffect, useState } from "react";
+import { ApiError, fetchSlips, sendBill, type Bill, type Slip } from "../api";
+import { Badge, Button, PageHeader, StatusBadge } from "../ui";
 import {
   InvoicePreview,
   LineStateBadge,
@@ -37,12 +37,73 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function paymentHistory(bill: Bill): PaymentRecord[] {
-  if (bill.status !== "paid" || bill.paidAt === null) {
+function paymentHistory(bill: Bill, includeManualClose: boolean): PaymentRecord[] {
+  if (includeManualClose === false || bill.status !== "paid" || bill.paidAt === null) {
     return [];
   }
 
   return [{ method: paidMethodLabel(bill.paidMethod), when: stampLabel(bill.paidAt), note: "ปิดบิลด้วยมือ" }];
+}
+
+function slipTransferLabel(slip: Slip): string {
+  const when = slip.transferAt ?? slip.easyslip.date;
+
+  return when === null ? "ไม่พบเวลาที่โอน" : `โอนเมื่อ ${stampLabel(when)}`;
+}
+
+function SlipImage({ slip, alt }: { slip: Slip; alt: string }) {
+  return (
+    <a href={slip.imageUrl} target="_blank" rel="noreferrer" className="mt-2 block">
+      <img
+        src={slip.imageUrl}
+        alt={alt}
+        loading="lazy"
+        className="h-28 w-full rounded-lg border border-ash bg-paper-mist object-contain"
+      />
+    </a>
+  );
+}
+
+function SlipHistoryEntry({ slip, billTotal }: { slip: Slip; billTotal: number }) {
+  const delta = slip.slipAmount === null ? null : slip.slipAmount - billTotal;
+  const note =
+    delta === null
+      ? "ปิดบิลด้วยสลิปนี้แล้ว"
+      : delta === 0
+        ? "สลิปยอดตรง ปิดบิลด้วยสลิปนี้แล้ว"
+        : `ปิดบิลด้วยสลิปนี้แล้ว · ยอดสลิปต่างจากยอดบิล ${baht(Math.abs(delta))} บาท`;
+
+  return (
+    <li className="rounded-lg border border-ash px-3 py-2">
+      <div className="flex items-start justify-between gap-3 text-sm">
+        <Badge tone={delta === 0 ? "paid" : "review"} icon="check_circle">
+          ปิดบิลด้วยสลิป
+        </Badge>
+        <span className="num text-charcoal">{`สลิป ${baht(slip.slipAmount ?? billTotal)} บาท`}</span>
+      </div>
+      <SlipImage slip={slip} alt="สลิปที่ผู้เช่าส่งมา" />
+      <p className="num mt-1.5 text-[11px] text-fog">{slipTransferLabel(slip)}</p>
+      <p className="mt-0.5 text-[11px] text-fog">{note}</p>
+    </li>
+  );
+}
+
+function RejectedSlipEntry({ slip }: { slip: Slip }) {
+  return (
+    <li className="rounded-lg border border-ash px-3 py-2">
+      <div className="flex items-start justify-between gap-3 text-sm">
+        <Badge tone="danger" icon="block">
+          ปฏิเสธสลิป
+        </Badge>
+        <span className="num text-charcoal">
+          {slip.slipAmount === null ? "ไม่มียอด" : `สลิป ${baht(slip.slipAmount)} บาท`}
+        </span>
+      </div>
+      <SlipImage slip={slip} alt="สลิปที่ถูกปฏิเสธ" />
+      <p className="num mt-1.5 text-[11px] text-fog">{slipTransferLabel(slip)}</p>
+      <p className="mt-0.5 text-[11px] text-fog">เจ้าของปฏิเสธสลิปนี้ ไม่นำมาปิดบิล บิลไม่เปลี่ยนแปลง</p>
+    </li>
+  );
 }
 
 export function BillDetail({
@@ -61,8 +122,39 @@ export function BillDetail({
   const [payOpen, setPayOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [slips, setSlips] = useState<Slip[]>([]);
+  const [slipHistoryError, setSlipHistoryError] = useState<string | null>(null);
 
-  const history = paymentHistory(bill);
+  const billId = bill.id;
+
+  useEffect(() => {
+    let active = true;
+
+    void fetchSlips({ billId })
+      .then((list) => {
+        if (active) {
+          setSlips(list);
+          setSlipHistoryError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
+
+        setSlips([]);
+        setSlipHistoryError(error instanceof ApiError ? error.message : "โหลดสลิปของบิลนี้ไม่สำเร็จ");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [billId]);
+
+  const acceptedSlips = slips.filter((slip) => slip.status === "matched");
+  const declinedSlips = slips.filter((slip) => slip.status === "rejected");
+  const history = paymentHistory(bill, acceptedSlips.length === 0);
+  const hasHistory = history.length > 0 || acceptedSlips.length > 0 || declinedSlips.length > 0;
   const isPaid = bill.status === "paid";
   const number = billNumber(bill);
   const sendBlockedReason = connected === null ? "ยังไม่ทราบสถานะ LINE ของผู้เช่า" : "ผู้เช่ายังไม่เชื่อม LINE";
@@ -205,10 +297,11 @@ export function BillDetail({
 
           <div className="mt-4 border-t border-ash pt-4">
             <h3 className="text-sm text-charcoal">ประวัติการชำระ</h3>
-            {history.length === 0 ? (
-              <p className="mt-1.5 text-xs text-fog">ยังไม่มีประวัติการชำระ บิลนี้ยังไม่ปิด</p>
-            ) : (
+            {hasHistory ? (
               <ul className="mt-2 grid gap-2">
+                {acceptedSlips.map((slip) => (
+                  <SlipHistoryEntry key={slip.id} slip={slip} billTotal={bill.total} />
+                ))}
                 {history.map((entry) => (
                   <li key={entry.when} className="rounded-lg border border-ash px-3 py-2">
                     <div className="flex items-center justify-between gap-3 text-sm">
@@ -219,7 +312,18 @@ export function BillDetail({
                     <p className="mt-0.5 text-[11px] text-fog">{entry.note}</p>
                   </li>
                 ))}
+                {declinedSlips.map((slip) => (
+                  <RejectedSlipEntry key={slip.id} slip={slip} />
+                ))}
               </ul>
+            ) : slipHistoryError === null ? (
+              <p className="mt-1.5 text-xs text-fog">ยังไม่มีประวัติการชำระ บิลนี้ยังไม่ปิด</p>
+            ) : null}
+            {slipHistoryError !== null && slips.length === 0 && (
+              <p className="mt-1.5 text-xs text-danger">{`โหลดสลิปของบิลนี้ไม่สำเร็จ: ${slipHistoryError}`}</p>
+            )}
+            {bill.status === "unpaid" && hasHistory && (
+              <p className="mt-1.5 text-xs text-fog">บิลนี้ยังไม่ปิด</p>
             )}
           </div>
         </aside>

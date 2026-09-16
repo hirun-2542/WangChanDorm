@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { pendingReviewCount } from "./mock-data";
+import { fetchSlips, reviewQueueChangedEvent } from "./api";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
 import { LinePage } from "./pages/line";
@@ -160,6 +160,29 @@ function Shell() {
   const { query, setQuery } = useSearch();
   const searchRef = useRef<HTMLInputElement>(null);
   const moreRef = useRef<HTMLDialogElement>(null);
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+
+    const refreshCount = () => {
+      void fetchSlips()
+        .then((slips) => {
+          if (active) {
+            setPendingReviewCount(slips.length);
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    refreshCount();
+    window.addEventListener(reviewQueueChangedEvent, refreshCount);
+
+    return () => {
+      active = false;
+      window.removeEventListener(reviewQueueChangedEvent, refreshCount);
+    };
+  }, [parsed.route]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

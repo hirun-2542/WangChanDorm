@@ -368,3 +368,66 @@ export async function sendBills(period: string, billIds?: string[]): Promise<Sen
 
   return { period: body.period, sent: body.sent, failed: body.failed, failedIds: body.failedIds, skipped: body.skipped };
 }
+
+export type SlipStatus = "pending_review" | "matched" | "rejected";
+
+export type SlipReason = "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip";
+
+export type SlipResolveAction = "settle" | "reject";
+
+export interface SlipBill {
+  id: string;
+  roomNumber: string;
+  tenantName: string;
+  period: string;
+  total: number;
+}
+
+export interface Slip {
+  id: string;
+  createdAt: string;
+  imageKey: string;
+  imageUrl: string;
+  status: SlipStatus;
+  reason: SlipReason | null;
+  slipAmount: number | null;
+  bill: SlipBill | null;
+  verified: boolean;
+  easyslip: { verified: boolean; transRef: string | null; date: string | null };
+  transferAt: string | null;
+}
+
+export interface SlipQuery {
+  status?: SlipStatus;
+  billId?: string;
+}
+
+export async function fetchSlips(query: SlipQuery = {}): Promise<Slip[]> {
+  const params = new URLSearchParams();
+
+  if (query.status !== undefined) {
+    params.set("status", query.status);
+  }
+
+  if (query.billId !== undefined) {
+    params.set("billId", query.billId);
+  }
+
+  const search = params.toString();
+  const body = await apiGet<{ ok: true; slips: Slip[] }>(`/api/slips${search === "" ? "" : `?${search}`}`);
+
+  return body.slips;
+}
+
+export async function resolveSlip(id: string, action: SlipResolveAction, billId?: string): Promise<Slip> {
+  const payload: { action: SlipResolveAction; billId?: string } = billId === undefined ? { action } : { action, billId };
+  const body = await apiPost<{ ok: true; slip: Slip }>(`/api/slips/${encodeURIComponent(id)}/resolve`, payload);
+
+  return body.slip;
+}
+
+export const reviewQueueChangedEvent = "wangchan:review-queue-changed";
+
+export function announceReviewQueueChanged(): void {
+  window.dispatchEvent(new Event(reviewQueueChangedEvent));
+}

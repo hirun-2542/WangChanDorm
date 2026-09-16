@@ -7,6 +7,7 @@ const tenantsUrl = "https://dorm.test/api/tenants";
 const billsUrl = "https://dorm.test/api/bills";
 const settingsUrl = "https://dorm.test/api/settings";
 const slipBaseUrl = "https://dorm.test/slips";
+const slipsUrl = "https://dorm.test/api/slips";
 
 const lineContentBase = "https://api-data.line.me/v2/bot/message";
 const linePushUrl = "https://api.line.me/v2/bot/message/push";
@@ -79,6 +80,28 @@ interface SlipRow {
 interface ErrorBody {
   ok: boolean;
   error: { code: string; message: string; field?: string };
+}
+
+interface QueueBill {
+  id: string;
+  roomNumber: string;
+  tenantName: string;
+  period: string;
+  total: number;
+}
+
+interface QueueSlip {
+  id: string;
+  createdAt: string;
+  imageKey: string;
+  imageUrl: string;
+  status: string;
+  reason: string | null;
+  slipAmount: number | null;
+  bill: QueueBill | null;
+  verified: boolean;
+  easyslip: { verified: boolean; transRef: string | null; date: string | null };
+  transferAt: string | null;
 }
 
 interface OutboundCall {
@@ -321,6 +344,36 @@ async function sendSlip(lineUserId: string, messageId: string): Promise<Response
 
 function slipResultOf(slip: SlipRow): Record<string, unknown> {
   return asJson<Record<string, unknown>>(slip.easyslip_result ?? "null");
+}
+
+function queueIds(slips: QueueSlip[]): string[] {
+  return slips.map((slip) => slip.id);
+}
+
+async function listQueue(query = ""): Promise<QueueSlip[]> {
+  const response = await SELF.fetch(`${slipsUrl}${query}`);
+  expect(response.status).toBe(200);
+  return (await response.json<{ ok: boolean; slips: QueueSlip[] }>()).slips;
+}
+
+function resolveSlip(id: string, payload: Record<string, unknown>): Promise<Response> {
+  return post(`${slipsUrl}/${id}/resolve`, payload);
+}
+
+async function linkOwner(lineUserId: string): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value, updated_at) VALUES ('owner_line_user_id', ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+  )
+    .bind(lineUserId)
+    .run();
+}
+
+async function unlinkOwner(): Promise<void> {
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'owner_line_user_id'").run();
+}
+
+function ownerAlertText(roomNumber: string, tenantName: string, amountText: string, compareText: string): string {
+  return `มีสลิปใหม่รอตรวจจากห้อง ${roomNumber} คุณ${tenantName} ${amountText} ${compareText} เปิดหน้าคิวรอตรวจเพื่อปิดบิลหรือปฏิเสธ`;
 }
 
 beforeEach(() => {
@@ -930,6 +983,444 @@ describe("POST /webhook/line image events", () => {
     const september = await billOf("2026-09", first.id);
     const october = await billOf("2026-10", second.id);
     expect([september.status, october.status].filter((status) => status === "paid")).toHaveLength(1);
+  });
+});
+
+describe("owner alert for slips that land in review", () => {
+  it("pushes the owner the room, the tenant, the slip amount and the compared bill total", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S201", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย แจ้งเจ้าของ");
+    await linkTenantByRoomNumber("S201", "U-alert-1", "สมชาย แจ้งเจ้าของ");
+    await linkOwner("U-boss-1");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2001");
+
+    const response = await sendSlip("U-alert-1", "msg-alert-1");
+    expect(response.status).toBe(200);
+
+    expect(pushTextsFor("U-alert-1")).toEqual([pendingReviewText]);
+    expect(pushTextsFor("U-boss-1")).toEqual([
+      ownerAlertText("S201", "สมชาย แจ้งเจ้าของ", "ยอดในสลิป 3,550.50 บาท", "เทียบกับยอดบิล 3,550 บาท"),
+    ]);
+
+    const slip = await readOneSlipFor("U-alert-1");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slip.bill_total).toBe(3550);
+  });
+
+  it("tells the owner there is no bill to compare when the room has no unpaid bill", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S202", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหญิง ไม่มีบิลค้าง");
+    await linkTenantByRoomNumber("S202", "U-alert-2", "สมหญิง ไม่มีบิลค้าง");
+    await linkOwner("U-boss-2");
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550, "TR-2002");
+
+    const response = await sendSlip("U-alert-2", "msg-alert-2");
+    expect(response.status).toBe(200);
+
+    expect(pushTextsFor("U-boss-2")).toEqual([
+      ownerAlertText("S202", "สมหญิง ไม่มีบิลค้าง", "ยอดในสลิป 3,550 บาท", "ยังไม่มีบิลค้างให้เทียบ"),
+    ]);
+
+    const slip = await readOneSlipFor("U-alert-2");
+    expect(slip.status).toBe("pending_review");
+    expect(slipResultOf(slip).reason).toBe("no_unpaid_bill");
+  });
+
+  it("keeps the slip and pushes nothing extra when the owner has no LINE link", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S203", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหมาย ยังไม่เชื่อมเจ้าของ");
+    await linkTenantByRoomNumber("S203", "U-alert-3", "สมหมาย ยังไม่เชื่อมเจ้าของ");
+    await unlinkOwner();
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2003");
+
+    const response = await sendSlip("U-alert-3", "msg-alert-3");
+    expect(response.status).toBe(200);
+
+    expect(pushTexts()).toEqual([{ to: "U-alert-3", text: pendingReviewText }]);
+
+    const slip = await readOneSlipFor("U-alert-3");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+  });
+});
+
+describe("GET /api/slips", () => {
+  it("lists only pending review slips by default and carries every field the queue renders", async () => {
+    await putRates(18, 7);
+    const reviewRoom = await newRoom({ roomNumber: "S204", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(reviewRoom.id, "สมหญิง คิวรอตรวจ");
+    await linkTenantByRoomNumber("S204", "U-queue-1", "สมหญิง คิวรอตรวจ");
+    outboundCalls = [];
+    const reviewBill = await generateBill(reviewRoom.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    const closedRoom = await newRoom({ roomNumber: "S205", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(closedRoom.id, "สมปอง ปิดอัตโนมัติ");
+    await linkTenantByRoomNumber("S205", "U-queue-2", "สมปอง ปิดอัตโนมัติ");
+    const closedBill = await generateBill(closedRoom.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2004");
+    expect((await sendSlip("U-queue-1", "msg-queue-1")).status).toBe(200);
+
+    easySlipBody = verifiedBody(3550, "TR-2005");
+    expect((await sendSlip("U-queue-2", "msg-queue-2")).status).toBe(200);
+
+    const reviewSlip = await readOneSlipFor("U-queue-1");
+    const closedSlip = await readOneSlipFor("U-queue-2");
+    expect(reviewSlip.status).toBe("pending_review");
+    expect(closedSlip.status).toBe("matched");
+
+    const queue = await listQueue();
+    expect(queue.every((slip) => slip.status === "pending_review")).toBe(true);
+    expect(queueIds(queue)).toContain(reviewSlip.id);
+    expect(queueIds(queue)).not.toContain(closedSlip.id);
+
+    const item = pick(queue, (slip) => slip.id === reviewSlip.id);
+    expect(item.createdAt).toBe(reviewSlip.created_at);
+    expect(item.imageKey).toBe(reviewSlip.image_key);
+    expect(item.imageUrl).toBe(`/slips/${reviewSlip.image_key}`);
+    expect(item.reason).toBe("mismatch");
+    expect(item.slipAmount).toBe(3550.5);
+    expect(item.verified).toBe(true);
+    expect(item.easyslip).toEqual({ verified: true, transRef: "TR-2004", date: slipDate });
+    expect(item.transferAt).toBe(slipDate);
+    expect(item.bill).toEqual({
+      id: reviewBill.id,
+      roomNumber: "S204",
+      tenantName: "สมหญิง คิวรอตรวจ",
+      period: "2026-09",
+      total: 3550,
+    });
+
+    const history = await listQueue(`?billId=${closedBill.id}`);
+    expect(history.every((slip) => slip.bill?.id === closedBill.id)).toBe(true);
+    expect(queueIds(history)).toContain(closedSlip.id);
+
+    const settledSlip = pick(history, (slip) => slip.id === closedSlip.id);
+    expect(settledSlip.status).toBe("matched");
+    expect(settledSlip.reason).toBeNull();
+    expect(settledSlip.bill).toEqual({
+      id: closedBill.id,
+      roomNumber: "S205",
+      tenantName: "สมปอง ปิดอัตโนมัติ",
+      period: "2026-09",
+      total: 3550,
+    });
+
+    const pendingHistory = await listQueue(`?billId=${reviewBill.id}`);
+    expect(pendingHistory.every((slip) => slip.bill?.id === reviewBill.id)).toBe(true);
+    expect(queueIds(pendingHistory)).toContain(reviewSlip.id);
+
+    const matched = await listQueue("?status=matched");
+    expect(matched.every((slip) => slip.status === "matched")).toBe(true);
+    expect(queueIds(matched)).toContain(closedSlip.id);
+    expect(queueIds(matched)).not.toContain(reviewSlip.id);
+
+    const invalid = await SELF.fetch(`${slipsUrl}?status=done`);
+    expect(invalid.status).toBe(400);
+
+    const invalidBody = await invalid.json<ErrorBody>();
+    expect(invalidBody.ok).toBe(false);
+    expect(invalidBody.error.code).toBe("VALIDATION");
+    expect(invalidBody.error.field).toBe("status");
+  });
+});
+
+describe("POST /api/slips/:id/resolve", () => {
+  it("settles a queued slip into a paid bill and sends the tenant the confirmation", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S206", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมศรี ปิดจากคิว");
+    await linkTenantByRoomNumber("S206", "U-resolve-1", "สมศรี ปิดจากคิว");
+    await linkOwner("U-boss-6");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2006");
+    expect((await sendSlip("U-resolve-1", "msg-resolve-1")).status).toBe(200);
+
+    const slip = await readOneSlipFor("U-resolve-1");
+    expect(slip.status).toBe("pending_review");
+    expect(queueIds(await listQueue())).toContain(slip.id);
+
+    outboundCalls = [];
+    const response = await resolveSlip(slip.id, { action: "settle" });
+    expect(response.status).toBe(200);
+
+    const body = await response.json<{ ok: boolean; slip: QueueSlip }>();
+    expect(body.ok).toBe(true);
+    expect(body.slip.id).toBe(slip.id);
+    expect(body.slip.status).toBe("matched");
+    expect(body.slip.bill).toEqual({
+      id: bill.id,
+      roomNumber: "S206",
+      tenantName: "สมศรี ปิดจากคิว",
+      period: "2026-09",
+      total: 3550,
+    });
+
+    const paid = await billOf("2026-09", bill.id);
+    expect(paid.status).toBe("paid");
+    expect(paid.paidMethod).toBe("transfer");
+    expect(paid.paidAt).toBe(slipPaidAt);
+
+    const stored = await readOneSlipFor("U-resolve-1");
+    expect(stored.status).toBe("matched");
+    expect(stored.bill_id).toBe(bill.id);
+    expect(stored.bill_total).toBe(3550);
+
+    expect(pushTextsFor("U-resolve-1")).toEqual([matchedText("3,550", "กันยายน 2569")]);
+    expect(pushTextsFor("U-boss-6")).toEqual([]);
+    expect(queueIds(await listQueue())).not.toContain(slip.id);
+  });
+
+  it("refuses to settle against a bill that is already paid and changes nothing", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S207", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหมาย ปิดไปแล้ว");
+    await linkTenantByRoomNumber("S207", "U-resolve-2", "สมหมาย ปิดไปแล้ว");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2007");
+    expect((await sendSlip("U-resolve-2", "msg-resolve-2")).status).toBe(200);
+
+    const slip = await readOneSlipFor("U-resolve-2");
+    expect(slip.status).toBe("pending_review");
+
+    expect((await post(`${billsUrl}/${bill.id}/mark-paid`, { method: "cash", paidAt: "2026-09-02" })).status).toBe(200);
+
+    outboundCalls = [];
+    const response = await resolveSlip(slip.id, { action: "settle" });
+    expect(response.status).toBe(409);
+    expect((await response.json<ErrorBody>()).error.code).toBe("CONFLICT");
+
+    const unchanged = await billOf("2026-09", bill.id);
+    expect(unchanged.status).toBe("paid");
+    expect(unchanged.paidMethod).toBe("cash");
+    expect(unchanged.paidAt).toBe("2026-09-02");
+
+    const stored = await readOneSlipFor("U-resolve-2");
+    expect(stored.status).toBe("pending_review");
+    expect(stored.bill_id).toBe(bill.id);
+    expect(stored.bill_total).toBe(3550);
+    expect(pushTexts()).toEqual([]);
+  });
+
+  it("refuses to settle a slip whose transfer reference already closed a bill", async () => {
+    await putRates(18, 7);
+    const firstRoom = await newRoom({ roomNumber: "S208", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(firstRoom.id, "สมศักดิ์ สลิปซ้ำคิว");
+    await linkTenantByRoomNumber("S208", "U-resolve-3", "สมศักดิ์ สลิปซ้ำคิว");
+    outboundCalls = [];
+    const firstBill = await generateBill(firstRoom.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    const secondRoom = await newRoom({ roomNumber: "S209", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(secondRoom.id, "สมบัติ สลิปซ้ำคิว");
+    await linkTenantByRoomNumber("S209", "U-resolve-4", "สมบัติ สลิปซ้ำคิว");
+    const secondBill = await generateBill(secondRoom.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2008");
+    expect((await sendSlip("U-resolve-3", "msg-resolve-3")).status).toBe(200);
+    easySlipBody = verifiedBody(3550.5, "TR-2008");
+    expect((await sendSlip("U-resolve-4", "msg-resolve-4")).status).toBe(200);
+
+    const firstSlip = await readOneSlipFor("U-resolve-3");
+    const secondSlip = await readOneSlipFor("U-resolve-4");
+    expect(firstSlip.status).toBe("pending_review");
+    expect(secondSlip.status).toBe("pending_review");
+    expect(firstSlip.trans_ref).toBe("TR-2008");
+    expect(secondSlip.trans_ref).toBe("TR-2008");
+    expect(firstSlip.bill_id).toBe(firstBill.id);
+    expect(secondSlip.bill_id).toBe(secondBill.id);
+
+    expect((await resolveSlip(firstSlip.id, { action: "settle" })).status).toBe(200);
+
+    outboundCalls = [];
+    const response = await resolveSlip(secondSlip.id, { action: "settle" });
+    expect(response.status).toBe(409);
+    expect((await response.json<ErrorBody>()).error.code).toBe("CONFLICT");
+
+    const unchanged = await billOf("2026-09", secondBill.id);
+    expect(unchanged.status).toBe("unpaid");
+    expect(unchanged.paidAt).toBeNull();
+
+    const stored = await readOneSlipFor("U-resolve-4");
+    expect(stored.status).toBe("pending_review");
+    expect(stored.bill_id).toBe(secondBill.id);
+    expect(pushTexts()).toEqual([]);
+  });
+
+  it("refuses to resolve a slip that was already decided", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S210", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมปอง ตัดสินแล้ว");
+    await linkTenantByRoomNumber("S210", "U-resolve-5", "สมปอง ตัดสินแล้ว");
+
+    await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2009");
+    expect((await sendSlip("U-resolve-5", "msg-resolve-5")).status).toBe(200);
+
+    const slip = await readOneSlipFor("U-resolve-5");
+    expect((await resolveSlip(slip.id, { action: "settle" })).status).toBe(200);
+
+    outboundCalls = [];
+    const settledAgain = await resolveSlip(slip.id, { action: "settle" });
+    expect(settledAgain.status).toBe(409);
+    expect((await settledAgain.json<ErrorBody>()).error.code).toBe("CONFLICT");
+
+    const rejected = await resolveSlip(slip.id, { action: "reject" });
+    expect(rejected.status).toBe(409);
+    expect((await rejected.json<ErrorBody>()).error.code).toBe("CONFLICT");
+    expect(pushTexts()).toEqual([]);
+  });
+
+  it("closes the bill named in the body and asks for one when the slip has no bill", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S211", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย เลือกบิลเอง");
+    await linkTenantByRoomNumber("S211", "U-resolve-6", "สมชาย เลือกบิลเอง");
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550, "TR-2010");
+    expect((await sendSlip("U-resolve-6", "msg-resolve-6")).status).toBe(200);
+
+    const slip = await readOneSlipFor("U-resolve-6");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBeNull();
+    expect(slipResultOf(slip).reason).toBe("no_unpaid_bill");
+
+    const missing = await resolveSlip(slip.id, { action: "settle" });
+    expect(missing.status).toBe(400);
+
+    const missingBody = await missing.json<ErrorBody>();
+    expect(missingBody.error.code).toBe("VALIDATION");
+    expect(missingBody.error.field).toBe("billId");
+
+    const unknown = await resolveSlip(slip.id, { action: "settle", billId: "00000000-0000-4000-8000-000000000000" });
+    expect(unknown.status).toBe(404);
+    expect((await unknown.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    const response = await resolveSlip(slip.id, { action: "settle", billId: bill.id });
+    expect(response.status).toBe(200);
+
+    const body = await response.json<{ ok: boolean; slip: QueueSlip }>();
+    expect(body.slip.status).toBe("matched");
+    expect(body.slip.bill).toEqual({
+      id: bill.id,
+      roomNumber: "S211",
+      tenantName: "สมชาย เลือกบิลเอง",
+      period: "2026-09",
+      total: 3550,
+    });
+
+    const paid = await billOf("2026-09", bill.id);
+    expect(paid.status).toBe("paid");
+    expect(paid.paidMethod).toBe("transfer");
+    expect(paid.paidAt).toBe(slipPaidAt);
+
+    const stored = await readOneSlipFor("U-resolve-6");
+    expect(stored.status).toBe("matched");
+    expect(stored.bill_id).toBe(bill.id);
+    expect(stored.bill_total).toBe(3550);
+    expect(pushTextsFor("U-resolve-6")).toEqual([matchedText("3,550", "กันยายน 2569")]);
+  });
+
+  it("rejects a slip without touching the bill and without pushing anything", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S212", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมนึก ปฏิเสธสลิป");
+    await linkTenantByRoomNumber("S212", "U-resolve-7", "สมนึก ปฏิเสธสลิป");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    easySlipBody = verifiedBody(3550.5, "TR-2011");
+    expect((await sendSlip("U-resolve-7", "msg-resolve-7")).status).toBe(200);
+
+    const slip = await readOneSlipFor("U-resolve-7");
+    expect(slip.status).toBe("pending_review");
+    expect(queueIds(await listQueue())).toContain(slip.id);
+
+    outboundCalls = [];
+    const response = await resolveSlip(slip.id, { action: "reject" });
+    expect(response.status).toBe(200);
+
+    const body = await response.json<{ ok: boolean; slip: QueueSlip }>();
+    expect(body.slip.status).toBe("rejected");
+    expect(body.slip.reason).toBe("mismatch");
+    expect(body.slip.bill).toEqual({
+      id: bill.id,
+      roomNumber: "S212",
+      tenantName: "สมนึก ปฏิเสธสลิป",
+      period: "2026-09",
+      total: 3550,
+    });
+
+    const stored = await readOneSlipFor("U-resolve-7");
+    expect(stored.status).toBe("rejected");
+    expect(stored.bill_id).toBe(bill.id);
+    expect(stored.bill_total).toBe(3550);
+    expect(stored.trans_ref).toBe("TR-2011");
+
+    const result = slipResultOf(stored);
+    expect(result.verified).toBe(true);
+    expect(result.reason).toBe("mismatch");
+    expect(result.decision).toBe("rejected");
+    expect(typeof result.decidedAt).toBe("string");
+
+    const untouched = await billOf("2026-09", bill.id);
+    expect(untouched.status).toBe("unpaid");
+    expect(untouched.paidAt).toBeNull();
+    expect(untouched.paidMethod).toBeNull();
+
+    expect(pushTexts()).toEqual([]);
+    expect(queueIds(await listQueue())).not.toContain(slip.id);
+    expect(queueIds(await listQueue(`?billId=${bill.id}`))).toContain(slip.id);
+  });
+
+  it("answers 404 for an unknown slip and 400 for an unknown action", async () => {
+    const missing = "00000000-0000-4000-8000-000000000000";
+
+    const settled = await resolveSlip(missing, { action: "settle" });
+    expect(settled.status).toBe(404);
+    expect((await settled.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const rejected = await resolveSlip(missing, { action: "reject" });
+    expect(rejected.status).toBe(404);
+    expect((await rejected.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const invalid = await resolveSlip(missing, { action: "approve" });
+    expect(invalid.status).toBe(400);
+
+    const invalidBody = await invalid.json<ErrorBody>();
+    expect(invalidBody.error.code).toBe("VALIDATION");
+    expect(invalidBody.error.field).toBe("action");
   });
 });
 

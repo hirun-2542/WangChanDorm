@@ -1,14 +1,36 @@
-import { fetchMessageContent, pushMessage, replyMessage } from "../line/api";
+import { failureDetail, fetchMessageContent, logLineFailure, pushMessage, replyMessage } from "../line/api";
 import { type EasySlipResult, verifySlip } from "../line/easyslip";
 import {
+  ownerSlipPendingMessage,
   slipDownloadFailedMessage,
   slipDuplicateMessage,
   slipMatchedMessage,
   slipNotLinkedMessage,
   slipPendingReviewMessage,
 } from "../line/messages";
+import { asRecord } from "../routes/shared";
 
 export type SlipReason = "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip";
+
+export interface StoredSlipResult {
+  verified: boolean;
+  amount: number | null;
+  transRef: string | null;
+  date: string | null;
+  reason: SlipReason | null;
+  raw: unknown;
+}
+
+const slipReasons: readonly SlipReason[] = ["mismatch", "not_verified", "no_unpaid_bill", "duplicate_slip"];
+
+const emptySlipResult: StoredSlipResult = {
+  verified: false,
+  amount: null,
+  transRef: null,
+  date: null,
+  reason: null,
+  raw: null,
+};
 
 const insertSlipSql = "INSERT INTO slips (id, line_user_id, image_key, status) VALUES (?, ?, ?, 'pending_review')";
 
@@ -21,12 +43,104 @@ const matchSlipSql = "UPDATE slips SET status = 'matched', bill_id = ?, bill_tot
 interface SlipSenderRow {
   id: string;
   room_id: string;
+  full_name: string;
+  room_number: string;
 }
 
 interface UnpaidBillRow {
   id: string;
   period: string;
   total: number;
+}
+
+interface SlipOwnerAlert {
+  roomNumber: string;
+  tenantName: string;
+  slipAmount: number | null;
+  billTotal: number | null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readText(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+export function parseSlipResult(value: string | null): StoredSlipResult {
+  if (value === null || value.trim() === "") {
+    return emptySlipResult;
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return emptySlipResult;
+  }
+
+  const record = asRecord(parsed);
+
+  if (record === null) {
+    return emptySlipResult;
+  }
+
+  const reason = typeof record.reason === "string" && (slipReasons as readonly string[]).includes(record.reason)
+    ? (record.reason as SlipReason)
+    : null;
+
+  return {
+    verified: record.verified === true,
+    amount: readNumber(record.amount),
+    transRef: readText(record.transRef),
+    date: readText(record.date),
+    reason,
+    raw: record.raw ?? null,
+  };
+}
+
+export function rejectedSlipResultJson(value: string | null, decidedAt: string): string {
+  const stored = parseSlipResult(value);
+  const payload: Record<string, unknown> = {
+    verified: stored.verified,
+    amount: stored.amount,
+    transRef: stored.transRef,
+    date: stored.date,
+    raw: stored.raw,
+  };
+
+  if (stored.reason !== null) {
+    payload.reason = stored.reason;
+  }
+
+  payload.decision = "rejected";
+  payload.decidedAt = decidedAt;
+
+  return JSON.stringify(payload);
+}
+
+export function isUniqueViolation(error: unknown): boolean {
+  const detail = error instanceof Error ? error.message : String(error);
+  return detail.includes("UNIQUE");
+}
+
+export function canonicalPaidAt(date: string | null): string {
+  if (date !== null) {
+    const parsed = new Date(date);
+
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  return new Date().toISOString();
 }
 
 function randomImageKey(): string {
@@ -55,21 +169,24 @@ function slipResultJson(result: EasySlipResult, reason: SlipReason | null): stri
   return JSON.stringify(payload);
 }
 
-function canonicalPaidAt(date: string | null): string {
-  if (date !== null) {
-    const parsed = new Date(date);
+async function notifyOwnerOfSlipInReview(env: Env, slipId: string, alert: SlipOwnerAlert): Promise<void> {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'owner_line_user_id'").first<{ value: string }>();
+    const ownerId = (row?.value ?? "").trim();
 
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toISOString();
+    if (ownerId === "") {
+      console.log(JSON.stringify({ message: "slip owner alert skipped", slipId, reason: "owner line is not linked" }));
+      return;
     }
+
+    const delivered = await pushMessage(env, ownerId, [
+      { type: "text", text: ownerSlipPendingMessage(alert.roomNumber, alert.tenantName, alert.slipAmount, alert.billTotal) },
+    ]);
+
+    console.log(JSON.stringify({ message: "slip owner alerted", slipId, delivered: delivered === true }));
+  } catch (error) {
+    logLineFailure("slip owner alert failed", failureDetail(error));
   }
-
-  return new Date().toISOString();
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  const detail = error instanceof Error ? error.message : String(error);
-  return detail.includes("UNIQUE");
 }
 
 async function keepSlipForReview(
@@ -79,6 +196,7 @@ async function keepSlipForReview(
   lineUserId: string,
   reason: SlipReason,
   bill: UnpaidBillRow | null,
+  sender: SlipSenderRow,
 ): Promise<void> {
   await env.DB.prepare(updateSlipSql)
     .bind("pending_review", bill?.id ?? null, bill?.total ?? null, result.amount, result.transRef, slipResultJson(result, reason), slipId)
@@ -86,6 +204,12 @@ async function keepSlipForReview(
 
   console.log(JSON.stringify({ message: "slip kept for review", slipId, lineUserId, verified: result.verified, reason }));
   await pushMessage(env, lineUserId, [{ type: "text", text: slipPendingReviewMessage() }]);
+  await notifyOwnerOfSlipInReview(env, slipId, {
+    roomNumber: sender.room_number,
+    tenantName: sender.full_name,
+    slipAmount: result.amount,
+    billTotal: bill?.total ?? null,
+  });
 }
 
 async function rejectDuplicateSlip(
@@ -106,7 +230,9 @@ async function rejectDuplicateSlip(
 }
 
 export async function handleSlipImage(env: Env, origin: string, userId: string, replyToken: string, messageId: string): Promise<void> {
-  const sender = await env.DB.prepare("SELECT id, room_id FROM tenants WHERE line_user_id = ?")
+  const sender = await env.DB.prepare(
+    "SELECT t.id, t.room_id, t.full_name, r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.line_user_id = ?",
+  )
     .bind(userId)
     .first<SlipSenderRow>();
 
@@ -139,7 +265,7 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
 
   if (!result.verified || amount === null || transRef === null || bill === null || toSatang(amount) !== toSatang(bill.total)) {
     const reason: SlipReason = bill === null ? "no_unpaid_bill" : !result.verified || amount === null || transRef === null ? "not_verified" : "mismatch";
-    await keepSlipForReview(env, slipId, result, userId, reason, bill);
+    await keepSlipForReview(env, slipId, result, userId, reason, bill, sender);
     return;
   }
 
@@ -159,7 +285,7 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
     ]);
 
     if ((results[0]?.meta.changes ?? 0) === 0) {
-      await keepSlipForReview(env, slipId, result, userId, "no_unpaid_bill", null);
+      await keepSlipForReview(env, slipId, result, userId, "no_unpaid_bill", null, sender);
       return;
     }
   } catch (error) {

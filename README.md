@@ -83,7 +83,7 @@ npm test
 - `test/bills-render.test.ts` ตรวจ payload พร้อมเพย์ (CRC16 known vector + payload ที่ตรงกับ implementation อ้างอิง), ตัวสร้างแถวใบแจ้งหนี้ (ห้องมิเตอร์/ห้องเหมา/ค่าใช้จ่ายเพิ่ม) และ route สาธารณะ `/qr/:billId.png` กับ `/invoices/:billId.pdf` (สถานะ, content-type, PNG/PDF signature, ขนาดไฟล์, ยอดที่เปลี่ยนตามบิลหลัง `PATCH`, การฝังรูป QR ลงใน PDF โดยเทียบกับตอนยังไม่ตั้งพร้อมเพย์, unknown id `404`)
 - `test/bills-send.test.ts` ยิง endpoint ส่งบิลจริงโดยดัก outbound `fetch` ไป LINE ด้วย spy ตรวจว่า push ไป userId ของผู้เช่าเป็น flex ที่มียอดครบ (ห้องเหมา + ค่าใช้จ่ายเพิ่ม), QR/PDF URL, altText, `sent_at` ถูกตั้ง, ผู้เช่าที่ยังไม่เชื่อม `409` / ถูกข้าม, unknown id `404`, `send-all` นับ sent/failed/skipped และส่งสรุปถึงเจ้าของ (ไม่ส่งเมื่อเจ้าของยังไม่เชื่อม), push ล้มเหลวไม่บันทึก `sent_at` และเดือนที่ไม่มีบิล `400`
 - `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ — outbound `fetch` ไป LINE ถูกดักด้วย spy
-- `test/slips.test.ts` เซ็น webhook จริงแล้วส่ง event รูปสลิปเข้า `/webhook/line` โดยดัก outbound `fetch` (ดาวน์โหลดรูปจาก data host, EasySlip, push LINE) ตรวจว่าดาวน์โหลดรูปและเก็บลง R2 แล้วเรียก `/slips/{key}.png` อ่าน bytes กลับมาได้, EasySlip ถูกเรียกด้วย URL สาธารณะของรูป, ยอดตรงปิดบิล (`paid`, `paid_method: transfer`, `paid_at` เป็น ISO มาตรฐาน, slip `matched` พร้อม `bill_id`/`bill_total`, push ยืนยัน) ทั้งบิลที่มีค่าใช้จ่ายเพิ่มและห้องเหมาจ่าย และ fallback เป็นเวลาปัจจุบันเมื่อวันที่บนสลิปใช้ไม่ได้, ยอดต่าง 50 สตางค์ไม่ปิดบิล (slip `pending_review` พร้อม `bill_id`/`bill_total`/reason `mismatch`), ตรวจไม่ผ่าน/ได้ payload ที่ไม่มี `transRef`/payload `status: 200` แบบเก่า/ไม่มีคีย์ EasySlip = ไม่ปิดบิล (reason `not_verified`), ห้องไม่มีบิลค้าง (reason `no_unpaid_bill`), เจ้าของปิดบิลเองระหว่างตรวจสลิปแล้วสลิปไม่ re-pay, ส่ง `transRef` เดิมซ้ำ (รวม webhook สองอันพร้อมกัน) = ใบที่สอง `rejected` reason `duplicate_slip` และไม่ปิดบิลที่สอง, รูปที่ `content-type` ไม่ใช่ png/jpeg/webp หรือ body เกินขนาดถูกปฏิเสธโดยไม่เก็บอะไร, ผู้ส่งที่ยังไม่เชื่อม LINE ไม่เก็บรูป/ไม่สร้างแถวสลิป และ `/slips/{key}.png` ของคีย์ที่ไม่รู้จัก `404`
+- `test/slips.test.ts` เซ็น webhook จริงแล้วส่ง event รูปสลิปเข้า `/webhook/line` โดยดัก outbound `fetch` (ดาวน์โหลดรูปจาก data host, EasySlip, push LINE) ตรวจว่าดาวน์โหลดรูปและเก็บลง R2 แล้วเรียก `/slips/{key}.png` อ่าน bytes กลับมาได้, EasySlip ถูกเรียกด้วย URL สาธารณะของรูป, ยอดตรงปิดบิล (`paid`, `paid_method: transfer`, `paid_at` เป็น ISO มาตรฐาน, slip `matched` พร้อม `bill_id`/`bill_total`, push ยืนยัน) ทั้งบิลที่มีค่าใช้จ่ายเพิ่มและห้องเหมาจ่าย และ fallback เป็นเวลาปัจจุบันเมื่อวันที่บนสลิปใช้ไม่ได้, ยอดต่าง 50 สตางค์ไม่ปิดบิล (slip `pending_review` พร้อม `bill_id`/`bill_total`/reason `mismatch`), ตรวจไม่ผ่าน/ได้ payload ที่ไม่มี `transRef`/payload `status: 200` แบบเก่า/ไม่มีคีย์ EasySlip = ไม่ปิดบิล (reason `not_verified`), ห้องไม่มีบิลค้าง (reason `no_unpaid_bill`), เจ้าของปิดบิลเองระหว่างตรวจสลิปแล้วสลิปไม่ re-pay, ส่ง `transRef` เดิมซ้ำ (รวม webhook สองอันพร้อมกัน) = ใบที่สอง `rejected` reason `duplicate_slip` และไม่ปิดบิลที่สอง, รูปที่ `content-type` ไม่ใช่ png/jpeg/webp หรือ body เกินขนาดถูกปฏิเสธโดยไม่เก็บอะไร, ผู้ส่งที่ยังไม่เชื่อม LINE ไม่เก็บรูป/ไม่สร้างแถวสลิป และ `/slips/{key}.png` ของคีย์ที่ไม่รู้จัก `404`; **ticket 10 เพิ่ม**: สลิปเข้าคิวแล้ว push แจ้งเจ้าของถูกเนื้อหา (ห้อง ชื่อผู้เช่า ยอดในสลิป vs ยอดบิลที่เทียบ และกรณีไม่มีบิลค้างบอกว่าไม่มีบิลให้เทียบ), เจ้าของยังไม่เชื่อม LINE = ไม่มี push และไม่มีอะไรพัง, `GET /api/slips` คืนเฉพาะ `pending_review` โดยปริยายพร้อมฟิลด์ที่หน้า รอตรวจ ใช้ครบ (path รูป, reason, ยอดในสลิป, ห้อง/เดือน/ยอดของบิลที่เทียบ) และ `?billId=` / `?status=` กรองได้ตามสัญญา (`status` ผิดคำศัพท์ `400`), `settle` ปิดบิล (`transfer`, วันที่จากสลิป) + สลิป `matched` + push ยืนยันถึงผู้เช่า และสลิปหายจากคิว, `settle` ที่บิลจ่ายแล้ว/`trans_ref` ซ้ำ/สลิปที่ตัดสินแล้ว = `409` โดยไม่มีอะไรเปลี่ยน, `billId` ใน body ใช้ปิดบิลที่ยังไม่ผูกกับสลิปได้ (ไม่มีทั้งคู่ `400`, บิลไม่รู้จัก `404`), `reject` ทำสลิปเป็น `rejected` (บันทึก `decision`/`decidedAt`) บิลไม่เปลี่ยน ไม่ push, และ id ที่ไม่รู้จัก `404` ทั้งสองคำสั่ง
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
 `POST /api/seam-probe` ถูกปิดใน production ด้วย var `SEAM_PROBE` (ค่า `0` ใน `wrangler.jsonc`) และเปิดเฉพาะในเทสต์ด้วย miniflare binding override ใน `vitest.config.ts`
@@ -118,9 +118,41 @@ npm test
 - **ตรวจสลิปด้วย EasySlip** — `POST https://api.easyslip.com/v2/verify/bank` พร้อม header `Authorization: Bearer <EASYSLIP_API_KEY>` และ body `{"url":"{origin}/slips/{imageKey}"}` (origin ของ request เอง) ตัวไคลแอนต์เป็น fail-soft: ไม่มีคีย์ เรียกไม่สำเร็จ หรือตอบไม่ใช่ JSON → log แบบมีโครงสร้างและคืน `verified: false` ไม่ throw; ถือว่าตรวจผ่านเฉพาะ payload ที่ประกาศ `success: true` (ไม่รับ `status: 200` แบบเก่า เพราะเป็น fail-open) และมี `data.rawSlip.transRef`; payload อื่นถือว่าตรวจไม่ผ่าน (ไม่มีทางกลายเป็น "ยอดตรง")
 - **ปิดบิลอัตโนมัติ** — เงื่อนไขครบทั้งสามข้อจึงปิดบิล: EasySlip ยืนยันว่าสลิปจริง (`success: true`), ยอดในสลิปเท่ากับ `total` ของบิล unpaid ล่าสุดของห้องผู้ส่ง (เทียบเป็นสตางค์ ไม่เทียบ float — `total` รวมค่าใช้จ่ายเพิ่มและครอบทั้งห้องมิเตอร์และห้องเหมาจ่ายเพราะอ่านจากแถวบิล), และ `transRef` นี้ไม่เคยถูกใช้ปิดบิลมาก่อน → บิลเป็น `paid` (`paid_method: 'transfer'`, `paid_at` เป็น ISO มาตรฐานที่แปลงจากวันที่บนสลิป ถ้าอ่านไม่ได้ใช้เวลาปัจจุบัน) + สลิปเป็น `matched` + push ยืนยันยอดและเดือนถึงผู้เช่า; การปิดบิลเป็น `UPDATE bills SET status = 'paid', … WHERE id = ? AND status = 'unpaid'` ถ้าไม่มีการเปลี่ยนแปลง (เจ้าของเพิ่งปิดบิลเอง) ถือว่าไม่มีบิลค้างและเก็บสลิปเป็น `pending_review`
 - **สลิปหนึ่งใบปิดได้บิลเดียว** — บังคับด้วย partial unique index `idx_slips_matched_trans_ref` บน `slips(trans_ref)` เฉพาะแถว `status = 'matched'` ไม่ใช่แค่ `SELECT` ก่อนเขียน ดังนั้น webhook สองอันที่มาพร้อมกันปิดสองบิลด้วยเลขอ้างอิงเดียวกันไม่ได้; ส่งสลิปใบเดิมซ้ำ (หรือเลขอ้างอิงเดิม) อีกครั้งจะถูกบันทึกเป็น `rejected` และไม่ปิดบิลที่สอง
-- **ยอดไม่ตรง / ตรวจไม่ผ่าน / ห้องยังไม่มีบิลค้าง** → สลิปเป็น `pending_review` เก็บ `bill_id` (บิลที่ถูกนำไปเทียบ), `bill_total` (ยอดบิลตอนเทียบ), `amount`/`trans_ref`/`easyslip_result` ไว้ให้เจ้าของตรวจ และ push ข้อความตรงไปตรงมาถึงผู้เช่า (ยังไม่ยืนยันว่าปิดบิล) — `easyslip_result.reason` เป็นคำศัพท์คงที่สำหรับคิวรอตรวจ: `mismatch | not_verified | no_unpaid_bill | duplicate_slip`; กรณีไม่มีบิลค้าง `bill_id`/`bill_total` เป็น NULL และ reason เป็น `no_unpaid_bill` — UI คิวรอตรวจเป็นของ ticket 10 และ **การแจ้งเตือนเจ้าของไม่ได้ทำใน ticket นี้**
+- **ยอดไม่ตรง / ตรวจไม่ผ่าน / ห้องยังไม่มีบิลค้าง** → สลิปเป็น `pending_review` เก็บ `bill_id` (บิลที่ถูกนำไปเทียบ), `bill_total` (ยอดบิลตอนเทียบ), `amount`/`trans_ref`/`easyslip_result` ไว้ให้เจ้าของตรวจ และ push ข้อความตรงไปตรงมาถึงผู้เช่า (ยังไม่ยืนยันว่าปิดบิล) — `easyslip_result.reason` เป็นคำศัพท์คงที่สำหรับคิวรอตรวจ: `mismatch | not_verified | no_unpaid_bill | duplicate_slip`; กรณีไม่มีบิลค้าง `bill_id`/`bill_total` เป็น NULL และ reason เป็น `no_unpaid_bill` — UI คิวรอตรวจเป็นของ ticket 10 (พร้อมการแจ้งเตือนเจ้าของในหัวข้อถัดไป)
+- **แจ้งเจ้าของทาง LINE** — ทุกครั้งที่สลิปถูกบันทึกเป็น `pending_review` ระบบ push ถึงเจ้าของ (`settings.owner_line_user_id`) หนึ่งข้อความแบบประโยคบอกเล่า ไม่มีเครื่องหมายอัศเจรีย์: ชื่อห้อง ชื่อผู้เช่า ยอดในสลิป และยอดบิลที่นำมาเทียบ (ถ้าไม่มีบิลค้างจะบอกว่า "ยังไม่มีบิลค้างให้เทียบ" และถ้าอ่านยอดจากสลิปไม่ได้จะบอกว่า "ยอดในสลิปอ่านไม่ได้"); ยังไม่เชื่อม LINE เจ้าของ = log หนึ่งบรรทัดแล้วทำงานต่อ (ไม่ error) และ push ที่ล้มเหลวไม่ทำให้ webhook พังหรือเปลี่ยนสถานะสลิป เพราะยิงหลังเขียน DB แล้วแบบ fail-soft — ข้อความอยู่ที่ `ownerSlipPendingMessage()` ใน `src/worker/line/messages.ts`
 - **ผู้ส่งที่ยังไม่เชื่อม LINE** — ไม่ดาวน์โหลด ไม่เก็บรูป ไม่สร้างแถวสลิป ตอบกลับให้พิมพ์เลขห้องก่อนส่งสลิป
 - บอทไม่ log ตัวรูปหรือ secret ใดๆ ลง log มีเฉพาะ identifier แบบมีโครงสร้าง (slip id, image key, bill id, userId)
+
+### คิวรอตรวจ (API สำหรับหน้า "รอตรวจ")
+
+สอง endpoint นี้อยู่หลัง Access (เหมือน `/api/*` อื่น ๆ) และเป็นข้อมูลที่หน้า "รอตรวจ" ใช้ทั้งหมด (`src/worker/routes/slips-admin.ts`) ส่วน route รูป `/slips/{file}` เป็นสาธารณะเหมือนเดิม
+
+- `GET /api/slips?status=&billId=` — เรียงใหม่สุดก่อน; **ไม่ส่ง `status` เลย = เฉพาะ `pending_review`** เพราะตัว endpoint นี้คือคิว (ถ้าส่ง `billId` แต่ไม่ส่ง `status` จะคืนทุกสถานะของบิลนั้น = ประวัติของบิล ไม่ใช่คิว); `status` รับ `pending_review | matched | rejected` ค่าอื่น `400` `field: "status"`; ส่ง `billId` คู่กับ `status` ได้; ดูบิลของสลิปด้วย `LEFT JOIN` ครั้งเดียวต่อสลิป
+- payload ต่อสลิป (camelCase, `{ok: true, slips: [...]}`):
+
+  ```json
+  {
+    "id": "…",
+    "createdAt": "2026-09-03 03:15:12",
+    "imageKey": "8f2c…c1.png",
+    "imageUrl": "/slips/8f2c…c1.png",
+    "status": "pending_review",
+    "reason": "mismatch",
+    "slipAmount": 3550.5,
+    "bill": { "id": "…", "roomNumber": "A101", "tenantName": "สมชาย ใจดี", "period": "2026-09", "total": 3550 },
+    "verified": true,
+    "easyslip": { "verified": true, "transRef": "014112345678901", "date": "2026-09-03T10:15:00+07:00" },
+    "transferAt": "2026-09-03T10:15:00+07:00"
+  }
+  ```
+
+  - `imageUrl` = path สาธารณะ `/slips/{imageKey}` (ให้ UI ใส่ `<img>` ได้ตรง ๆ), `reason` = `easyslip_result.reason` (คำศัพท์คงที่), `slipAmount` = ยอดในสลิป (`NULL` เมื่ออ่านไม่ได้), `verified`/`easyslip` มาจากผลตรวจที่บันทึกไว้, `transferAt` = วันที่จากผู้ให้บริการ (เท่ากับ `easyslip.date`) ใช้เทียบ "วันเวลาโอน" ในหน้ารายละเอียด
+  - `bill.total` = `slips.bill_total` ซึ่งเป็นยอดบิล **ณ ตอนที่นำสลิปไปเทียบ** (fallback ยอดบิลปัจจุบันเฉพาะกรณีที่ไม่มีค่าเก็บไว้) ส่วนชื่อห้อง/ผู้เช่า/เดือนมาจาก join กับ `bills`/`rooms`/`tenants`; `bill` เป็น `null` เมื่อสลิปไม่ได้เทียบกับบิลเลย (reason `no_unpaid_bill`) หรือบิลนั้นถูกลบไปแล้ว — ตอนตัดสินส่ง `billId` มาเองได้
+  - สลิปที่ `matched` ยังเก็บ `reason` เดิมไว้ (เหตุผลที่สลิปเคยเข้าคิว) เพราะการปิดบิลจากคิวไม่ลบข้อมูลที่บันทึกไว้; สลิปที่ `rejected` มี `decision`/`decidedAt` เพิ่มใน `easyslip_result` ส่วนสลิปที่ปิดอัตโนมัติจากยอดตรงไม่มี `reason` เลย (`null`)
+- `POST /api/slips/:id/resolve {action: "settle" | "reject", billId?}` — ตอบ `200 {ok: true, slip}` พร้อม payload ล่าสุดของสลิป (รูปเดียวกับข้างบน); สลิปที่ไม่รู้จัก `404`, สลิปที่ตัดสินไปแล้ว `409 CONFLICT`, `action` อื่น `400 field: "action"`
+  - `settle` — บิลเป้าหมาย = `billId` ใน body ?? `bill_id` ของสลิป (ไม่มีทั้งคู่ `400 field: "billId"`); บิลต้องมีอยู่ (`404`) และยัง `unpaid` (`409`); `trans_ref` ของสลิปต้องไม่ถูกใช้ปิดบิลไปแล้ว (`409` — ตรวจก่อนเขียนและกันซ้ำด้วย partial unique index อีกชั้น) จากนั้น `DB.batch` เดียว: บิลเป็น `paid` (`paid_method: 'transfer'`, `paid_at` = วันที่บนสลิปเมื่อใช้ได้ ไม่งั้นใช้เวลาปัจจุบัน และมีเงื่อนไข `AND status = 'unpaid'`) + สลิปเป็น `matched` พร้อม `bill_id`/`bill_total` ของบิลนั้น แล้ว push ยืนยันถึงผู้เช่าด้วยข้อความเดียวกับตอนปิดบิลอัตโนมัติ (`slipMatchedMessage`); ถ้าบิลเพิ่งถูกปิดไปก่อนหน้าจะคืน `409` และคืนสถานะสลิปกลับเป็น `pending_review` ตามเดิม
+  - `reject` — สลิปเป็น `rejected` บิลไม่เปลี่ยนอะไร และ **ไม่ push อะไรเลย**; บันทึกการตัดสินไว้ใน `easyslip_result` (`decision: "rejected"` + `decidedAt` เป็น ISO) โดยคงผลตรวจและ `reason` เดิมไว้
+  - สลิปที่ตัดสินแล้วหายจากคิว (badge ของเมนูนับจากความยาวของ list ปกติ) แต่ยังดูย้อนหลังได้ด้วย `?billId={billId}`
 
 ## QR พร้อมเพย์ และใบแจ้งหนี้ PDF
 
@@ -190,9 +222,9 @@ npm run deploy
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe, bills-render, slips)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe, bills-render, slips, slips-admin)
 src/worker/line/  signature (HMAC-SHA256), LINE Messaging API client, EasySlip client และข้อความภาษาไทย
-src/worker/lib/   ตรรกะที่ไม่ผูกกับ request: promptpay (payload + CRC16), png, qr, invoice (ตัวสร้างเอกสาร), pdf
+src/worker/lib/   ตรรกะที่ไม่ผูกกับ request: promptpay (payload + CRC16), png, qr, invoice (ตัวสร้างเอกสาร), pdf, slips (รับสลิป + แจ้งเจ้าของ)
 src/worker/fonts/ ฟอนต์ไทยสำหรับ PDF (IBM Plex Sans Thai Regular/Bold, OFL 1.1)
 src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)
 src/client/pages/ หน้าจอแต่ละหน้า (rooms, tenants, settings, bills, dashboard, ...)
