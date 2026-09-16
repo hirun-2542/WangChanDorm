@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { handleSlipImage } from "../lib/slips";
 import { fetchProfile, replyMessage } from "../line/api";
 import { linkedMessage, notMatchedMessage, ownerLinkedMessage, welcomeMessage } from "../line/messages";
 import { verifyLineSignature } from "../line/signature";
@@ -132,7 +133,7 @@ async function handleTextMessage(env: Env, userId: string, replyToken: string, t
   await replyMessage(env, replyToken, notMatchedMessage(text));
 }
 
-async function handleEvent(env: Env, value: unknown): Promise<void> {
+async function handleEvent(env: Env, origin: string, value: unknown): Promise<void> {
   const event = asRecord(value);
 
   if (event === null) {
@@ -160,11 +161,20 @@ async function handleEvent(env: Env, value: unknown): Promise<void> {
 
   const message = asRecord(event.message);
 
-  if (message === null || readString(message, "type") !== "text") {
+  if (message === null) {
     return;
   }
 
-  await handleTextMessage(env, userId, replyToken, readString(message, "text"));
+  const messageType = readString(message, "type");
+
+  if (messageType === "text") {
+    await handleTextMessage(env, userId, replyToken, readString(message, "text"));
+    return;
+  }
+
+  if (messageType === "image") {
+    await handleSlipImage(env, origin, userId, replyToken, readString(message, "id"));
+  }
 }
 
 lineWebhook.post("/", async (c) => {
@@ -185,8 +195,10 @@ lineWebhook.post("/", async (c) => {
   }
 
   try {
+    const origin = new URL(c.req.url).origin;
+
     for (const event of events) {
-      await handleEvent(c.env, event);
+      await handleEvent(c.env, origin, event);
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

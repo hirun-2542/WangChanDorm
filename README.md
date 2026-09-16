@@ -83,6 +83,7 @@ npm test
 - `test/bills-render.test.ts` ตรวจ payload พร้อมเพย์ (CRC16 known vector + payload ที่ตรงกับ implementation อ้างอิง), ตัวสร้างแถวใบแจ้งหนี้ (ห้องมิเตอร์/ห้องเหมา/ค่าใช้จ่ายเพิ่ม) และ route สาธารณะ `/qr/:billId.png` กับ `/invoices/:billId.pdf` (สถานะ, content-type, PNG/PDF signature, ขนาดไฟล์, ยอดที่เปลี่ยนตามบิลหลัง `PATCH`, การฝังรูป QR ลงใน PDF โดยเทียบกับตอนยังไม่ตั้งพร้อมเพย์, unknown id `404`)
 - `test/bills-send.test.ts` ยิง endpoint ส่งบิลจริงโดยดัก outbound `fetch` ไป LINE ด้วย spy ตรวจว่า push ไป userId ของผู้เช่าเป็น flex ที่มียอดครบ (ห้องเหมา + ค่าใช้จ่ายเพิ่ม), QR/PDF URL, altText, `sent_at` ถูกตั้ง, ผู้เช่าที่ยังไม่เชื่อม `409` / ถูกข้าม, unknown id `404`, `send-all` นับ sent/failed/skipped และส่งสรุปถึงเจ้าของ (ไม่ส่งเมื่อเจ้าของยังไม่เชื่อม), push ล้มเหลวไม่บันทึก `sent_at` และเดือนที่ไม่มีบิล `400`
 - `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ — outbound `fetch` ไป LINE ถูกดักด้วย spy
+- `test/slips.test.ts` เซ็น webhook จริงแล้วส่ง event รูปสลิปเข้า `/webhook/line` โดยดัก outbound `fetch` (ดาวน์โหลดรูปจาก data host, EasySlip, push LINE) ตรวจว่าดาวน์โหลดรูปและเก็บลง R2 แล้วเรียก `/slips/{key}.png` อ่าน bytes กลับมาได้, EasySlip ถูกเรียกด้วย URL สาธารณะของรูป, ยอดตรงปิดบิล (`paid`, `paid_method: transfer`, `paid_at` เป็น ISO มาตรฐาน, slip `matched` พร้อม `bill_id`/`bill_total`, push ยืนยัน) ทั้งบิลที่มีค่าใช้จ่ายเพิ่มและห้องเหมาจ่าย และ fallback เป็นเวลาปัจจุบันเมื่อวันที่บนสลิปใช้ไม่ได้, ยอดต่าง 50 สตางค์ไม่ปิดบิล (slip `pending_review` พร้อม `bill_id`/`bill_total`/reason `mismatch`), ตรวจไม่ผ่าน/ได้ payload ที่ไม่มี `transRef`/payload `status: 200` แบบเก่า/ไม่มีคีย์ EasySlip = ไม่ปิดบิล (reason `not_verified`), ห้องไม่มีบิลค้าง (reason `no_unpaid_bill`), เจ้าของปิดบิลเองระหว่างตรวจสลิปแล้วสลิปไม่ re-pay, ส่ง `transRef` เดิมซ้ำ (รวม webhook สองอันพร้อมกัน) = ใบที่สอง `rejected` reason `duplicate_slip` และไม่ปิดบิลที่สอง, รูปที่ `content-type` ไม่ใช่ png/jpeg/webp หรือ body เกินขนาดถูกปฏิเสธโดยไม่เก็บอะไร, ผู้ส่งที่ยังไม่เชื่อม LINE ไม่เก็บรูป/ไม่สร้างแถวสลิป และ `/slips/{key}.png` ของคีย์ที่ไม่รู้จัก `404`
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
 `POST /api/seam-probe` ถูกปิดใน production ด้วย var `SEAM_PROBE` (ค่า `0` ใน `wrangler.jsonc`) และเปิดเฉพาะในเทสต์ด้วย miniflare binding override ใน `vitest.config.ts`
@@ -105,6 +106,21 @@ npm test
 - ลิงก์ QR/PDF ในข้อความสร้างจาก **origin ของ request เอง** (`new URL(c.req.url).origin`) ไม่ hardcode โฮสต์ production จึงใช้ได้ทั้ง workers.dev, custom domain และ local dev
 - ถ้า origin ของ request ไม่ใช่ https เซิร์ฟเวอร์จะ log คำเตือน เพราะ LINE ปฏิเสธ URL รูปที่ไม่ใช่ https — เกิดเฉพาะตอน dev บน local http เท่านั้น
 - Flex message ยึดโครงข้อความของ ticket 08: หัวข้อพื้นทึบ `#2563eb` ตัวอักษรขาว (`ใบแจ้งหนี้ / INVOICE` + `ห้อง … | ประจำเดือน …`), เนื้อมี `ผู้เช่า`, แถว `ออกบิลเมื่อ`, ค่าห้อง/น้ำ/ไฟ (หน่วย × อัตรา หรือ `เหมาจ่าย`) และค่าใช้จ่ายเพิ่มทุกรายการตามชื่อบนบิล, ยอดรวมตัวหนาสีแดง `#dc2626`; ท้ายมีรูป QR `/qr/:billId.png`, ปุ่ม `เปิดใบแจ้งหนี้ PDF` ไปที่ `/invoices/:billId.pdf` และบรรทัดบอกให้ส่งสลิปกลับในแชท — โมดูล builder อยู่ที่ `src/worker/line/bill-message.ts`
+
+## สลิป และการปิดบิลอัตโนมัติ
+
+ผู้เช่าส่งรูปสลิปการโอนกลับมาในแชทบอทเดียวกันได้ ระบบดาวน์โหลดรูป เก็บลง R2 ส่งให้ EasySlip ตรวจ และปิดบิลให้อัตโนมัติเมื่อยอดตรง สลิปที่ตรวจไม่ผ่านหรือยอดไม่ตรงจะถูกเก็บไว้ที่คิว "รอตรวจ" ให้เจ้าของตัดสิน
+
+- **ดาวน์โหลดรูปจาก LINE** — `message` event ที่ `message.type = "image"` จะดึงรูปจาก data host `https://api-data.line.me/v2/bot/message/{messageId}/content` ด้วย bearer token (คนละ host กับ messaging API) รับเฉพาะ `content-type` `image/png`, `image/jpeg`, `image/webp` (อย่างอื่น เช่น `image/svg+xml` ถูกปฏิเสธ เพราะรูปถูกเสิร์ฟจาก origin ของเราเองแบบสาธารณะ) และจำกัดขนาด 5 MiB โดยเช็ค `content-length` เมื่อมี พร้อมอ่านแบบมีขอบเขต (bounded read) กัน body ใหญ่เกินแม้ไม่ประกาศ header — เกิน/ผิดชนิด/ดาวน์โหลดไม่สำเร็จ = ตอบกลับสั้นๆ ว่าลองส่งใหม่ log แบบมีโครงสร้างหนึ่งบรรทัด และไม่เก็บอะไรลง R2/D1
+- **คีย์รูปเป็นคีย์สุ่ม 128-bit** (`crypto.getRandomValues` เป็น hex 32 ตัว + `.png`) ไม่ได้มาจากบิล ผู้เช่า หรือ message id และไม่เดาได้ — รูปเดียวกันที่ส่งซ้ำจะได้คนละคีย์
+- **`GET /slips/:imageKey.png` เป็น route สาธารณะ** (เหมือน `/qr/*` และ `/invoices/*`) เสิร์ฟ bytes จาก R2 พร้อม content type ที่บันทึกไว้ตอนดาวน์โหลด (มีเฉพาะ `image/png`/`image/jpeg`/`image/webp` แต่ URL ลงท้าย `.png`) และ `cache-control: public, max-age=86400`; ชื่อไฟล์ที่ไม่ใช่ `.png`/`.jpg`/`.jpeg` หรือคีย์ที่ไม่มีใน R2 ตอบ `404` เป็น JSON
+- **ต้องอยู่นอก Cloudflare Access**: `/slips/*` ถูกใส่ใน `assets.run_worker_first` แล้ว และต้องเปิดสาธารณะด้วย ไม่งั้น EasySlip ดึงรูปไปตรวจไม่ได้ (ดูหัวข้อ Access ด้านล่าง)
+- **ตรวจสลิปด้วย EasySlip** — `POST https://api.easyslip.com/v2/verify/bank` พร้อม header `Authorization: Bearer <EASYSLIP_API_KEY>` และ body `{"url":"{origin}/slips/{imageKey}"}` (origin ของ request เอง) ตัวไคลแอนต์เป็น fail-soft: ไม่มีคีย์ เรียกไม่สำเร็จ หรือตอบไม่ใช่ JSON → log แบบมีโครงสร้างและคืน `verified: false` ไม่ throw; ถือว่าตรวจผ่านเฉพาะ payload ที่ประกาศ `success: true` (ไม่รับ `status: 200` แบบเก่า เพราะเป็น fail-open) และมี `data.rawSlip.transRef`; payload อื่นถือว่าตรวจไม่ผ่าน (ไม่มีทางกลายเป็น "ยอดตรง")
+- **ปิดบิลอัตโนมัติ** — เงื่อนไขครบทั้งสามข้อจึงปิดบิล: EasySlip ยืนยันว่าสลิปจริง (`success: true`), ยอดในสลิปเท่ากับ `total` ของบิล unpaid ล่าสุดของห้องผู้ส่ง (เทียบเป็นสตางค์ ไม่เทียบ float — `total` รวมค่าใช้จ่ายเพิ่มและครอบทั้งห้องมิเตอร์และห้องเหมาจ่ายเพราะอ่านจากแถวบิล), และ `transRef` นี้ไม่เคยถูกใช้ปิดบิลมาก่อน → บิลเป็น `paid` (`paid_method: 'transfer'`, `paid_at` เป็น ISO มาตรฐานที่แปลงจากวันที่บนสลิป ถ้าอ่านไม่ได้ใช้เวลาปัจจุบัน) + สลิปเป็น `matched` + push ยืนยันยอดและเดือนถึงผู้เช่า; การปิดบิลเป็น `UPDATE bills SET status = 'paid', … WHERE id = ? AND status = 'unpaid'` ถ้าไม่มีการเปลี่ยนแปลง (เจ้าของเพิ่งปิดบิลเอง) ถือว่าไม่มีบิลค้างและเก็บสลิปเป็น `pending_review`
+- **สลิปหนึ่งใบปิดได้บิลเดียว** — บังคับด้วย partial unique index `idx_slips_matched_trans_ref` บน `slips(trans_ref)` เฉพาะแถว `status = 'matched'` ไม่ใช่แค่ `SELECT` ก่อนเขียน ดังนั้น webhook สองอันที่มาพร้อมกันปิดสองบิลด้วยเลขอ้างอิงเดียวกันไม่ได้; ส่งสลิปใบเดิมซ้ำ (หรือเลขอ้างอิงเดิม) อีกครั้งจะถูกบันทึกเป็น `rejected` และไม่ปิดบิลที่สอง
+- **ยอดไม่ตรง / ตรวจไม่ผ่าน / ห้องยังไม่มีบิลค้าง** → สลิปเป็น `pending_review` เก็บ `bill_id` (บิลที่ถูกนำไปเทียบ), `bill_total` (ยอดบิลตอนเทียบ), `amount`/`trans_ref`/`easyslip_result` ไว้ให้เจ้าของตรวจ และ push ข้อความตรงไปตรงมาถึงผู้เช่า (ยังไม่ยืนยันว่าปิดบิล) — `easyslip_result.reason` เป็นคำศัพท์คงที่สำหรับคิวรอตรวจ: `mismatch | not_verified | no_unpaid_bill | duplicate_slip`; กรณีไม่มีบิลค้าง `bill_id`/`bill_total` เป็น NULL และ reason เป็น `no_unpaid_bill` — UI คิวรอตรวจเป็นของ ticket 10 และ **การแจ้งเตือนเจ้าของไม่ได้ทำใน ticket นี้**
+- **ผู้ส่งที่ยังไม่เชื่อม LINE** — ไม่ดาวน์โหลด ไม่เก็บรูป ไม่สร้างแถวสลิป ตอบกลับให้พิมพ์เลขห้องก่อนส่งสลิป
+- บอทไม่ log ตัวรูปหรือ secret ใดๆ ลง log มีเฉพาะ identifier แบบมีโครงสร้าง (slip id, image key, bill id, userId)
 
 ## QR พร้อมเพย์ และใบแจ้งหนี้ PDF
 
@@ -142,6 +158,7 @@ Local: คัดลอก `.dev.vars.example` เป็น `.dev.vars` แล้
 
 - `POST /webhook/line` เป็น path สาธารณะ (ไม่มี Access) ตรวจ `X-Line-Signature` แบบ HMAC-SHA256 จาก raw body ก่อนทุกอย่าง ถ้า signature ไม่ถูกต้องตอบ `403` และไม่แตะฐานข้อมูล
 - event `follow` → บอททักทายและขอเลขห้อง; ข้อความ text ที่ตรงกับเลขห้องของผู้เช่าปัจจุบันที่ยังไม่เชื่อม → ผูก `tenants.line_user_id`; ข้อความที่ตรงกับรหัส 6 หลักใน `settings.owner_link_code` → บันทึก `settings.owner_line_user_id`; ข้อความอื่น → เก็บในตาราง `line_pending` ให้เจ้าของจับคู่เอง
+- event `message` ที่เป็นรูป (`message.type = "image"`) → ถือเป็นสลิปการโอนของห้องผู้ส่ง ไปที่หัวข้อ "สลิป และการปิดบิลอัตโนมัติ" ด้านบน (ผู้ส่งที่ยังไม่เชื่อม LINE จะได้ข้อความให้พิมพ์เลขห้องก่อน)
 - `/api/line/pending` (GET) และ `/api/line/pending/:lineUserId/link` (POST) อยู่หลัง Access ใช้โดยหน้าผู้เช่าในส่วนจัดการการเชื่อม LINE
 - ข้อความบิลที่บอท push เป็น Flex message ที่แนบรูป QR พร้อมเพย์และปุ่มเปิดใบแจ้งหนี้ PDF ของบิลนั้น — ทั้งคู่คือสอง route สาธารณะ `/qr/:billId.png` และ `/invoices/:billId.pdf` ด้านบน จึงต้องอยู่นอก Access
 - ตอบ `200` เสมอเมื่อ signature ถูกต้อง เพื่อไม่ให้ LINE ยิงซ้ำเพราะ timeout; การเรียก LINE API ขาออกล้มเหลวได้โดยไม่ทำให้ webhook พัง
@@ -161,7 +178,9 @@ npm run deploy
 1. ผูก custom domain ให้ Worker (เช่น `dorm.example.com`) — Access ครอบโดเมน `*.workers.dev` ไม่ได้ ต้องมี custom domain ก่อน
 2. สร้าง Access application ครอบโฮสต์นั้น
 3. เพิ่ม policy แบบ Allow เฉพาะอีเมลของเจ้าของ
-4. แยก path ที่ต้องเปิดสาธารณะออกจาก Access: `/webhook/*` (LINE เรียกเข้ามา), `/qr/*` และ `/invoices/*` (ลิงก์รูป QR และใบแจ้งหนี้ PDF ที่ฝังในข้อความ LINE) และ `/slips/*` (ให้ EasySlip ดึงรูป) — เช่นใช้ Bypass policy ตาม path
+4. แยก path ที่ต้องเปิดสาธารณะออกจาก Access: `/webhook/*` (LINE เรียกเข้ามา), `/qr/*` และ `/invoices/*` (ลิงก์รูป QR และใบแจ้งหนี้ PDF ที่ฝังในข้อความ LINE) และ `/slips/*` (ให้ EasySlip ดึงรูปสลิปไปตรวจ) — เช่นใช้ Bypass policy ตาม path
+
+`/slips/*` **ต้องอยู่นอก Access เสมอ**: ถ้าถูกบังคับล็อกอิน EasySlip จะดึงรูปไปตรวจไม่ได้ (ได้หน้า login แทนรูป) และการปิดบิลอัตโนมัติจะหยุดทำงานทั้งระบบ เหตุผลเดียวกับ `/qr/*` และ `/invoices/*` ที่ลิงก์ถูกส่งออกไปนอกแอป — ความลับของรูปคือคีย์สุ่ม 128-bit ที่เดาไม่ได้ ไม่ใช่การบังคับล็อกอิน
 
 การจัดการ asset และ API:
 
@@ -171,8 +190,8 @@ npm run deploy
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe, bills-render)
-src/worker/line/  signature (HMAC-SHA256), LINE Messaging API client และข้อความภาษาไทย
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe, bills-render, slips)
+src/worker/line/  signature (HMAC-SHA256), LINE Messaging API client, EasySlip client และข้อความภาษาไทย
 src/worker/lib/   ตรรกะที่ไม่ผูกกับ request: promptpay (payload + CRC16), png, qr, invoice (ตัวสร้างเอกสาร), pdf
 src/worker/fonts/ ฟอนต์ไทยสำหรับ PDF (IBM Plex Sans Thai Regular/Bold, OFL 1.1)
 src/client/       React SPA (main.tsx, App.tsx, api.ts, styles.css)

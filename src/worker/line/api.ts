@@ -5,14 +5,25 @@ export interface LineProfile {
 
 export type LineOutboundMessage = { type: string; [key: string]: unknown };
 
-const lineApiBase = "https://api.line.me/v2/bot";
-
-function logLineFailure(message: string, detail: string): void {
-  console.error(JSON.stringify({ message, error: detail }));
+export interface LineContent {
+  bytes: ArrayBuffer;
+  contentType: string;
 }
 
-function failureDetail(error: unknown): string {
+const lineApiBase = "https://api.line.me/v2/bot";
+
+const lineDataBase = "https://api-data.line.me/v2/bot";
+
+const maxImageContentBytes = 5 * 1024 * 1024;
+
+const allowedImageContentTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+export function failureDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function logLineFailure(message: string, detail: string): void {
+  console.error(JSON.stringify({ message, error: detail }));
 }
 
 function accessToken(env: Env): string {
@@ -80,6 +91,112 @@ export async function pushMessage(env: Env, to: string, messages: readonly LineO
     return true;
   } catch (error) {
     logLineFailure("line push failed", failureDetail(error));
+    return null;
+  }
+}
+
+async function readBodyWithin(response: Response, limit: number): Promise<ArrayBuffer | null> {
+  const body = response.body;
+
+  if (body === null) {
+    return null;
+  }
+
+  const reader = (body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    if (value === undefined) {
+      continue;
+    }
+
+    total += value.byteLength;
+
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+
+    chunks.push(value);
+  }
+
+  const buffer = new ArrayBuffer(total);
+  const bytes = new Uint8Array(buffer);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return buffer;
+}
+
+export async function fetchMessageContent(env: Env, messageId: string): Promise<LineContent | null> {
+  const token = accessToken(env);
+
+  if (token === "") {
+    logLineFailure("line content skipped", "LINE_CHANNEL_ACCESS_TOKEN is not configured");
+    return null;
+  }
+
+  if (messageId === "") {
+    logLineFailure("line content skipped", "message id is empty");
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${lineDataBase}/message/${encodeURIComponent(messageId)}/content`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+      logLineFailure("line content failed", `status ${String(response.status)}`);
+      return null;
+    }
+
+    const header = response.headers.get("content-type") ?? "";
+    const contentType = header.split(";")[0]?.trim().toLowerCase() ?? "";
+
+    if (!allowedImageContentTypes.has(contentType)) {
+      logLineFailure("line content failed", `unexpected content type ${contentType === "" ? "unknown" : contentType}`);
+      return null;
+    }
+
+    const declared = response.headers.get("content-length");
+
+    if (declared !== null) {
+      const size = Number.parseInt(declared, 10);
+
+      if (Number.isFinite(size) && size > maxImageContentBytes) {
+        logLineFailure("line content failed", `content length ${String(size)} exceeds ${String(maxImageContentBytes)} bytes`);
+        return null;
+      }
+    }
+
+    const bytes = await readBodyWithin(response, maxImageContentBytes);
+
+    if (bytes === null) {
+      logLineFailure("line content failed", `content body exceeds ${String(maxImageContentBytes)} bytes`);
+      return null;
+    }
+
+    if (bytes.byteLength === 0) {
+      logLineFailure("line content failed", "content body is empty");
+      return null;
+    }
+
+    return { bytes, contentType };
+  } catch (error) {
+    logLineFailure("line content failed", failureDetail(error));
     return null;
   }
 }
