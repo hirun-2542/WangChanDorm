@@ -26,11 +26,12 @@ type RoomStatus = DashboardRoomStatus | "review";
 const roomStatusMeta: Record<RoomStatus, { word: string; tone: BadgeTone; icon: string }> = {
   paid: { word: "จ่ายแล้ว", tone: "paid", icon: "check_circle" },
   unpaid: { word: "ยังไม่จ่าย", tone: "unpaid", icon: "schedule" },
+  unbilled: { word: "ยังไม่ออกบิล", tone: "vacant", icon: "receipt_long" },
   vacant: { word: "ว่าง", tone: "vacant", icon: "door_front" },
   review: { word: "รอตรวจ", tone: "review", icon: "fact_check" },
 };
 
-const legendOrder: RoomStatus[] = ["paid", "unpaid", "vacant", "review"];
+const legendOrder: RoomStatus[] = ["paid", "unpaid", "unbilled", "vacant", "review"];
 
 const thaiMonthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 
@@ -56,6 +57,10 @@ function ageInDays(createdAt: string): number {
 function roomStatusOf(room: DashboardRoom): RoomStatus {
   if (room.status === "vacant") {
     return "vacant";
+  }
+
+  if (room.status === "unbilled") {
+    return "unbilled";
   }
 
   return room.status === "paid" ? "paid" : "unpaid";
@@ -136,7 +141,7 @@ export function DashboardPage() {
       : Math.round(((kpis.totalRooms - kpis.vacantRooms) / kpis.totalRooms) * 100);
   const paidPercent = kpis === undefined || kpis.bills === 0 ? 0 : Math.round((kpis.paidCount / kpis.bills) * 100);
 
-  const counts: Record<RoomStatus, number> = { paid: 0, unpaid: 0, vacant: 0, review: 0 };
+  const counts: Record<RoomStatus, number> = { paid: 0, unpaid: 0, unbilled: 0, vacant: 0, review: 0 };
 
   for (const room of rooms) {
     counts[roomStatusOf(room)] += 1;
@@ -233,7 +238,7 @@ export function DashboardPage() {
                 icon="schedule"
                 label="ค้างชำระ"
                 value={`${baht(kpis.unpaidAmount)} บาท`}
-                supporting={`${kpis.unpaidRooms} ห้อง · มีสลิปรอตรวจ ${pendingSlipBills}`}
+                supporting={`${kpis.unpaidRooms} ห้อง · ยังไม่ออกบิล ${kpis.unbilledRooms} ห้อง · มีสลิปรอตรวจ ${pendingSlipBills}`}
               />
               <StatBlock
                 icon="door_front"

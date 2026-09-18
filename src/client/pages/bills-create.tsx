@@ -109,6 +109,13 @@ function newChargeDraft(): ChargeDraft {
   return { id: `charge-${chargeSequence}`, name: "", amount: "" };
 }
 
+function chargeDrafts(charges: BillCharge[]): ChargeDraft[] {
+  return charges.map((charge) => {
+    chargeSequence += 1;
+    return { id: `charge-${chargeSequence}`, name: charge.name, amount: String(charge.amount) };
+  });
+}
+
 function parseChargeAmount(value: string): number | null {
   const trimmed = value.trim();
 
@@ -355,7 +362,7 @@ export function CreateWizard({ settings, tenants, onFinish }: CreateWizardProps)
             waterCurrent: "",
             electricCurrent: "",
             flatAmount: "",
-            charges: [],
+            charges: chargeDrafts(row.charges),
           })),
         );
         setActiveRoomId(sheet[0]?.roomId ?? "");

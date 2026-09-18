@@ -35,7 +35,7 @@ const tenantColumns =
 const tenantFrom = "FROM tenants t JOIN rooms r ON r.id = t.room_id";
 
 const tenantOrder =
-  "ORDER BY CASE t.status WHEN 'current' THEN 0 ELSE 1 END ASC, CASE WHEN t.status = 'current' THEN r.room_number END ASC, CASE WHEN t.status = 'moved-out' THEN t.check_out_date END DESC";
+  "ORDER BY CASE t.status WHEN 'current' THEN 0 ELSE 1 END ASC, LENGTH(CASE WHEN t.status = 'current' THEN r.room_number END) ASC, CASE WHEN t.status = 'current' THEN r.room_number END ASC, CASE WHEN t.status = 'moved-out' THEN t.check_out_date END DESC";
 
 function toTenant(row: TenantRow): TenantPayload {
   return {

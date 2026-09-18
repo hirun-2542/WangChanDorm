@@ -42,6 +42,7 @@ interface DashboardKpis {
   collectedAmount: number;
   unpaidAmount: number;
   unpaidRooms: number;
+  unbilledRooms: number;
   vacantRooms: number;
   totalRooms: number;
   sentCount: number;
@@ -236,6 +237,7 @@ describe("GET /api/stats/dashboard", () => {
       collectedAmount: paidBill.total,
       unpaidAmount: unpaidBill.total,
       unpaidRooms: 1,
+      unbilledRooms: 0,
       vacantRooms: 1,
       totalRooms: 3,
       sentCount: 1,
@@ -345,14 +347,75 @@ describe("GET /api/stats/dashboard", () => {
     const septemberStatus = new Map(septemberPayload.rooms.map((room) => [room.roomNumber, room.status]));
     expect(septemberPayload.rooms.map((room) => room.roomNumber)).toEqual(["P141", "P142", "P143"]);
     expect(septemberStatus.get("P141")).toBe("paid");
-    expect(septemberStatus.get("P142")).toBe("unpaid");
+    expect(septemberStatus.get("P142")).toBe("unbilled");
     expect(septemberStatus.get("P143")).toBe("vacant");
+    expect(septemberPayload.kpis.unbilledRooms).toBe(1);
 
     const octoberPayload = await dashboard("2026-10");
     const octoberStatus = new Map(octoberPayload.rooms.map((room) => [room.roomNumber, room.status]));
     expect(octoberStatus.get("P141")).toBe("unpaid");
-    expect(octoberStatus.get("P142")).toBe("unpaid");
+    expect(octoberStatus.get("P142")).toBe("unbilled");
     expect(octoberStatus.get("P143")).toBe("vacant");
+    expect(octoberPayload.kpis.unbilledRooms).toBe(1);
+  });
+
+  it("reports every occupied room as unbilled for a month with no bills", async () => {
+    await putRates(18, 7);
+    await occupiedRoom("P171", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    await occupiedRoom("P172", { rent: 3600, waterMeterInit: 0, electricMeterInit: 0 });
+    await occupiedRoom("P173", { rent: 3700, waterMeterInit: 0, electricMeterInit: 0 });
+    await newRoom({ roomNumber: "P174", rent: 3200, waterMeterInit: 0, electricMeterInit: 0 });
+
+    const payload = await dashboard("2026-09");
+
+    expect(payload.rooms.map((room) => room.roomNumber)).toEqual(["P171", "P172", "P173", "P174"]);
+    expect(payload.rooms.map((room) => room.status)).toEqual(["unbilled", "unbilled", "unbilled", "vacant"]);
+    expect(payload.rooms.some((room) => room.status === "unpaid")).toBe(false);
+    expect(payload.kpis).toEqual({
+      bills: 0,
+      dueAmount: 0,
+      collectedAmount: 0,
+      unpaidAmount: 0,
+      unpaidRooms: 0,
+      unbilledRooms: 3,
+      vacantRooms: 1,
+      totalRooms: 4,
+      sentCount: 0,
+      paidCount: 0,
+    });
+    expect(payload.unpaidBills).toEqual([]);
+  });
+
+  it("separates paid, unpaid, unbilled and vacant rooms so the counts add up to the total", async () => {
+    await putRates(18, 7);
+    const paidRoom = await occupiedRoom("P181", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    const unpaidRoom = await occupiedRoom("P182", { rent: 3600, waterMeterInit: 0, electricMeterInit: 0 });
+    await occupiedRoom("P183", { rent: 3700, waterMeterInit: 0, electricMeterInit: 0 });
+    await newRoom({ roomNumber: "P184", rent: 3200, waterMeterInit: 0, electricMeterInit: 0 });
+
+    const bills = await generate("2026-09", [
+      { roomId: paidRoom.room.id, waterCurrent: 5, electricCurrent: 5 },
+      { roomId: unpaidRoom.room.id, waterCurrent: 5, electricCurrent: 5 },
+    ]);
+
+    await markPaid(pick(bills, (bill) => bill.roomId === paidRoom.room.id).id);
+
+    const payload = await dashboard("2026-09");
+    const statuses = payload.rooms.map((room) => room.status);
+
+    expect(statuses).toEqual(["paid", "unpaid", "unbilled", "vacant"]);
+    expect(statuses.filter((status) => status === "paid")).toHaveLength(1);
+    expect(statuses.filter((status) => status === "unpaid")).toHaveLength(1);
+    expect(statuses.filter((status) => status === "unbilled")).toHaveLength(1);
+    expect(statuses.filter((status) => status === "vacant")).toHaveLength(1);
+    expect(payload.kpis.paidCount + payload.kpis.unpaidRooms + payload.kpis.unbilledRooms + payload.kpis.vacantRooms).toBe(
+      payload.kpis.totalRooms,
+    );
+    expect(payload.kpis.unbilledRooms).toBe(1);
+    expect(payload.kpis.unpaidRooms).toBe(1);
+    expect(payload.kpis.vacantRooms).toBe(1);
+    expect(payload.kpis.paidCount).toBe(1);
+    expect(payload.kpis.bills).toBe(2);
   });
 
   it("answers 400 with the period field for a missing or malformed period", async () => {
@@ -387,6 +450,7 @@ describe("GET /api/stats/dashboard", () => {
       collectedAmount: 0,
       unpaidAmount: 0,
       unpaidRooms: 0,
+      unbilledRooms: 0,
       vacantRooms: 1,
       totalRooms: 1,
       sentCount: 0,

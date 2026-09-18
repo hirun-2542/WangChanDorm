@@ -8,6 +8,10 @@ export interface ErrorBody {
 export const upsertSettingSql =
   "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 
+export function roomNumberOrder(column: string): string {
+  return `LENGTH(${column}), ${column}`;
+}
+
 export function errorBody(code: ErrorCode, message: string, field?: string): ErrorBody {
   return field === undefined ? { ok: false, error: { code, message } } : { ok: false, error: { code, message, field } };
 }

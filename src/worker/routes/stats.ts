@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { errorBody } from "./shared";
+import { errorBody, roomNumberOrder } from "./shared";
 
 const stats = new Hono<{ Bindings: Env }>();
 
-type RoomBillStatus = "paid" | "unpaid" | "vacant";
+type RoomBillStatus = "paid" | "unpaid" | "unbilled" | "vacant";
 
 const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -42,6 +42,7 @@ interface DashboardKpis {
   collectedAmount: number;
   unpaidAmount: number;
   unpaidRooms: number;
+  unbilledRooms: number;
   vacantRooms: number;
   totalRooms: number;
   sentCount: number;
@@ -70,11 +71,9 @@ interface RoomStat {
   hasPendingSlip: boolean;
 }
 
-const roomsSql =
-  "SELECT r.id, r.room_number, t.id AS tenant_id, b.id AS bill_id, b.status AS bill_status FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current' LEFT JOIN bills b ON b.room_id = r.id AND b.period = ? ORDER BY r.room_number ASC";
+const roomsSql = `SELECT r.id, r.room_number, t.id AS tenant_id, b.id AS bill_id, b.status AS bill_status FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current' LEFT JOIN bills b ON b.room_id = r.id AND b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`;
 
-const billsSql =
-  "SELECT b.id, r.room_number, t.full_name AS tenant_name, b.status, b.total, b.sent_at, b.created_at FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.period = ? ORDER BY b.created_at ASC, r.room_number ASC";
+const billsSql = `SELECT b.id, r.room_number, t.full_name AS tenant_name, b.status, b.total, b.sent_at, b.created_at FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.period = ? ORDER BY b.created_at ASC, ${roomNumberOrder("r.room_number")}`;
 
 const pendingSlipsSql =
   "SELECT s.bill_id FROM slips s JOIN bills b ON b.id = s.bill_id WHERE s.status = 'pending_review' AND b.period = ?";
@@ -151,6 +150,7 @@ stats.get("/dashboard", async (c) => {
     }
 
     let vacantRooms = 0;
+    let unbilledRooms = 0;
 
     const rooms: RoomStat[] = roomResult.results.map((room) => {
       let status: RoomBillStatus = "unpaid";
@@ -158,6 +158,9 @@ stats.get("/dashboard", async (c) => {
       if (room.tenant_id === null) {
         status = "vacant";
         vacantRooms += 1;
+      } else if (room.bill_id === null) {
+        status = "unbilled";
+        unbilledRooms += 1;
       } else if (room.bill_status === "paid") {
         status = "paid";
       }
@@ -184,6 +187,7 @@ stats.get("/dashboard", async (c) => {
       collectedAmount,
       unpaidAmount,
       unpaidRooms: unpaidBills.length,
+      unbilledRooms,
       vacantRooms,
       totalRooms: roomResult.results.length,
       sentCount,

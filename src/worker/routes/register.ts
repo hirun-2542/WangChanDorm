@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { failureDetail, logLineFailure, pushMessage } from "../line/api";
-import { errorBody, readJsonObject } from "./shared";
+import { errorBody, readJsonObject, roomNumberOrder } from "./shared";
 
 const registerApi = new Hono<{ Bindings: Env }>();
 
@@ -90,7 +90,7 @@ async function alertRegistration(env: Env, name: string, roomNumber: string, pho
 
 registerApi.get("/rooms", async (c) => {
   try {
-    const result = await c.env.DB.prepare("SELECT id, room_number FROM rooms WHERE status = 'vacant' ORDER BY room_number ASC").all<{
+    const result = await c.env.DB.prepare(`SELECT id, room_number FROM rooms WHERE status = 'vacant' ORDER BY ${roomNumberOrder("room_number")}`).all<{
       id: string;
       room_number: string;
     }>();

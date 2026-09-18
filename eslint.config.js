@@ -24,7 +24,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["eslint.config.js", "vite.config.ts", "vitest.config.ts", "scripts/rich-menu.mjs"],
+    files: ["eslint.config.js", "vite.config.ts", "vitest.config.ts", "scripts/*.mjs"],
     ...tseslint.configs.disableTypeChecked,
   },
   {

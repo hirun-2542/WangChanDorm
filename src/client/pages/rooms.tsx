@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, createRoom, fetchRooms, fetchSettings, updateRoom, type Room, type RoomInput } from "../api";
+import { ApiError, createRoom, fetchRooms, fetchSettings, updateRoom, type BillCharge, type Room, type RoomInput } from "../api";
 import { useSearch } from "../search";
 import {
   Badge,
@@ -40,6 +40,38 @@ interface RoomForm {
   waterRate: string;
   electricChoice: ElectricChoice;
   electricRate: string;
+  charges: ChargeDraft[];
+}
+
+interface ChargeDraft {
+  id: string;
+  name: string;
+  amount: string;
+}
+
+let chargeSequence = 0;
+
+function newChargeDraft(): ChargeDraft {
+  chargeSequence += 1;
+  return { id: `charge-${chargeSequence}`, name: "", amount: "" };
+}
+
+function chargeDrafts(charges: BillCharge[]): ChargeDraft[] {
+  return charges.map((charge) => {
+    chargeSequence += 1;
+    return { id: `charge-${chargeSequence}`, name: charge.name, amount: String(charge.amount) };
+  });
+}
+
+function parseChargeAmount(value: string): number | null {
+  const trimmed = value.trim();
+
+  if (trimmed === "") {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 const emptyRoomForm = (defaults: RateDefaults): RoomForm => ({
@@ -51,6 +83,7 @@ const emptyRoomForm = (defaults: RateDefaults): RoomForm => ({
   waterRate: String(defaults.waterRate),
   electricChoice: "default",
   electricRate: String(defaults.electricRate),
+  charges: [],
 });
 
 const roomFormOf = (room: Room, defaults: RateDefaults): RoomForm => ({
@@ -62,6 +95,7 @@ const roomFormOf = (room: Room, defaults: RateDefaults): RoomForm => ({
   waterRate: String(room.waterRate ?? defaults.waterRate),
   electricChoice: room.electricMode === "flat" ? "flat" : room.electricRate === null ? "default" : "custom",
   electricRate: String(room.electricRate ?? defaults.electricRate),
+  charges: chargeDrafts(room.charges),
 });
 
 function waterRateText(room: Room, defaults: RateDefaults): string {
@@ -112,10 +146,19 @@ function RoomDrawer({ open, base, form, defaults, duplicateId, saving, serverErr
   const customWaterInvalid = form.waterMode === "custom" && (customWater === null || customWater <= 0);
   const customElectric = numericValue(form.electricRate);
   const customElectricInvalid = form.electricChoice === "custom" && (customElectric === null || customElectric <= 0);
+  const chargeInvalid = form.charges.some((charge) => charge.name.trim() === "" || parseChargeAmount(charge.amount) === null);
 
   const idBlank = form.id.trim() === "";
   const canSave =
-    !idBlank && !duplicateId && !rentInvalid && !waterMeterInvalid && !electricMeterInvalid && !customWaterInvalid && !customElectricInvalid && !saving;
+    !idBlank &&
+    !duplicateId &&
+    !rentInvalid &&
+    !waterMeterInvalid &&
+    !electricMeterInvalid &&
+    !customWaterInvalid &&
+    !customElectricInvalid &&
+    !chargeInvalid &&
+    !saving;
 
   const fieldError = (name: string): string | undefined =>
     serverError !== null && serverError.field === name ? serverError.message : undefined;
@@ -124,8 +167,20 @@ function RoomDrawer({ open, base, form, defaults, duplicateId, saving, serverErr
     onChange({ ...form, ...patch });
   };
 
+  const appendCharge = () => {
+    update({ charges: [...form.charges, newChargeDraft()] });
+  };
+
+  const removeCharge = (chargeId: string) => {
+    update({ charges: form.charges.filter((charge) => charge.id !== chargeId) });
+  };
+
+  const editCharge = (chargeId: string, patch: Partial<Pick<ChargeDraft, "name" | "amount">>) => {
+    update({ charges: form.charges.map((charge) => (charge.id === chargeId ? { ...charge, ...patch } : charge)) });
+  };
+
   const save = () => {
-    onSave({
+    const input: RoomInput = {
       roomNumber: form.id.trim().toUpperCase(),
       rent: rent ?? 0,
       waterRate: form.waterMode === "custom" ? customWater : null,
@@ -133,7 +188,13 @@ function RoomDrawer({ open, base, form, defaults, duplicateId, saving, serverErr
       electricRate: form.electricChoice === "custom" ? customElectric : null,
       waterMeterInit: waterMeterValue ?? 0,
       electricMeterInit: electricMeterValue ?? 0,
-    });
+    };
+
+    if (base !== null) {
+      input.charges = form.charges.map((charge) => ({ name: charge.name.trim(), amount: parseChargeAmount(charge.amount) ?? 0 }));
+    }
+
+    onSave(input);
   };
 
   return (
@@ -276,6 +337,65 @@ function RoomDrawer({ open, base, form, defaults, duplicateId, saving, serverErr
           )}
           {fieldError("electricMode") !== undefined && <p className="text-xs text-danger">{fieldError("electricMode")}</p>}
         </fieldset>
+
+        {base !== null && (
+          <fieldset className="grid gap-2">
+            <legend className="field-label">ค่าใช้จ่ายประจำ</legend>
+            <p className="text-xs text-fog">รายการที่เก็บทุกเดือนของห้องนี้ ระบบจะเติมให้อัตโนมัติตอนสร้างบิล และแก้ไขเฉพาะเดือนนั้นได้</p>
+            {form.charges.map((charge) => {
+              const nameInvalid = charge.name.trim() === "";
+              const amountInvalid = parseChargeAmount(charge.amount) === null;
+
+              return (
+                <div key={charge.id} className="flex items-end gap-2">
+                  <div className="min-w-0 flex-1">
+                    <label className="field-label" htmlFor={`${charge.id}-name`}>
+                      ชื่อรายการ
+                    </label>
+                    <input
+                      id={`${charge.id}-name`}
+                      type="text"
+                      className={`input-inline w-full text-left${nameInvalid ? " border-danger" : ""}`}
+                      value={charge.name}
+                      aria-invalid={nameInvalid}
+                      onChange={(event) => {
+                        editCharge(charge.id, { name: event.target.value });
+                      }}
+                    />
+                  </div>
+                  <div className="w-20 shrink-0">
+                    <label className="field-label" htmlFor={`${charge.id}-amount`}>
+                      จำนวนเงิน
+                    </label>
+                    <input
+                      id={`${charge.id}-amount`}
+                      type="text"
+                      inputMode="numeric"
+                      className={`input-inline num w-full${amountInvalid ? " border-danger" : ""}`}
+                      value={charge.amount}
+                      aria-invalid={amountInvalid}
+                      onChange={(event) => {
+                        editCharge(charge.id, { amount: event.target.value });
+                      }}
+                    />
+                  </div>
+                  <IconButton
+                    icon="delete"
+                    label="ลบรายการนี้"
+                    onClick={() => {
+                      removeCharge(charge.id);
+                    }}
+                  />
+                </div>
+              );
+            })}
+            <Button variant="ghost" size="sm" icon="add" onClick={appendCharge}>
+              เพิ่มรายการ
+            </Button>
+            {chargeInvalid && <p className="text-xs text-danger">ค่าใช้จ่ายประจำต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ</p>}
+            {fieldError("charges") !== undefined && <p className="text-xs text-danger">{fieldError("charges")}</p>}
+          </fieldset>
+        )}
 
         {serverError !== null && serverError.field === undefined && <p className="text-xs text-danger">{serverError.message}</p>}
       </div>

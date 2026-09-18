@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorBody, readJsonObject } from "./shared";
+import { errorBody, readJsonObject, roomNumberOrder } from "./shared";
 
 const rooms = new Hono<{ Bindings: Env }>();
 
@@ -20,6 +20,11 @@ interface RoomRow {
   occupied_by: string | null;
 }
 
+interface ChargePayload {
+  name: string;
+  amount: number;
+}
+
 interface RoomPayload {
   id: string;
   roomNumber: string;
@@ -31,6 +36,7 @@ interface RoomPayload {
   electricMeterInit: number;
   status: RoomStatus;
   occupiedBy: string | null;
+  charges: ChargePayload[];
 }
 
 const roomColumns =
@@ -38,7 +44,9 @@ const roomColumns =
 
 const roomFrom = "FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current'";
 
-function toRoom(row: RoomRow): RoomPayload {
+const maxRoomCharges = 10;
+
+function toRoom(row: RoomRow, charges: ChargePayload[]): RoomPayload {
   return {
     id: row.id,
     roomNumber: row.room_number,
@@ -50,7 +58,57 @@ function toRoom(row: RoomRow): RoomPayload {
     electricMeterInit: row.electric_meter_init,
     status: row.status === "occupied" ? "occupied" : "vacant",
     occupiedBy: row.occupied_by,
+    charges,
   };
+}
+
+async function loadRoomCharges(env: Env): Promise<Map<string, ChargePayload[]>> {
+  const result = await env.DB.prepare("SELECT room_id, name, amount FROM room_charges ORDER BY room_id ASC, position ASC")
+    .all<{ room_id: string; name: string; amount: number }>();
+
+  const grouped = new Map<string, ChargePayload[]>();
+
+  for (const row of result.results) {
+    const list = grouped.get(row.room_id) ?? [];
+    list.push({ name: row.name, amount: row.amount });
+    grouped.set(row.room_id, list);
+  }
+
+  return grouped;
+}
+
+async function roomCharges(env: Env, roomId: string): Promise<ChargePayload[]> {
+  const result = await env.DB.prepare("SELECT name, amount FROM room_charges WHERE room_id = ? ORDER BY position ASC")
+    .bind(roomId)
+    .all<ChargePayload>();
+
+  return result.results;
+}
+
+function parseRoomCharges(value: unknown): ChargePayload[] | null {
+  if (!Array.isArray(value) || value.length > maxRoomCharges) {
+    return null;
+  }
+
+  const charges: ChargePayload[] = [];
+
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return null;
+    }
+
+    const record = item as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    const amount = record.amount;
+
+    if (name === "" || typeof amount !== "number" || !Number.isInteger(amount) || amount < 0) {
+      return null;
+    }
+
+    charges.push({ name, amount });
+  }
+
+  return charges;
 }
 
 function parsePositiveInt(value: unknown): number | null {
@@ -79,8 +137,9 @@ function parseElectricMode(value: unknown): ElectricMode | null {
 
 rooms.get("/", async (c) => {
   try {
-    const result = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} ORDER BY r.room_number ASC`).all<RoomRow>();
-    return c.json({ ok: true, rooms: result.results.map(toRoom) }, 200);
+    const result = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} ORDER BY ${roomNumberOrder("r.room_number")}`).all<RoomRow>();
+    const charges = await loadRoomCharges(c.env);
+    return c.json({ ok: true, rooms: result.results.map((row) => toRoom(row, charges.get(row.id) ?? [])) }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "list rooms failed", error: detail }));
@@ -160,7 +219,7 @@ rooms.post("/", async (c) => {
       return c.json(errorBody("INTERNAL", "สร้างห้องไม่สำเร็จ"), 500);
     }
 
-    return c.json({ ok: true, room: toRoom(row) }, 201);
+    return c.json({ ok: true, room: toRoom(row, []) }, 201);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "create room failed", error: detail }));
@@ -272,6 +331,18 @@ rooms.patch("/:id", async (c) => {
       electricMeterInit = parsed;
     }
 
+    let charges: ChargePayload[] | null = null;
+
+    if (body.charges !== undefined) {
+      const parsed = parseRoomCharges(body.charges);
+
+      if (parsed === null) {
+        return c.json(errorBody("VALIDATION", "ค่าใช้จ่ายประจำต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ ไม่เกิน 10 รายการ", "charges"), 400);
+      }
+
+      charges = parsed;
+    }
+
     const storedElectricRate = electricMode === "flat" ? null : electricRate;
 
     const clash = await c.env.DB.prepare("SELECT id FROM rooms WHERE room_number = ? AND id != ?")
@@ -282,11 +353,29 @@ rooms.patch("/:id", async (c) => {
       return c.json(errorBody("DUPLICATE", "เลขห้องนี้ถูกใช้แล้ว", "roomNumber"), 409);
     }
 
-    await c.env.DB.prepare(
-      "UPDATE rooms SET room_number = ?, rent = ?, water_rate = ?, electric_mode = ?, electric_rate = ?, water_meter_init = ?, electric_meter_init = ? WHERE id = ?",
-    )
-      .bind(roomNumber, rent, waterRate, electricMode, storedElectricRate, waterMeterInit, electricMeterInit, id)
-      .run();
+    const statements: D1PreparedStatement[] = [
+      c.env.DB.prepare(
+        "UPDATE rooms SET room_number = ?, rent = ?, water_rate = ?, electric_mode = ?, electric_rate = ?, water_meter_init = ?, electric_meter_init = ? WHERE id = ?",
+      ).bind(roomNumber, rent, waterRate, electricMode, storedElectricRate, waterMeterInit, electricMeterInit, id),
+    ];
+
+    if (charges !== null) {
+      statements.push(c.env.DB.prepare("DELETE FROM room_charges WHERE room_id = ?").bind(id));
+
+      charges.forEach((charge, index) => {
+        statements.push(
+          c.env.DB.prepare("INSERT INTO room_charges (id, room_id, name, amount, position) VALUES (?, ?, ?, ?, ?)").bind(
+            crypto.randomUUID(),
+            id,
+            charge.name,
+            charge.amount,
+            index,
+          ),
+        );
+      });
+    }
+
+    await c.env.DB.batch(statements);
 
     const row = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} WHERE r.id = ?`).bind(id).first<RoomRow>();
 
@@ -295,7 +384,7 @@ rooms.patch("/:id", async (c) => {
       return c.json(errorBody("INTERNAL", "บันทึกห้องไม่สำเร็จ"), 500);
     }
 
-    return c.json({ ok: true, room: toRoom(row) }, 200);
+    return c.json({ ok: true, room: toRoom(row, await roomCharges(c.env, id)) }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "update room failed", roomId: id, error: detail }));

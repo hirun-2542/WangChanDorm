@@ -8,3 +8,4 @@ dist
 coverage
 .commandcode/
 .impeccable/
+seed/live/

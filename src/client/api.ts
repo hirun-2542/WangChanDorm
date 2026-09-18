@@ -13,6 +13,7 @@ export interface Room {
   electricMeterInit: number;
   status: RoomStatus;
   occupiedBy: string | null;
+  charges: BillCharge[];
 }
 
 export interface RoomInput {
@@ -23,6 +24,7 @@ export interface RoomInput {
   electricRate: number | null;
   waterMeterInit: number;
   electricMeterInit: number;
+  charges?: BillCharge[];
 }
 
 export interface Tenant {
@@ -118,6 +120,7 @@ export interface MeterSheetRow {
   waterPrevious: number;
   electricPrevious: number;
   existingBillId: string | null;
+  charges: BillCharge[];
 }
 
 export interface BillEntryInput {
@@ -440,6 +443,7 @@ export interface DashboardKpis {
   collectedAmount: number;
   unpaidAmount: number;
   unpaidRooms: number;
+  unbilledRooms: number;
   vacantRooms: number;
   totalRooms: number;
   sentCount: number;
@@ -461,7 +465,7 @@ export interface UnpaidBillStat {
   hasPendingSlip: boolean;
 }
 
-export type DashboardRoomStatus = "paid" | "unpaid" | "vacant";
+export type DashboardRoomStatus = "paid" | "unpaid" | "unbilled" | "vacant";
 
 export interface DashboardRoom {
   id: string;

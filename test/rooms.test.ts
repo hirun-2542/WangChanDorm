@@ -1,6 +1,11 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+interface ChargePayload {
+  name: string;
+  amount: number;
+}
+
 interface RoomPayload {
   id: string;
   roomNumber: string;
@@ -11,6 +16,7 @@ interface RoomPayload {
   waterMeterInit: number;
   electricMeterInit: number;
   status: "vacant" | "occupied";
+  charges: ChargePayload[];
 }
 
 interface RoomListBody {
@@ -185,5 +191,136 @@ describe("rooms crud", () => {
     expect(listed).toEqual([...listed].sort());
     expect(listed.indexOf("F601")).toBeLessThan(listed.indexOf("F602"));
     expect(listed.indexOf("F602")).toBeLessThan(listed.indexOf("F603"));
+  });
+
+  it("lists rooms in natural number order, with numbered sub-rooms before two-digit ones", async () => {
+    const naturalOrder = ["101", "108", "108/1", "108/2", "108/10"];
+    const created = new Set<string>();
+
+    for (const roomNumber of ["108/10", "108/2", "101", "108/1", "108"]) {
+      const response = await createRoom({ roomNumber, rent: 2600 });
+      expect(response.status).toBe(201);
+      created.add((await response.json<RoomBody>()).room.id);
+    }
+
+    const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+    expect(list.rooms.filter((room) => created.has(room.id)).map((room) => room.roomNumber)).toEqual(naturalOrder);
+  });
+
+  it("stores a room's recurring charges and returns them in position order", async () => {
+    const created = await (await createRoom({ roomNumber: "G701", rent: 3000 })).json<RoomBody>();
+    expect(created.room.charges).toEqual([]);
+
+    const response = await patchRoom(created.room.id, {
+      charges: [
+        { name: "  ค่าบริการ  ", amount: 10 },
+        { name: "ค่าขยะ", amount: 20 },
+        { name: "ค่าไวไฟ", amount: 100 },
+      ],
+    });
+    expect(response.status).toBe(200);
+
+    const patched = await response.json<RoomBody>();
+    expect(patched.room.charges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+
+    const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+    const found = list.rooms.find((room) => room.id === created.room.id);
+    expect(found?.charges).toEqual(patched.room.charges);
+  });
+
+  it("replaces a room's recurring charges wholesale", async () => {
+    const created = await (await createRoom({ roomNumber: "G702", rent: 3000 })).json<RoomBody>();
+
+    const seeded = await patchRoom(created.room.id, {
+      charges: [
+        { name: "ค่าบริการ", amount: 10 },
+        { name: "ค่าขยะ", amount: 20 },
+        { name: "ค่าไวไฟ", amount: 100 },
+      ],
+    });
+    expect(seeded.status).toBe(200);
+    expect((await seeded.json<RoomBody>()).room.charges).toHaveLength(3);
+
+    const reordered = await patchRoom(created.room.id, {
+      charges: [
+        { name: "ค่าไวไฟ", amount: 100 },
+        { name: "ค่าบริการ", amount: 10 },
+      ],
+    });
+    expect(reordered.status).toBe(200);
+    expect((await reordered.json<RoomBody>()).room.charges).toEqual([
+      { name: "ค่าไวไฟ", amount: 100 },
+      { name: "ค่าบริการ", amount: 10 },
+    ]);
+
+    const cleared = await patchRoom(created.room.id, { charges: [] });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json<RoomBody>()).room.charges).toEqual([]);
+
+    const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+    expect(list.rooms.find((room) => room.id === created.room.id)?.charges).toEqual([]);
+  });
+
+  it("leaves a room's recurring charges untouched when the charges key is absent", async () => {
+    const created = await (await createRoom({ roomNumber: "G703", rent: 3000 })).json<RoomBody>();
+    await patchRoom(created.room.id, { charges: [{ name: "ค่าขยะ", amount: 20 }] });
+
+    const response = await patchRoom(created.room.id, { rent: 3300 });
+    expect(response.status).toBe(200);
+
+    const patched = await response.json<RoomBody>();
+    expect(patched.room.rent).toBe(3300);
+    expect(patched.room.charges).toEqual([{ name: "ค่าขยะ", amount: 20 }]);
+  });
+
+  it("keeps a room numbered like a path segment intact", async () => {
+    const created = await (await createRoom({ roomNumber: "108/7", rent: 2600 })).json<RoomBody>();
+    expect(created.room.roomNumber).toBe("108/7");
+
+    const response = await patchRoom(created.room.id, { charges: [{ name: "ค่าบริการ", amount: 10 }] });
+    expect(response.status).toBe(200);
+
+    const patched = await response.json<RoomBody>();
+    expect(patched.room.roomNumber).toBe("108/7");
+    expect(patched.room.charges).toEqual([{ name: "ค่าบริการ", amount: 10 }]);
+
+    const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+    const found = list.rooms.find((room) => room.id === created.room.id);
+    expect(found?.roomNumber).toBe("108/7");
+    expect(found?.charges).toEqual([{ name: "ค่าบริการ", amount: 10 }]);
+  });
+
+  it("rejects malformed recurring charges with 400 and a field", async () => {
+    const created = await (await createRoom({ roomNumber: "G704", rent: 3000 })).json<RoomBody>();
+    const seeded = await patchRoom(created.room.id, { charges: [{ name: "ค่าขยะ", amount: 20 }] });
+    expect(seeded.status).toBe(200);
+
+    const emptyName = await patchRoom(created.room.id, { charges: [{ name: "   ", amount: 10 }] });
+    expect(emptyName.status).toBe(400);
+    expect((await emptyName.json<ErrorBody>()).error.field).toBe("charges");
+
+    const fractional = await patchRoom(created.room.id, { charges: [{ name: "ค่าบริการ", amount: 12.5 }] });
+    expect(fractional.status).toBe(400);
+    expect((await fractional.json<ErrorBody>()).error.field).toBe("charges");
+
+    const negative = await patchRoom(created.room.id, { charges: [{ name: "ค่าบริการ", amount: -1 }] });
+    expect(negative.status).toBe(400);
+    expect((await negative.json<ErrorBody>()).error.field).toBe("charges");
+
+    const notArray = await patchRoom(created.room.id, { charges: "ค่าบริการ" });
+    expect(notArray.status).toBe(400);
+
+    const tooMany = await patchRoom(created.room.id, {
+      charges: Array.from({ length: 11 }, (_, index) => ({ name: `รายการ ${index}`, amount: index })),
+    });
+    expect(tooMany.status).toBe(400);
+    expect((await tooMany.json<ErrorBody>()).error.field).toBe("charges");
+
+    const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+    expect(list.rooms.find((room) => room.id === created.room.id)?.charges).toEqual([{ name: "ค่าขยะ", amount: 20 }]);
   });
 });

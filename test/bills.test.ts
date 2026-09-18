@@ -66,6 +66,7 @@ interface MeterRowPayload {
   waterPrevious: number;
   electricPrevious: number;
   existingBillId: string | null;
+  charges: ChargePayload[];
 }
 
 interface ErrorBody {
@@ -124,6 +125,16 @@ async function newRoom(payload: Record<string, unknown>): Promise<RoomPayload> {
 
 async function roomsList(): Promise<RoomPayload[]> {
   return (await (await SELF.fetch(roomsUrl)).json<{ ok: boolean; rooms: RoomPayload[] }>()).rooms;
+}
+
+async function setRoomCharges(roomId: string, charges: ChargePayload[]): Promise<void> {
+  const response = await SELF.fetch(`${roomsUrl}/${roomId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ charges }),
+  });
+
+  expect(response.status).toBe(200);
 }
 
 async function newTenant(roomId: string, fullName: string): Promise<TenantPayload> {
@@ -207,6 +218,31 @@ describe("monthly bill generation", () => {
     expect(overrideRow.electricRate).toBe(9);
     expect(overrideRow.waterPrevious).toBe(100);
     expect(overrideRow.electricPrevious).toBe(200);
+  });
+
+  it("orders the meter sheet and the bill list by room number naturally", async () => {
+    await putRates(18, 7);
+    const naturalOrder = ["101", "108", "108/1", "108/2", "108/10"];
+    const roomIds: string[] = [];
+
+    for (const roomNumber of ["108/10", "108/2", "101", "108/1", "108"]) {
+      roomIds.push((await occupiedRoom(roomNumber, { waterMeterInit: 0, electricMeterInit: 0 })).id);
+    }
+
+    const rows = await meterSheet("2026-09");
+    expect(rows.filter((row) => roomIds.includes(row.roomId)).map((row) => row.roomNumber)).toEqual(naturalOrder);
+
+    const response = await generate({
+      period: "2026-09",
+      entries: roomIds.map((roomId) => ({ roomId, waterCurrent: 5, electricCurrent: 5 })),
+    });
+    expect(response.status).toBe(201);
+
+    const created = (await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills;
+    expect(created.map((bill) => bill.roomNumber)).toEqual(naturalOrder);
+
+    const listed = await listBills("2026-09");
+    expect(listed.filter((bill) => roomIds.includes(bill.roomId)).map((bill) => bill.roomNumber)).toEqual(naturalOrder);
   });
 
   it("reads the dorm default rate from settings for rooms without an override", async () => {
@@ -905,5 +941,87 @@ describe("bill management", () => {
     expect(paid.paidAt).toBe("2026-09-30T10:00Z");
     expect(paid.paidMethod).toBe("cash");
     expect((await findBill("2026-09", bill.id)).paidAt).toBe("2026-09-30T10:00Z");
+  });
+});
+
+describe("room recurring charges", () => {
+  it("carries a room's recurring charges into the meter sheet", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("H301", { waterMeterInit: 10, electricMeterInit: 20 });
+    const plain = await occupiedRoom("H302", { waterMeterInit: 10, electricMeterInit: 20 });
+
+    await setRoomCharges(room.id, [
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+
+    const rows = await meterSheet("2026-09");
+    expect(pick(rows, (row) => row.roomId === room.id).charges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+    expect(pick(rows, (row) => row.roomId === plain.id).charges).toEqual([]);
+  });
+
+  it("stores the meter sheet's charges on the generated bill and counts them in the total", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("H303", { rent: 4200, waterMeterInit: 50, electricMeterInit: 60 });
+    await setRoomCharges(room.id, [
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+
+    const sheetRow = pick(await meterSheet("2026-09"), (row) => row.roomId === room.id);
+    expect(sheetRow.charges).toHaveLength(3);
+
+    const response = await generate({
+      period: "2026-09",
+      entries: [{ roomId: room.id, waterCurrent: 55, electricCurrent: 70, charges: sheetRow.charges }],
+    });
+    expect(response.status).toBe(201);
+
+    const bill = first((await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
+    expect(bill.charges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+    expect(bill.waterAmount).toBe(5 * 18);
+    expect(bill.electricAmount).toBe(10 * 7);
+    expect(bill.total).toBe(4200 + 90 + 70 + 130);
+
+    const listed = await findBill("2026-09", bill.id);
+    expect(listed.charges).toEqual(bill.charges);
+    expect(listed.total).toBe(bill.total);
+  });
+
+  it("leaves an existing bill untouched when a room's recurring defaults change", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("H304", { rent: 4000, waterMeterInit: 100, electricMeterInit: 200 });
+    await setRoomCharges(room.id, [{ name: "ค่าขยะ", amount: 20 }]);
+
+    const sheetRow = pick(await meterSheet("2026-09"), (row) => row.roomId === room.id);
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215, charges: sheetRow.charges });
+    expect(bill.charges).toEqual([{ name: "ค่าขยะ", amount: 20 }]);
+    expect(bill.total).toBe(4000 + 180 + 105 + 20);
+
+    await setRoomCharges(room.id, [
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+
+    const listed = await findBill("2026-09", bill.id);
+    expect(listed).toEqual(bill);
+    expect(listed.charges).toEqual([{ name: "ค่าขยะ", amount: 20 }]);
+    expect(listed.total).toBe(bill.total);
+
+    const nextSheet = pick(await meterSheet("2026-10"), (row) => row.roomId === room.id);
+    expect(nextSheet.charges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
   });
 });

@@ -3,7 +3,7 @@ import { lineChannelConfigured, pushMessage } from "../line/api";
 import { buildBillFlexMessage, type BillMessageIssuer } from "../line/bill-message";
 import { formatBaht, thaiPeriodLabel } from "../lib/invoice";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
-import { asRecord, errorBody, isIsoDate, readJsonObject } from "./shared";
+import { asRecord, errorBody, isIsoDate, readJsonObject, roomNumberOrder } from "./shared";
 
 const bills = new Hono<{ Bindings: Env }>();
 
@@ -108,6 +108,7 @@ interface MeterRowPayload {
   waterPrevious: number;
   electricPrevious: number;
   existingBillId: string | null;
+  charges: ChargePayload[];
 }
 
 interface OccupiedRoomRow {
@@ -255,7 +256,7 @@ async function loadEffectiveRates(env: Env): Promise<{ water: number; electric: 
 }
 
 async function loadOccupiedRooms(env: Env): Promise<OccupiedRoomRow[]> {
-  const result = await env.DB.prepare(`SELECT ${occupiedRoomColumns} ${occupiedRoomFrom} ORDER BY r.room_number ASC`).all<OccupiedRoomRow>();
+  const result = await env.DB.prepare(`SELECT ${occupiedRoomColumns} ${occupiedRoomFrom} ORDER BY ${roomNumberOrder("r.room_number")}`).all<OccupiedRoomRow>();
   return result.results;
 }
 
@@ -282,6 +283,21 @@ async function loadCharges(env: Env, period: string): Promise<Map<string, Charge
     const list = grouped.get(row.bill_id) ?? [];
     list.push({ name: row.name, amount: row.amount });
     grouped.set(row.bill_id, list);
+  }
+
+  return grouped;
+}
+
+async function loadRoomChargeDefaults(env: Env): Promise<Map<string, ChargePayload[]>> {
+  const result = await env.DB.prepare("SELECT room_id, name, amount FROM room_charges ORDER BY room_id ASC, position ASC")
+    .all<{ room_id: string; name: string; amount: number }>();
+
+  const grouped = new Map<string, ChargePayload[]>();
+
+  for (const row of result.results) {
+    const list = grouped.get(row.room_id) ?? [];
+    list.push({ name: row.name, amount: row.amount });
+    grouped.set(row.room_id, list);
   }
 
   return grouped;
@@ -318,7 +334,7 @@ function toBill(row: BillRow, charges: ChargePayload[]): BillPayload {
 }
 
 async function loadBills(env: Env, period: string): Promise<BillPayload[]> {
-  const result = await env.DB.prepare(`SELECT ${billColumns} ${billFrom} WHERE b.period = ? ORDER BY r.room_number ASC`)
+  const result = await env.DB.prepare(`SELECT ${billColumns} ${billFrom} WHERE b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`)
     .bind(period)
     .all<BillRow>();
   const charges = await loadCharges(env, period);
@@ -465,6 +481,7 @@ bills.get("/meter-sheet", async (c) => {
     const rates = await loadEffectiveRates(c.env);
     const occupied = await loadOccupiedRooms(c.env);
     const latest = await loadLatestReadings(c.env, period);
+    const defaultCharges = await loadRoomChargeDefaults(c.env);
     const existing = await c.env.DB.prepare("SELECT id, room_id FROM bills WHERE period = ?")
       .bind(period)
       .all<{ id: string; room_id: string }>();
@@ -486,6 +503,7 @@ bills.get("/meter-sheet", async (c) => {
         waterPrevious: previous?.water_current ?? room.water_meter_init,
         electricPrevious: previous?.electric_current ?? room.electric_meter_init,
         existingBillId: existingByRoom.get(room.room_id) ?? null,
+        charges: defaultCharges.get(room.room_id) ?? [],
       };
     });
 
