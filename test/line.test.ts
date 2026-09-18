@@ -1,5 +1,7 @@
-import { SELF, env } from "cloudflare:test";
+import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import app from "../src/worker/index";
+import { flexText } from "./flex";
 
 const webhookUrl = "https://dorm.test/webhook/line";
 const roomsUrl = "https://dorm.test/api/rooms";
@@ -13,23 +15,7 @@ const lineProfileUrl = "https://api.line.me/v2/bot/profile";
 
 const dormName = "หอพักทดสอบ";
 
-const welcomeText = `ยินดีต้อนรับสู่${dormName} กรุณาพิมพ์เลขห้องของคุณ เช่น A101 เพื่อเชื่อม LINE`;
-const ownerLinkedText = "เชื่อม LINE เจ้าของเรียบร้อย ระบบจะแจ้งเตือนที่ห้องแชทนี้";
-
-function linkedText(fullName: string, roomNumber: string): string {
-  return `เชื่อม LINE กับ คุณ${fullName} ห้อง ${roomNumber} สำเร็จ`;
-}
-
-function notMatchedText(text: string): string {
-  return `ไม่พบห้อง ${text} ที่มีผู้เช่าอยู่ในระบบ กรุณาตรวจสอบเลขห้องอีกครั้ง หรือติดต่อเจ้าของหอ`;
-}
-
-const guidanceText = "ยังไม่พบห้องของคุณ กรุณาพิมพ์เลขห้อง เช่น A101 เพื่อเชื่อม LINE หรือติดต่อเจ้าของหอ";
-
 const registerUrl = "https://dorm.test/register";
-const slipInstructionText = "ส่งรูปสลิปโอนเงินในแชทนี้ได้เลย ระบบจะตรวจสอบสลิปให้อัตโนมัติ";
-const registerRequiredText = `กรุณาลงทะเบียนผู้เช่าเพื่อผูก LINE กับห้องของคุณก่อน ลงทะเบียนได้ที่ ${registerUrl}`;
-const registerLinkText = `ลิงก์ลงทะเบียนผู้เช่า ${registerUrl}`;
 
 interface RoomPayload {
   id: string;
@@ -98,7 +84,7 @@ interface OutboundCall {
 
 interface ReplyBody {
   replyToken: string;
-  messages: { type: string; text: string }[];
+  messages: Record<string, unknown>[];
 }
 
 interface WebhookOptions {
@@ -135,7 +121,11 @@ async function postWebhook(body: string, options: WebhookOptions = {}): Promise<
     headers["x-line-signature"] = signature;
   }
 
-  return SELF.fetch(webhookUrl, { method: "POST", headers, body });
+  const ctx = createExecutionContext();
+  const response = await app.fetch(new Request(webhookUrl, { method: "POST", headers, body }), env, ctx);
+  await waitOnExecutionContext(ctx);
+
+  return response;
 }
 
 function lineEvents(events: unknown[]): string {
@@ -165,11 +155,13 @@ function replyCalls(): OutboundCall[] {
   return outboundCalls.filter((call) => call.url === lineReplyUrl);
 }
 
-function replyTexts(): string[] {
-  return replyCalls().map((call) => {
-    const body = JSON.parse(call.body) as ReplyBody;
-    return body.messages[0]?.text ?? "";
-  });
+function replyMessages(): Record<string, unknown>[] {
+  return replyCalls().map((call) => (JSON.parse(call.body) as ReplyBody).messages[0] ?? {});
+}
+
+function expectFlexMessage(message: unknown): void {
+  expect((message as { type?: unknown }).type).toBe("flex");
+  expect(typeof (message as { altText?: unknown }).altText).toBe("string");
 }
 
 async function readPending(): Promise<PendingLink[]> {
@@ -376,7 +368,11 @@ describe("POST /webhook/line events", () => {
     const response = await postWebhook(lineEvents([followEvent("U-follow", "tok-follow")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([welcomeText]);
+    const [welcome] = replyMessages();
+    expectFlexMessage(welcome);
+    expect(flexText(welcome)).toContain(dormName);
+    expect(flexText(welcome)).toContain("A101");
+    expect(flexText(welcome)).toContain("เชื่อม LINE");
 
     const followed = await pendingFor("U-follow");
     expect(followed?.lineUserId).toBe("U-follow");
@@ -389,26 +385,39 @@ describe("POST /webhook/line events", () => {
     const response = await postWebhook(lineEvents([textEvent("U-greeting", "tok-greeting", "สวัสดี")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([guidanceText]);
+    const [guidance] = replyMessages();
+    expectFlexMessage(guidance);
+    expect(flexText(guidance)).toContain("ยังไม่พบห้องของคุณ");
+    expect(flexText(guidance)).toContain("A101");
+    expect(flexText(guidance)).toContain("ติดต่อเจ้าของหอ");
 
     const row = await pendingFor("U-greeting");
     expect(row?.lastMessage).toBe("สวัสดี");
   });
 
-  it("answers 500 when a database write fails so LINE retries the event", async () => {
+  it("acknowledges a failing event with 200 and logs the failure instead of answering 500", async () => {
     await env.DB.prepare(
       "CREATE TRIGGER fail_pending_insert BEFORE INSERT ON line_pending BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
     ).run();
 
+    const errorSpy = vi.spyOn(console, "error");
+
     try {
       const response = await postWebhook(lineEvents([followEvent("U-db-fail", "tok-db-fail")]));
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(200);
 
-      const body = await response.json<ErrorBody>();
-      expect(body.ok).toBe(false);
-      expect(body.error.code).toBe("INTERNAL");
+      const body = await response.json<{ ok: boolean }>();
+      expect(body).toEqual({ ok: true });
       expect(await pendingFor("U-db-fail")).toBeUndefined();
+
+      const failures = errorSpy.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as { message: string; error?: string })
+        .filter((entry) => entry.message === "line webhook failed");
+
+      expect(failures).toHaveLength(1);
+      expect(typeof failures[0]?.error).toBe("string");
     } finally {
+      errorSpy.mockRestore();
       await env.DB.prepare("DROP TRIGGER IF EXISTS fail_pending_insert").run();
     }
   });
@@ -441,7 +450,10 @@ describe("POST /webhook/line events", () => {
 
     expect((await tenantById(tenant.id)).lineUserId).toBe("U-link");
     expect(await pendingFor("U-link")).toBeUndefined();
-    expect(replyTexts()).toEqual([linkedText("สมชาย ใจดี", "L201")]);
+    const [linkedReply] = replyMessages();
+    expectFlexMessage(linkedReply);
+    expect(flexText(linkedReply)).toContain("สมชาย ใจดี");
+    expect(flexText(linkedReply)).toContain("L201");
   });
 
   it("keeps an unknown and a vacant room number as pending rows with the not-matched reply", async () => {
@@ -452,7 +464,13 @@ describe("POST /webhook/line events", () => {
     const vacant = await postWebhook(lineEvents([textEvent("U-vacant", "tok-vacant", "L202")]));
     expect(vacant.status).toBe(200);
 
-    expect(replyTexts()).toEqual([notMatchedText("Z902"), notMatchedText("L202")]);
+    const notMatched = replyMessages();
+    expect(notMatched).toHaveLength(2);
+    expectFlexMessage(notMatched[0]);
+    expectFlexMessage(notMatched[1]);
+    expect(flexText(notMatched[0])).toContain("Z902");
+    expect(flexText(notMatched[1])).toContain("L202");
+    expect(flexText(notMatched[0])).toContain("ไม่พบห้อง");
 
     const vacantRow = await pendingFor("U-vacant");
     expect(vacantRow?.lineUserId).toBe("U-vacant");
@@ -472,7 +490,10 @@ describe("POST /webhook/line events", () => {
     const after = await readSettings();
     expect(after.ownerLineConnected).toBe(true);
     expect(after.ownerLinkCode).toBe(before.ownerLinkCode);
-    expect(replyTexts()).toEqual([ownerLinkedText]);
+    const [owner] = replyMessages();
+    expectFlexMessage(owner);
+    expect(flexText(owner)).toContain("เชื่อม LINE เจ้าของ");
+    expect(flexText(owner)).toContain("แจ้งเตือน");
     expect(await pendingFor("U-owner")).toBeUndefined();
   });
 
@@ -486,7 +507,10 @@ describe("POST /webhook/line events", () => {
 
     const response = await postWebhook(lineEvents([textEvent("U-old-code", "tok-old", before.ownerLinkCode)]));
     expect(response.status).toBe(200);
-    expect(replyTexts()).toEqual([notMatchedText(before.ownerLinkCode)]);
+    const [stale] = replyMessages();
+    expectFlexMessage(stale);
+    expect(flexText(stale)).toContain(before.ownerLinkCode);
+    expect(flexText(stale)).toContain("ไม่พบห้อง");
     expect((await pendingFor("U-old-code"))?.lastMessage).toBe(before.ownerLinkCode);
   });
 
@@ -496,7 +520,7 @@ describe("POST /webhook/line events", () => {
 
     await postWebhook(lineEvents([textEvent("U-linked", "tok-1", "L203")]));
     expect((await tenantById(tenant.id)).lineUserId).toBe("U-linked");
-    expect(replyTexts()).toHaveLength(1);
+    expect(replyMessages()).toHaveLength(1);
 
     outboundCalls.length = 0;
     const response = await postWebhook(lineEvents([textEvent("U-linked", "tok-2", "สวัสดี")]));
@@ -528,7 +552,10 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-slip", "tok-keyword-slip", "ส่งสลิป")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([slipInstructionText]);
+    const [instruction] = replyMessages();
+    expectFlexMessage(instruction);
+    expect(flexText(instruction)).toContain("ส่งรูปสลิปโอนเงิน");
+    expect(flexText(instruction)).toContain("ตรวจสอบสลิป");
   });
 
   it("answers บิลของฉัน with the latest unpaid bill for a linked tenant", async () => {
@@ -541,9 +568,13 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-bills", "tok-keyword-bills", "บิลของฉัน")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([
-      "บิลของห้อง K302 ประจำเดือน กันยายน 2569 ยอด 3,500 บาท ยังไม่ชำระ กรุณาชำระและส่งสลิปในแชทนี้",
-    ]);
+    const [unpaid] = replyMessages();
+    expectFlexMessage(unpaid);
+    expect(flexText(unpaid)).toContain("K302");
+    expect(flexText(unpaid)).toContain("กันยายน 2569");
+    expect(flexText(unpaid)).toContain("3,500");
+    expect(flexText(unpaid)).toContain("ค้างชำระ");
+    expect(flexText(unpaid)).toContain("ส่งสลิปในแชทนี้");
   });
 
   it("tells a linked tenant their latest bill is paid when nothing is outstanding", async () => {
@@ -557,9 +588,13 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-paid", "tok-keyword-paid", "บิลของฉัน")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([
-      "บิลล่าสุดของห้อง K303 ประจำเดือน กันยายน 2569 ยอด 3,500 บาท ชำระแล้ว ไม่มียอดค้างชำระ",
-    ]);
+    const [paid] = replyMessages();
+    expectFlexMessage(paid);
+    expect(flexText(paid)).toContain("K303");
+    expect(flexText(paid)).toContain("กันยายน 2569");
+    expect(flexText(paid)).toContain("3,500");
+    expect(flexText(paid)).toContain("ชำระแล้ว");
+    expect(flexText(paid)).toContain("ไม่มียอดค้างชำระ");
   });
 
   it("answers บิลของฉัน honestly when a linked tenant has no bill yet", async () => {
@@ -571,9 +606,10 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-nobill", "tok-keyword-nobill", "บิลของฉัน")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([
-      "ยังไม่มีบิลของห้อง K304 ในระบบ เมื่อเจ้าของหอออกบิลแล้วจะแจ้งให้ทราบในแชทนี้",
-    ]);
+    const [missingBill] = replyMessages();
+    expectFlexMessage(missingBill);
+    expect(flexText(missingBill)).toContain("K304");
+    expect(flexText(missingBill)).toContain("ยังไม่มีบิล");
   });
 
   it("answers ติดต่อเจ้าของ with the configured owner name and phone for a linked tenant", async () => {
@@ -588,7 +624,11 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-owner", "tok-keyword-owner", "ติดต่อเจ้าของ")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual(["เจ้าของหอ สมศักดิ์ ใจดี เบอร์โทร 0812345678"]);
+    const [contact] = replyMessages();
+    expectFlexMessage(contact);
+    expect(flexText(contact)).toContain("สมศักดิ์ ใจดี");
+    expect(flexText(contact)).toContain("เบอร์โทร");
+    expect(flexText(contact)).toContain("0812345678");
   });
 
   it("answers ติดต่อเจ้าของ without a blank number when the owner phone is empty", async () => {
@@ -599,9 +639,13 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-owner-empty", "tok-keyword-owner-empty", "ติดต่อเจ้าของ")]));
     expect(response.status).toBe(200);
 
-    const [text] = replyTexts();
-    expect(text).toBe("เจ้าของหอ สมศักดิ์ ใจดี ยังไม่ได้บันทึกเบอร์โทรไว้ กรุณาฝากคำถามไว้ในแชทนี้แล้วรอการติดต่อกลับ");
-    expect(text).not.toMatch(/เบอร์โทร\s*$/);
+    const [contact] = replyMessages();
+    expectFlexMessage(contact);
+    const text = flexText(contact);
+    expect(text).toContain("สมศักดิ์ ใจดี");
+    expect(text).toContain("ยังไม่ได้บันทึกเบอร์โทร");
+    expect(text).toContain("กรุณาฝากคำถามไว้ในแชทนี้แล้วรอการติดต่อกลับ");
+    expect(text).not.toMatch(/เบอร์โทร\s*\d/);
   });
 
   it("answers ลงทะเบียน with the registration link for a linked tenant", async () => {
@@ -613,7 +657,10 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-register", "tok-keyword-register", "ลงทะเบียน")]));
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([registerLinkText]);
+    const [link] = replyMessages();
+    expectFlexMessage(link);
+    expect(flexText(link)).toContain("ลิงก์ลงทะเบียนผู้เช่า");
+    expect(flexText(link)).toContain(registerUrl);
   });
 
   it("points บิลของฉัน and ลงทะเบียน from an unlinked user at registration and records no pending row", async () => {
@@ -623,7 +670,12 @@ describe("LINE rich menu keywords", () => {
     const registerResponse = await postWebhook(lineEvents([textEvent("U-unlinked-register", "tok-unlinked-register", "ลงทะเบียน")]));
     expect(registerResponse.status).toBe(200);
 
-    expect(replyTexts()).toEqual([registerRequiredText, registerRequiredText]);
+    const required = replyMessages();
+    expect(required).toHaveLength(2);
+    expectFlexMessage(required[0]);
+    expectFlexMessage(required[1]);
+    expect(flexText(required[0])).toContain(registerUrl);
+    expect(flexText(required[1])).toContain(registerUrl);
 
     expect(await pendingFor("U-unlinked-bills")).toBeUndefined();
     expect(await pendingFor("U-unlinked-register")).toBeUndefined();
@@ -762,10 +814,13 @@ describe("outbound LINE calls", () => {
     const reply = replies[0];
     expect(reply?.method).toBe("POST");
     expect(reply?.authorization).toBe(expectedToken);
-    expect(JSON.parse(reply?.body ?? "") as ReplyBody).toEqual({
-      replyToken: "tok-bearer",
-      messages: [{ type: "text", text: welcomeText }],
-    });
+    const replyBody = JSON.parse(reply?.body ?? "") as ReplyBody;
+    expect(replyBody.replyToken).toBe("tok-bearer");
+    expect(replyBody.messages).toHaveLength(1);
+    const welcome = replyBody.messages[0];
+    expect((welcome as { type?: unknown }).type).toBe("flex");
+    expect(flexText(welcome)).toContain(dormName);
+    expect(flexText(welcome)).toContain("A101");
 
     expect((await pendingFor("U-bearer"))?.displayName).toBe("สมหญิง LINE");
   });

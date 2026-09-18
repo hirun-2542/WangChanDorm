@@ -35,7 +35,7 @@ export function lineChannelConfigured(env: Env): boolean {
   return accessToken(env) !== "";
 }
 
-export async function replyMessage(env: Env, replyToken: string, text: string): Promise<void> {
+export async function replyMessage(env: Env, replyToken: string, message: LineOutboundMessage): Promise<void> {
   const token = accessToken(env);
 
   if (token === "") {
@@ -52,7 +52,7 @@ export async function replyMessage(env: Env, replyToken: string, text: string): 
     const response = await fetch(`${lineApiBase}/message/reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ replyToken, messages: [{ type: "text", text }] }),
+      body: JSON.stringify({ replyToken, messages: [message] }),
     });
 
     if (!response.ok) {

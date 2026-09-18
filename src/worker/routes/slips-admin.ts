@@ -189,7 +189,7 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
   }
 
   console.log(JSON.stringify({ message: "slip settled by owner", slipId: slip.id, billId: bill.id }));
-  await pushMessage(c.env, slip.line_user_id, [{ type: "text", text: slipMatchedMessage(bill.total, bill.period) }]);
+  await pushMessage(c.env, slip.line_user_id, [slipMatchedMessage(bill.total, bill.period)]);
 
   return resolvedSlipResponse(c, slip.id);
 }

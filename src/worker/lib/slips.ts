@@ -180,7 +180,7 @@ async function notifyOwnerOfSlipInReview(env: Env, slipId: string, alert: SlipOw
     }
 
     const delivered = await pushMessage(env, ownerId, [
-      { type: "text", text: ownerSlipPendingMessage(alert.roomNumber, alert.tenantName, alert.slipAmount, alert.billTotal) },
+      ownerSlipPendingMessage(alert.roomNumber, alert.tenantName, alert.slipAmount, alert.billTotal),
     ]);
 
     console.log(JSON.stringify({ message: "slip owner alerted", slipId, delivered: delivered === true }));
@@ -203,7 +203,7 @@ async function keepSlipForReview(
     .run();
 
   console.log(JSON.stringify({ message: "slip kept for review", slipId, lineUserId, verified: result.verified, reason }));
-  await pushMessage(env, lineUserId, [{ type: "text", text: slipPendingReviewMessage() }]);
+  await pushMessage(env, lineUserId, [slipPendingReviewMessage()]);
   await notifyOwnerOfSlipInReview(env, slipId, {
     roomNumber: sender.room_number,
     tenantName: sender.full_name,
@@ -224,7 +224,7 @@ async function rejectDuplicateSlip(
     .run();
 
   console.log(JSON.stringify({ message: "slip rejected as a duplicate transfer reference", slipId, lineUserId, usedSlipId }));
-  await pushMessage(env, lineUserId, [{ type: "text", text: slipDuplicateMessage() }]);
+  await pushMessage(env, lineUserId, [slipDuplicateMessage()]);
 }
 
 export async function handleSlipImage(env: Env, origin: string, userId: string, replyToken: string, messageId: string): Promise<void> {
@@ -258,7 +258,7 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
     .bind(sender.room_id, sender.id)
     .first<UnpaidBillRow>();
 
-  const result = await verifySlip(env, `${origin}/slips/${imageKey}`, bill?.total ?? null);
+  const result = await verifySlip(env, content.bytes, content.contentType, bill?.total ?? null);
   const amount = result.amount;
   const transRef = result.transRef;
 
@@ -309,5 +309,5 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
   }
 
   console.log(JSON.stringify({ message: "slip closed a bill", slipId, lineUserId: userId, billId: bill.id }));
-  await pushMessage(env, userId, [{ type: "text", text: slipMatchedMessage(bill.total, bill.period) }]);
+  await pushMessage(env, userId, [slipMatchedMessage(bill.total, bill.period)]);
 }

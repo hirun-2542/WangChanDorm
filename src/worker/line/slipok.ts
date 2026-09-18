@@ -20,6 +20,18 @@ function credential(value: string | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function imageExtension(contentType: string): string {
+  if (contentType === "image/jpeg") {
+    return "jpg";
+  }
+
+  if (contentType === "image/webp") {
+    return "webp";
+  }
+
+  return "png";
+}
+
 function readText(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -136,7 +148,7 @@ function normalise(payload: unknown): SlipOkResult {
   };
 }
 
-export async function verifySlip(env: Env, imageUrl: string, expectedAmount: number | null): Promise<SlipOkResult> {
+export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType: string, expectedAmount: number | null): Promise<SlipOkResult> {
   const key = credential(env.SLIPOK_API_KEY);
   const branchId = credential(env.SLIPOK_BRANCH_ID);
 
@@ -150,22 +162,24 @@ export async function verifySlip(env: Env, imageUrl: string, expectedAmount: num
     return notVerified();
   }
 
-  if (imageUrl === "") {
-    logLineFailure("slipok verify skipped", "slip image url is empty");
+  if (imageBytes.byteLength === 0) {
+    logLineFailure("slipok verify skipped", "slip image is empty");
     return notVerified();
   }
 
-  const body: Record<string, unknown> = { url: imageUrl, log: false };
+  const body = new FormData();
+  body.append("files", new Blob([imageBytes], { type: contentType }), `slip.${imageExtension(contentType)}`);
+  body.append("log", "false");
 
   if (expectedAmount !== null) {
-    body.amount = expectedAmount;
+    body.append("amount", String(expectedAmount));
   }
 
   try {
     const response = await fetch(`${slipOkEndpointBase}/${encodeURIComponent(branchId)}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-authorization": key },
-      body: JSON.stringify(body),
+      headers: { "x-authorization": key },
+      body,
     });
 
     let payload: unknown;

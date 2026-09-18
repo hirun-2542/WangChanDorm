@@ -1,5 +1,7 @@
-import { SELF, env } from "cloudflare:test";
+import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import app from "../src/worker/index";
+import { flexStrings } from "./flex";
 
 const webhookUrl = "https://dorm.test/webhook/line";
 const roomsUrl = "https://dorm.test/api/rooms";
@@ -18,14 +20,7 @@ const slipOkUrl = `https://api.slipok.com/api/line/apikey/${slipOkBranchId}`;
 const slipDate = "2026-09-03T10:15:00+07:00";
 const slipPaidAt = "2026-09-03T03:15:00.000Z";
 
-const notLinkedText = "กรุณาเชื่อม LINE กับห้องของคุณก่อนส่งสลิป พิมพ์เลขห้อง เช่น A101 เพื่อเชื่อม";
-const downloadFailedText = "ระบบดาวน์โหลดรูปสลิปไม่สำเร็จ กรุณาส่งรูปสลิปอีกครั้ง";
-const pendingReviewText = "ได้รับสลิปแล้ว เจ้าของหอจะตรวจสอบและยืนยันผลการชำระให้อีกครั้ง";
-const duplicateText = "สลิปนี้ถูกใช้ปิดบิลไปแล้ว กรุณาส่งสลิปของรายการใหม่หรือติดต่อเจ้าของหอ";
 
-function matchedText(amount: string, period: string): string {
-  return `ได้รับชำระบิลประจำเดือน ${period} ยอด ${amount} บาท เรียบร้อยแล้ว`;
-}
 
 const slipImageBytes = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -109,13 +104,16 @@ interface OutboundCall {
   url: string;
   method: string;
   body: string;
+  contentType: string;
+  form: FormData;
   authorization: string;
   xAuthorization: string;
 }
 
 interface LineMessage {
   type: string;
-  text?: string;
+  altText?: string;
+  contents?: unknown;
 }
 
 interface PushBody {
@@ -126,11 +124,6 @@ interface PushBody {
 interface ReplyBody {
   replyToken: string;
   messages: LineMessage[];
-}
-
-interface TextResult {
-  to: string;
-  text: string;
 }
 
 let outboundCalls: OutboundCall[] = [];
@@ -160,6 +153,14 @@ function pick<T>(items: T[], predicate: (item: T) => boolean): T {
   }
 
   return found;
+}
+
+function asFile(value: string | File | null): File {
+  if (!(value instanceof File)) {
+    throw new Error("expected a file part");
+  }
+
+  return value;
 }
 
 function asJson<T>(text: string): T {
@@ -193,11 +194,19 @@ function lineEvents(events: unknown[]): string {
 }
 
 async function postWebhook(body: string): Promise<Response> {
-  return SELF.fetch(webhookUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-line-signature": await sign(body) },
-    body,
-  });
+  const ctx = createExecutionContext();
+  const response = await app.fetch(
+    new Request(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-line-signature": await sign(body) },
+      body,
+    }),
+    env,
+    ctx,
+  );
+  await waitOnExecutionContext(ctx);
+
+  return response;
 }
 
 function textEvent(userId: string, replyToken: string, text: string): Record<string, unknown> {
@@ -230,25 +239,47 @@ function slipOkCalls(): OutboundCall[] {
   return outboundCalls.filter((call) => call.url === slipOkUrl);
 }
 
-function pushTexts(): TextResult[] {
+function pushMessages(): PushBody[] {
   return outboundCalls
     .filter((call) => call.url === linePushUrl)
-    .map((call) => {
-      const body = asJson<PushBody>(call.body);
-      return { to: body.to, text: body.messages[0]?.text ?? "" };
-    });
+    .map((call) => asJson<PushBody>(call.body));
 }
 
-function pushTextsFor(lineUserId: string): string[] {
-  return pushTexts()
+function pushTexts(): PushBody[] {
+  return pushMessages();
+}
+
+function pushStringsFor(lineUserId: string): string[] {
+  return pushMessages()
     .filter((push) => push.to === lineUserId)
-    .map((push) => push.text);
+    .flatMap((push) => push.messages.flatMap((message) => flexStrings(message)));
 }
 
-function replyTexts(): string[] {
+function pushTextFor(lineUserId: string): string {
+  return pushStringsFor(lineUserId).join(" ");
+}
+
+function expectPushed(lineUserId: string, ...needles: string[]): void {
+  const haystack = pushTextFor(lineUserId);
+
+  for (const needle of needles) {
+    expect(haystack).toContain(needle);
+  }
+}
+
+function replyText(): string {
   return outboundCalls
     .filter((call) => call.url === lineReplyUrl)
-    .map((call) => asJson<ReplyBody>(call.body).messages[0]?.text ?? "");
+    .flatMap((call) => asJson<ReplyBody>(call.body).messages.flatMap((message) => flexStrings(message)))
+    .join(" ");
+}
+
+function expectReplied(...needles: string[]): void {
+  const haystack = replyText();
+
+  for (const needle of needles) {
+    expect(haystack).toContain(needle);
+  }
 }
 
 function verifiedBody(amount: number, transRef: string, date = "2026-09-03", time = "10:15"): unknown {
@@ -331,7 +362,7 @@ async function storedImageKeys(): Promise<string[]> {
 async function linkTenantByRoomNumber(roomNumber: string, lineUserId: string, fullName: string): Promise<void> {
   const response = await postWebhook(lineEvents([textEvent(lineUserId, `tok-${lineUserId}`, roomNumber)]));
   expect(response.status).toBe(200);
-  expect(replyTexts()).toEqual([`เชื่อม LINE กับ คุณ${fullName} ห้อง ${roomNumber} สำเร็จ`]);
+  expectReplied(fullName, roomNumber, "เชื่อม LINE");
 }
 
 async function sendSlip(lineUserId: string, messageId: string): Promise<Response> {
@@ -368,10 +399,6 @@ async function unlinkOwner(): Promise<void> {
   await env.DB.prepare("DELETE FROM settings WHERE key = 'owner_line_user_id'").run();
 }
 
-function ownerAlertText(roomNumber: string, tenantName: string, amountText: string, compareText: string): string {
-  return `มีสลิปใหม่รอตรวจจากห้อง ${roomNumber} คุณ${tenantName} ${amountText} ${compareText} เปิดหน้าคิวรอตรวจเพื่อปิดบิลหรือปฏิเสธ`;
-}
-
 beforeEach(() => {
   outboundCalls = [];
   imageStatus = 200;
@@ -392,6 +419,8 @@ beforeEach(() => {
       url,
       method: init?.method ?? "GET",
       body: typeof init?.body === "string" ? init.body : "",
+      contentType: headers.get("content-type") ?? "",
+      form: init?.body instanceof FormData ? init.body : new FormData(),
       authorization: headers.get("authorization") ?? "",
       xAuthorization: headers.get("x-authorization") ?? "",
     });
@@ -429,7 +458,7 @@ afterEach(() => {
 });
 
 describe("POST /webhook/line image events", () => {
-  it("stores the slip under a random key, verifies the public url and closes the exact bill", async () => {
+  it("stores the slip under a random key, uploads the image to SlipOK and closes the exact bill", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S101", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
     const tenant = await newTenant(room.id, "สมชาย สลิป");
@@ -473,18 +502,23 @@ describe("POST /webhook/line image events", () => {
     expect(verifies[0]?.method).toBe("POST");
     expect(verifies[0]?.url).toBe(slipOkUrl);
     expect(verifies[0]?.xAuthorization).toBe(env.SLIPOK_API_KEY);
-    expect(asJson<Record<string, unknown>>(verifies[0]?.body ?? "")).toEqual({
-      url: `https://dorm.test/slips/${slip.image_key}`,
-      log: false,
-      amount: 3550,
-    });
+    expect(verifies[0]?.contentType).toBe("");
+
+    const form = await new Request(slipOkUrl, { method: "POST", body: first(verifies).form }).formData();
+    const image = asFile(form.get("files"));
+    expect(image.name).toBe("slip.png");
+    expect(image.type).toBe("image/png");
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(slipImageBytes);
+    expect(form.get("log")).toBe("false");
+    expect(form.get("amount")).toBe("3550");
+    expect([...form.keys()].sort()).toEqual(["amount", "files", "log"]);
 
     const paid = await billOf("2026-09", bill.id);
     expect(paid.status).toBe("paid");
     expect(paid.paidMethod).toBe("transfer");
     expect(paid.paidAt).toBe(slipPaidAt);
 
-    expect(pushTextsFor("U-slip-1")).toEqual([matchedText("3,550", "กันยายน 2569")]);
+    expectPushed("U-slip-1", "กันยายน 2569", "3,550", "ปิดบิลเรียบร้อย");
 
     const result = slipResultOf(slip);
     expect(result.verified).toBe(true);
@@ -517,7 +551,7 @@ describe("POST /webhook/line image events", () => {
 
     expect((await billOf("2026-09", bill.id)).status).toBe("paid");
     expect((await readOneSlipFor("U-slip-2")).status).toBe("matched");
-    expect(pushTextsFor("U-slip-2")).toEqual([matchedText("3,790", "กันยายน 2569")]);
+    expectPushed("U-slip-2", "กันยายน 2569", "3,790");
   });
 
   it("closes a flat electric bill using the bill total", async () => {
@@ -543,7 +577,7 @@ describe("POST /webhook/line image events", () => {
 
     expect((await billOf("2026-09", bill.id)).status).toBe("paid");
     expect((await readOneSlipFor("U-slip-3")).status).toBe("matched");
-    expect(pushTextsFor("U-slip-3")).toEqual([matchedText("4,490", "กันยายน 2569")]);
+    expectPushed("U-slip-3", "กันยายน 2569", "4,490");
   });
 
   it("keeps a bill open when the slip amount differs by fifty satang", async () => {
@@ -575,8 +609,8 @@ describe("POST /webhook/line image events", () => {
     expect(unchanged.paidAt).toBeNull();
     expect(unchanged.paidMethod).toBeNull();
 
-    expect(pushTextsFor("U-slip-4")).toEqual([pendingReviewText]);
-    expect(pushTextsFor("U-slip-4")).not.toContain(matchedText("3,550", "กันยายน 2569"));
+    expectPushed("U-slip-4", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
+    expect(pushTextFor("U-slip-4")).not.toContain("ปิดบิลเรียบร้อย");
   });
 
   it("keeps the slip for review when the verification fails", async () => {
@@ -606,7 +640,7 @@ describe("POST /webhook/line image events", () => {
     expect(result.raw).not.toBeNull();
 
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-5")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-5", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("keeps the slip for review when SlipOK finds no QR code in the image", async () => {
@@ -630,7 +664,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-19")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-19", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("keeps the slip for review when the bank is temporarily unavailable", async () => {
@@ -655,7 +689,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-20")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-20", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("never treats a success payload without an amount as a match", async () => {
@@ -681,7 +715,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-6")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-6", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("keeps the slip for review for a payload without the success flag", async () => {
@@ -704,7 +738,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-7")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-7", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("never treats a payload that says success false as verified", async () => {
@@ -729,7 +763,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-12")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-12", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("rejects a slip the provider reports as already submitted without touching the bill", async () => {
@@ -754,7 +788,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("duplicate_slip");
 
-    expect(pushTextsFor("U-slip-21")).toEqual([duplicateText]);
+    expectPushed("U-slip-21", "ถูกใช้ปิดบิลไปแล้ว", "ติดต่อเจ้าของหอ");
 
     const unchanged = await billOf("2026-09", bill.id);
     expect(unchanged.status).toBe("unpaid");
@@ -793,7 +827,7 @@ describe("POST /webhook/line image events", () => {
 
     const unchanged = await billOf("2026-09", bill.id);
     expect(unchanged.status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-22")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-22", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("keeps the slip for review when the SlipOK key is not configured", async () => {
@@ -819,7 +853,7 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-8")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-8", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("keeps the slip for review when the SlipOK branch id is not configured", async () => {
@@ -844,10 +878,10 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).verified).toBe(false);
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
-    expect(pushTextsFor("U-slip-23")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-23", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
-  it("keeps the slip for review when the room has no unpaid bill", async () => {
+  it("keeps the slip for review when the room has no unpaid bill and uploads no expected amount", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S109", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
     await newTenant(room.id, "สมชาย จ่ายแล้ว");
@@ -858,10 +892,17 @@ describe("POST /webhook/line image events", () => {
     expect(settled.status).toBe(200);
 
     outboundCalls = [];
+    imageContentType = "image/jpeg";
     slipOkBody = verifiedBody(3550, "TR-0009");
 
     const response = await sendSlip("U-slip-9", "msg-slip-9");
     expect(response.status).toBe(200);
+
+    const form = await new Request(slipOkUrl, { method: "POST", body: first(slipOkCalls()).form }).formData();
+    expect(form.has("amount")).toBe(false);
+    expect(form.get("log")).toBe("false");
+    expect(asFile(form.get("files")).name).toBe("slip.jpg");
+    expect(asFile(form.get("files")).type).toBe("image/jpeg");
 
     const slip = await readOneSlipFor("U-slip-9");
     expect(slip.status).toBe("pending_review");
@@ -877,7 +918,7 @@ describe("POST /webhook/line image events", () => {
     expect(unchanged.status).toBe("paid");
     expect(unchanged.paidMethod).toBe("cash");
     expect(unchanged.paidAt).toBe("2026-09-02");
-    expect(pushTextsFor("U-slip-9")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-9", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("rejects a resent slip and never closes a second bill with the same reference", async () => {
@@ -900,7 +941,7 @@ describe("POST /webhook/line image events", () => {
     const closed = await readOneSlipFor("U-slip-10");
     expect(closed.status).toBe("matched");
     expect(closed.bill_id).toBe(second.id);
-    expect(pushTextsFor("U-slip-10")).toEqual([matchedText("3,550", "ตุลาคม 2569")]);
+    expectPushed("U-slip-10", "ตุลาคม 2569", "3,550");
 
     outboundCalls = [];
     const resent = await sendSlip("U-slip-10", "msg-slip-10b");
@@ -922,7 +963,7 @@ describe("POST /webhook/line image events", () => {
     expect(result.verified).toBe(true);
     expect(result.reason).toBe("duplicate_slip");
 
-    expect(pushTextsFor("U-slip-10")).toEqual([duplicateText]);
+    expectPushed("U-slip-10", "ถูกใช้ปิดบิลไปแล้ว");
 
     const september = await billOf("2026-09", first.id);
     expect(september.status).toBe("unpaid");
@@ -940,7 +981,7 @@ describe("POST /webhook/line image events", () => {
     const response = await sendSlip("U-stray", "msg-stray");
     expect(response.status).toBe(200);
 
-    expect(replyTexts()).toEqual([notLinkedText]);
+    expectReplied("เชื่อม LINE กับห้องของคุณ", "A101");
     expect(downloadCalls()).toEqual([]);
     expect(slipOkCalls()).toEqual([]);
     expect(pushTexts()).toEqual([]);
@@ -962,7 +1003,7 @@ describe("POST /webhook/line image events", () => {
     expect(response.status).toBe(200);
 
     expect(downloadCalls()).toHaveLength(1);
-    expect(replyTexts()).toEqual([downloadFailedText]);
+    expectReplied("ดาวน์โหลดรูปสลิปไม่สำเร็จ");
     expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-11")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
@@ -1011,7 +1052,7 @@ describe("POST /webhook/line image events", () => {
     expect(response.status).toBe(200);
 
     expect(downloadCalls()).toHaveLength(1);
-    expect(replyTexts()).toEqual([downloadFailedText]);
+    expectReplied("ดาวน์โหลดรูปสลิปไม่สำเร็จ");
     expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-14")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
@@ -1036,7 +1077,7 @@ describe("POST /webhook/line image events", () => {
     expect(response.status).toBe(200);
 
     expect(downloadCalls()).toHaveLength(1);
-    expect(replyTexts()).toEqual([downloadFailedText]);
+    expectReplied("ดาวน์โหลดรูปสลิปไม่สำเร็จ");
     expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-15")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
@@ -1059,7 +1100,7 @@ describe("POST /webhook/line image events", () => {
     expect(response.status).toBe(200);
 
     expect(downloadCalls()).toHaveLength(1);
-    expect(replyTexts()).toEqual([downloadFailedText]);
+    expectReplied("ดาวน์โหลดรูปสลิปไม่สำเร็จ");
     expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-16")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
@@ -1095,7 +1136,7 @@ describe("POST /webhook/line image events", () => {
     expect(settled.status).toBe("paid");
     expect(settled.paidMethod).toBe("cash");
     expect(settled.paidAt).toBe("2026-09-02");
-    expect(pushTextsFor("U-slip-17")).toEqual([pendingReviewText]);
+    expectPushed("U-slip-17", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
   it("cannot let two webhooks with the same transfer reference close two bills", async () => {
@@ -1144,10 +1185,8 @@ describe("owner alert for slips that land in review", () => {
     const response = await sendSlip("U-alert-1", "msg-alert-1");
     expect(response.status).toBe(200);
 
-    expect(pushTextsFor("U-alert-1")).toEqual([pendingReviewText]);
-    expect(pushTextsFor("U-boss-1")).toEqual([
-      ownerAlertText("S201", "สมชาย แจ้งเจ้าของ", "ยอดในสลิป 3,550.50 บาท", "เทียบกับยอดบิล 3,550 บาท"),
-    ]);
+    expectPushed("U-alert-1", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
+    expectPushed("U-boss-1", "S201", "สมชาย แจ้งเจ้าของ", "ยอดในสลิป", "3,550.50", "เทียบกับยอดบิล", "3,550");
 
     const slip = await readOneSlipFor("U-alert-1");
     expect(slip.status).toBe("pending_review");
@@ -1168,9 +1207,7 @@ describe("owner alert for slips that land in review", () => {
     const response = await sendSlip("U-alert-2", "msg-alert-2");
     expect(response.status).toBe(200);
 
-    expect(pushTextsFor("U-boss-2")).toEqual([
-      ownerAlertText("S202", "สมหญิง ไม่มีบิลค้าง", "ยอดในสลิป 3,550 บาท", "ยังไม่มีบิลค้างให้เทียบ"),
-    ]);
+    expectPushed("U-boss-2", "S202", "สมหญิง ไม่มีบิลค้าง", "3,550", "ยังไม่มีบิลค้างให้เทียบ");
 
     const slip = await readOneSlipFor("U-alert-2");
     expect(slip.status).toBe("pending_review");
@@ -1192,7 +1229,8 @@ describe("owner alert for slips that land in review", () => {
     const response = await sendSlip("U-alert-3", "msg-alert-3");
     expect(response.status).toBe(200);
 
-    expect(pushTexts()).toEqual([{ to: "U-alert-3", text: pendingReviewText }]);
+    expect(pushMessages().map((push) => push.to)).toEqual(["U-alert-3"]);
+    expectPushed("U-alert-3", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
 
     const slip = await readOneSlipFor("U-alert-3");
     expect(slip.status).toBe("pending_review");
@@ -1327,8 +1365,8 @@ describe("POST /api/slips/:id/resolve", () => {
     expect(stored.bill_id).toBe(bill.id);
     expect(stored.bill_total).toBe(3550);
 
-    expect(pushTextsFor("U-resolve-1")).toEqual([matchedText("3,550", "กันยายน 2569")]);
-    expect(pushTextsFor("U-boss-6")).toEqual([]);
+    expectPushed("U-resolve-1", "กันยายน 2569", "3,550", "ปิดบิลเรียบร้อย");
+    expect(pushStringsFor("U-boss-6")).toEqual([]);
     expect(queueIds(await listQueue())).not.toContain(slip.id);
   });
 
@@ -1489,7 +1527,7 @@ describe("POST /api/slips/:id/resolve", () => {
     expect(stored.status).toBe("matched");
     expect(stored.bill_id).toBe(bill.id);
     expect(stored.bill_total).toBe(3550);
-    expect(pushTextsFor("U-resolve-6")).toEqual([matchedText("3,550", "กันยายน 2569")]);
+    expectPushed("U-resolve-6", "กันยายน 2569", "3,550", "ปิดบิลเรียบร้อย");
   });
 
   it("rejects a slip without touching the bill and without pushing anything", async () => {

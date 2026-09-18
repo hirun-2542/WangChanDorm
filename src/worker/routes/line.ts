@@ -260,17 +260,21 @@ lineWebhook.post("/", async (c) => {
     return c.json({ ok: true }, 200);
   }
 
-  try {
-    const origin = new URL(c.req.url).origin;
+  const webhookEnv = c.env;
+  const origin = new URL(c.req.url).origin;
 
-    for (const event of events) {
-      await handleEvent(c.env, origin, event);
-    }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "line webhook failed", error: detail }));
-    return c.json(errorBody("INTERNAL", "ประมวลผลข้อความ LINE ไม่สำเร็จ"), 500);
-  }
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        for (const event of events) {
+          await handleEvent(webhookEnv, origin, event);
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(JSON.stringify({ message: "line webhook failed", error: detail }));
+      }
+    })(),
+  );
 
   return c.json({ ok: true }, 200);
 });
