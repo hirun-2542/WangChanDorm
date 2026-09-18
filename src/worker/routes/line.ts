@@ -1,20 +1,29 @@
 import { Hono } from "hono";
 import { handleSlipImage } from "../lib/slips";
 import { fetchProfile, replyMessage } from "../line/api";
+import { buildBillFlexMessage, type BillFlexMessage, type BillMessageBill, type BillMessageIssuer } from "../line/bill-message";
 import {
   billStatusMessage,
   contactOwnerMessage,
   linkedMessage,
   notMatchedMessage,
   ownerLinkedMessage,
+  ownerSendSummaryMessage,
+  ownerSlipPendingMessage,
   registerLinkMessage,
   registerRequiredMessage,
+  slipDuplicateMessage,
   slipInstructionMessage,
+  slipMatchedMessage,
+  slipPendingReviewMessage,
+  type LineFlexMessage,
+  type OwnerSendSkip,
+  type OwnerSendSummary,
   type TenantBillSummary,
   welcomeMessage,
 } from "../line/messages";
 import { verifyLineSignature } from "../line/signature";
-import { asRecord, errorBody, readJsonObject, upsertSettingSql } from "./shared";
+import { asRecord, errorBody, readJsonObject, roomNumberOrder, upsertSettingSql } from "./shared";
 
 const lineWebhook = new Hono<{ Bindings: Env }>();
 export const lineAdmin = new Hono<{ Bindings: Env }>();
@@ -347,6 +356,216 @@ lineAdmin.post("/pending/:lineUserId/link", async (c) => {
     }
 
     return c.json(errorBody("INTERNAL", "เชื่อม LINE ไม่สำเร็จ"), 500);
+  }
+});
+
+interface LineMessageKind {
+  key: string;
+  title: string;
+  audience: "tenant" | "owner";
+  trigger: string;
+  message: LineFlexMessage | BillFlexMessage;
+}
+
+interface SampleBillRow {
+  id: string;
+  room_number: string;
+  tenant_name: string;
+  period: string;
+  rent: number;
+  water_units: number;
+  water_rate: number;
+  water_amount: number;
+  electric_mode: string;
+  electric_units: number | null;
+  electric_rate: number | null;
+  electric_amount: number;
+  total: number;
+  created_at: string;
+}
+
+async function loadSampleBill(env: Env): Promise<{ bill: BillMessageBill; period: string } | null> {
+  const latest = await env.DB.prepare("SELECT period FROM bills ORDER BY period DESC LIMIT 1").first<{ period: string }>();
+
+  if (latest === null) {
+    return null;
+  }
+
+  const row = await env.DB.prepare(
+    `SELECT b.id, r.room_number, t.full_name AS tenant_name, b.period, b.rent, b.water_units, b.water_rate, b.water_amount, b.electric_mode, b.electric_units, b.electric_rate, b.electric_amount, b.total, b.created_at FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.period = ? ORDER BY ${roomNumberOrder("r.room_number")} LIMIT 1`,
+  )
+    .bind(latest.period)
+    .first<SampleBillRow>();
+
+  if (row === null) {
+    return null;
+  }
+
+  const charges = await env.DB.prepare("SELECT name, amount FROM bill_charges WHERE bill_id = ? ORDER BY position ASC")
+    .bind(row.id)
+    .all<{ name: string; amount: number }>();
+
+  return {
+    period: row.period,
+    bill: {
+      id: row.id,
+      roomNumber: row.room_number,
+      tenantName: row.tenant_name,
+      period: row.period,
+      rent: row.rent,
+      waterUnits: row.water_units,
+      waterRate: row.water_rate,
+      waterAmount: row.water_amount,
+      electricMode: row.electric_mode === "flat" ? "flat" : "meter",
+      electricUnits: row.electric_units,
+      electricRate: row.electric_rate,
+      electricAmount: row.electric_amount,
+      charges: charges.results,
+      total: row.total,
+      createdAt: row.created_at,
+    },
+  };
+}
+
+interface OwnerSendSummaryRow {
+  room_number: string;
+  tenant_name: string;
+  line_user_id: string | null;
+  total: number;
+  sent_at: string | null;
+}
+
+async function loadOwnerSendSummary(env: Env, period: string): Promise<OwnerSendSummary> {
+  const result = await env.DB.prepare(
+    `SELECT r.room_number, t.full_name AS tenant_name, t.line_user_id, b.total, b.sent_at FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`,
+  )
+    .bind(period)
+    .all<OwnerSendSummaryRow>();
+
+  const skipped: OwnerSendSkip[] = [];
+  let total = 0;
+  let sent = 0;
+
+  for (const row of result.results) {
+    total += row.total;
+
+    if (row.sent_at !== null) {
+      sent += 1;
+    }
+
+    if (row.line_user_id === null || row.line_user_id.trim() === "") {
+      skipped.push({ roomNumber: row.room_number, tenantName: row.tenant_name });
+    }
+  }
+
+  return { period, count: result.results.length, total, sent, failed: 0, failedRooms: [], skipped };
+}
+
+lineAdmin.get("/messages", async (c) => {
+  try {
+    const origin = new URL(c.req.url).origin;
+    const dormName = (await readSetting(c.env, "dorm_name")) ?? defaultDormName;
+    const ownerName = (await readSetting(c.env, "owner_name")) ?? "";
+    const ownerPhone = (await readSetting(c.env, "owner_phone")) ?? "";
+    const promptpayName = (await readSetting(c.env, "promptpay_name")) ?? "";
+    const sample = await loadSampleBill(c.env);
+    const messages: LineMessageKind[] = [];
+
+    if (sample !== null) {
+      const issuer: BillMessageIssuer = { promptpayName };
+
+      messages.push({
+        key: "bill",
+        title: "บิลรายเดือน",
+        audience: "tenant",
+        trigger: "ส่งเมื่อเจ้าของกดส่งบิลให้ผู้เช่า บอทแนบการ์ดบิลพร้อม QR พร้อมเพย์และปุ่มเปิดใบแจ้งหนี้ PDF",
+        message: buildBillFlexMessage(sample.bill, issuer, origin),
+      });
+      messages.push({
+        key: "payment",
+        title: "ยืนยันการชำระ",
+        audience: "tenant",
+        trigger: "ส่งเมื่อสลิปยอดตรงปิดบิลอัตโนมัติ หรือเจ้าของกดปิดบิลจากคิวรอตรวจ",
+        message: slipMatchedMessage(sample.bill.total, sample.bill.period),
+      });
+    }
+
+    messages.push({
+      key: "slip_review",
+      title: "สลิปรอตรวจสอบ",
+      audience: "tenant",
+      trigger: "ส่งเมื่อบอทรับสลิปแล้วยังยืนยันไม่ได้ เช่น ยอดไม่ตรง ตรวจไม่ผ่าน หรือยังไม่มีบิลค้าง",
+      message: slipPendingReviewMessage(),
+    });
+    messages.push({
+      key: "slip_duplicate",
+      title: "สลิปซ้ำ",
+      audience: "tenant",
+      trigger: "ส่งเมื่อสลิปหรือเลขอ้างอิงโอนถูกใช้ปิดบิลไปแล้ว",
+      message: slipDuplicateMessage(),
+    });
+    messages.push({
+      key: "welcome",
+      title: "ยินดีต้อนรับ",
+      audience: "tenant",
+      trigger: "ส่งเมื่อผู้เช่าแอดบอทเป็นครั้งแรกและบอทยังไม่รู้จักห้อง",
+      message: welcomeMessage(dormName),
+    });
+
+    if (sample !== null) {
+      messages.push({
+        key: "link",
+        title: "เชื่อม LINE สำเร็จ",
+        audience: "tenant",
+        trigger: "ส่งเมื่อผู้เช่าพิมพ์เลขห้องแล้วจับคู่กับผู้เช่าในระบบได้",
+        message: linkedMessage(sample.bill.tenantName, sample.bill.roomNumber),
+      });
+    }
+
+    messages.push({
+      key: "instructions",
+      title: "ส่งสลิปได้เลย",
+      audience: "tenant",
+      trigger: "ส่งเมื่อผู้เช่าพิมพ์คำว่า ส่งสลิป เพื่อขอวิธีส่งสลิป",
+      message: slipInstructionMessage(),
+    });
+    messages.push({
+      key: "contact_owner",
+      title: "ติดต่อเจ้าของหอ",
+      audience: "tenant",
+      trigger: "ส่งเมื่อผู้เช่าพิมพ์คำว่า ติดต่อเจ้าของ",
+      message: contactOwnerMessage(ownerName, ownerPhone),
+    });
+
+    if (sample !== null) {
+      messages.push({
+        key: "owner_slip",
+        title: "มีสลิปใหม่รอตรวจ",
+        audience: "owner",
+        trigger: "ส่งถึงเจ้าของทุกครั้งที่มีสลิปถูกบันทึกเข้ารอตรวจ",
+        message: ownerSlipPendingMessage(sample.bill.roomNumber, sample.bill.tenantName, null, sample.bill.total),
+      });
+      messages.push({
+        key: "owner_send_summary",
+        title: "สรุปการส่งบิลทั้งหอ",
+        audience: "owner",
+        trigger: "ส่งถึงเจ้าของหลังกดส่งบิลทั้งหอ สรุปว่าส่งสำเร็จกี่ใบ ไม่สำเร็จกี่ใบ และห้องใดยังไม่เชื่อม LINE",
+        message: ownerSendSummaryMessage(await loadOwnerSendSummary(c.env, sample.period)),
+      });
+    }
+
+    return c.json(
+      {
+        ok: true,
+        source: sample === null ? null : { period: sample.period, roomNumber: sample.bill.roomNumber, tenantName: sample.bill.tenantName },
+        messages,
+      },
+      200,
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ message: "list line message kinds failed", error: detail }));
+    return c.json(errorBody("INTERNAL", "โหลดข้อความ LINE ไม่สำเร็จ"), 500);
   }
 });
 

@@ -218,7 +218,7 @@ const registerStyles = `
         --radius-panel: 16px;
       }
       * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; }
+      html, body { margin: 0; }
       body {
         background: var(--paper);
         color: var(--charcoal);
@@ -226,19 +226,25 @@ const registerStyles = `
         font-size: 16px;
         line-height: 1.5;
         -webkit-text-size-adjust: 100%;
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        min-height: 100vh;
+        min-height: 100dvh;
+        padding: 32px 16px;
       }
-      .page { max-width: 420px; margin: 0 auto; padding: 20px 16px 40px; }
-      .brand { display: flex; align-items: center; gap: 8px; margin: 4px 0 16px; }
+      .page { width: 100%; max-width: 420px; }
+      .brand { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
       .brand-mark {
         width: 28px; height: 28px; border-radius: 8px; background: var(--ink); color: #ffffff;
         display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600;
       }
       .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
       .card {
-        background: var(--canvas); border: 1px solid var(--ash); border-radius: var(--radius-panel); padding: 20px;
+        background: var(--canvas); border: 1px solid var(--ash); border-radius: var(--radius-card); padding: 20px;
       }
-      h1 { margin: 0 0 8px; font-size: 20px; line-height: 1.4; font-weight: 600; letter-spacing: -0.01em; }
-      p { margin: 0 0 12px; color: var(--steel); font-size: 14px; }
+      h1 { margin: 0 0 10px; font-size: 26px; line-height: 1.3; font-weight: 700; letter-spacing: -0.01em; }
+      p { margin: 0 0 12px; max-width: 44ch; color: var(--steel); font-size: 15px; line-height: 1.65; }
       .row { margin-bottom: 14px; }
       label { display: block; margin-bottom: 6px; color: var(--steel); font-size: 13px; font-weight: 500; }
       input, select {

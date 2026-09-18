@@ -306,6 +306,38 @@ export async function linkPendingUser(lineUserId: string, tenantId: string): Pro
   await apiPost<{ ok: true }>(`/api/line/pending/${encodeURIComponent(lineUserId)}/link`, { tenantId });
 }
 
+export type LineMessageAudience = "tenant" | "owner";
+
+export interface LineFlexCard {
+  type: "flex";
+  altText: string;
+  contents: Record<string, unknown>;
+}
+
+export interface LineMessageKind {
+  key: string;
+  title: string;
+  audience: LineMessageAudience;
+  trigger: string;
+  message: LineFlexCard;
+}
+
+export interface LineMessageSource {
+  period: string;
+  roomNumber: string;
+  tenantName: string;
+}
+
+export interface LineMessagesResult {
+  source: LineMessageSource | null;
+  messages: LineMessageKind[];
+}
+
+export async function fetchLineMessages(): Promise<LineMessagesResult> {
+  const body = await apiGet<{ ok: true; source: LineMessageSource | null; messages: LineMessageKind[] }>("/api/line/messages");
+  return { source: body.source, messages: body.messages };
+}
+
 export async function updateSettings(input: SettingsUpdate): Promise<Settings> {
   const body = await apiPut<{ ok: true; settings: Settings }>("/api/settings", input);
   return body.settings;

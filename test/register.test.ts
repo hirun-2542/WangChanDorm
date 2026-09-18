@@ -383,3 +383,86 @@ describe("GET /register", () => {
     expect(html).not.toContain('id="register-form"');
   });
 });
+
+function styleBlock(html: string): string {
+  const match = html.match(/<style>([\s\S]*?)<\/style>/);
+  return match?.[1] ?? "";
+}
+
+function ruleDeclarations(styles: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = styles.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
+  return match?.[1] ?? "";
+}
+
+function fontSizePx(declarations: string): number {
+  const match = declarations.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
+  return match === null ? 0 : Number(match[1]);
+}
+
+function hexToken(styles: string, name: string): string {
+  const match = styles.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
+  return match?.[1] ?? "";
+}
+
+function relativeLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((index) => {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const [red, green, blue] = channels;
+
+  return 0.2126 * (red ?? 0) + 0.7152 * (green ?? 0) + 0.0722 * (blue ?? 0);
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const high = Math.max(relativeLuminance(foreground), relativeLuminance(background));
+  const low = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+
+  return (high + 0.05) / (low + 0.05);
+}
+
+describe("GET /register composition", () => {
+  it("centres the whole stack in the viewport on a full-height grid with a dvh fallback", async () => {
+    setLiffId("");
+
+    const html = await (await SELF.fetch(registerPageUrl)).text();
+    const body = ruleDeclarations(styleBlock(html), "body");
+
+    expect(body).toContain("display: grid");
+    expect(body).toContain("align-content: center");
+    expect(body).toContain("justify-items: center");
+    expect(body).toContain("min-height: 100vh");
+    expect(body).toContain("min-height: 100dvh");
+    expect(body.indexOf("min-height: 100vh")).toBeLessThan(body.indexOf("min-height: 100dvh"));
+
+    expect(ruleDeclarations(styleBlock(html), ".page")).toContain("max-width: 420px");
+    expect(html.indexOf('class="brand"')).toBeLessThan(html.indexOf('class="card"'));
+  });
+
+  it("keeps the border-only card treatment and a readable type hierarchy", async () => {
+    setLiffId("");
+
+    const html = await (await SELF.fetch(registerPageUrl)).text();
+    const styles = styleBlock(html);
+    const card = ruleDeclarations(styles, ".card");
+    const heading = ruleDeclarations(styles, "h1");
+    const paragraph = ruleDeclarations(styles, "p");
+
+    expect(card).toContain("border: 1px solid var(--ash)");
+    expect(card).toContain("border-radius: var(--radius-card)");
+    expect(card).not.toContain("box-shadow");
+    expect(styles).toContain("--radius-card: 12px");
+
+    expect(fontSizePx(heading)).toBeGreaterThanOrEqual(fontSizePx(paragraph) * 1.5);
+    expect(heading).toContain("font-weight: 700");
+    expect(paragraph).toContain("color: var(--steel)");
+    expect(paragraph).toMatch(/max-width:\s*\d+ch/);
+
+    const canvas = hexToken(styles, "canvas");
+    const steel = hexToken(styles, "steel");
+    expect(canvas).not.toBe("");
+    expect(steel).not.toBe("");
+    expect(contrastRatio(steel, canvas)).toBeGreaterThanOrEqual(4.5);
+  });
+});

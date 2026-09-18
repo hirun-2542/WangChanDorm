@@ -154,10 +154,6 @@ function flexTexts(message: LineMessage): string[] {
   return out;
 }
 
-function messageText(body: PushBody): string {
-  return first(body.messages).text ?? "";
-}
-
 function post(url: string, payload: Record<string, unknown>): Promise<Response> {
   return SELF.fetch(url, {
     method: "POST",
@@ -504,18 +500,19 @@ describe("POST /api/bills/send-all", () => {
     expect(body.skipped).toEqual([{ roomNumber: "C322", tenantName: "ผู้เช่าไม่เชื่อม" }]);
 
     const flex = flexBodies();
-    expect(flex).toHaveLength(1);
-    expect(first(flex).to).toBe(lineUserId);
+    expect(flex).toHaveLength(2);
+    expect(flex.some((body) => body.to === lineUserId)).toBe(true);
 
-    const summaries = textBodies();
-    expect(summaries).toHaveLength(1);
+    const summaryPushes = flex.filter((body) => body.to === "U-owner");
+    expect(summaryPushes).toHaveLength(1);
+    expect(first(first(summaryPushes).messages).type).toBe("flex");
 
-    const summary = first(summaries);
-    expect(summary.to).toBe("U-owner");
-    const summaryText = messageText(summary);
-    expect(summaryText).toContain("บิลทั้งหมด 2 ใบ");
+    const summaryText = flexTexts(first(first(summaryPushes).messages)).join(" ");
+    expect(summaryText).toContain("บิลทั้งหมด");
+    expect(summaryText).toContain("2 ใบ");
     expect(summaryText).toContain("7,246");
-    expect(summaryText).toContain("ส่งสำเร็จ 1 ใบ");
+    expect(summaryText).toContain("ส่งสำเร็จ");
+    expect(summaryText).toContain("1 ใบ");
     expect(summaryText).toContain("C322");
 
     const listed = await listBills("2026-08");
@@ -598,7 +595,7 @@ describe("POST /api/bills/send-all", () => {
 
   it("sends only the bills named in billIds and leaves the rest unsent", async () => {
     await putRates(18, 7);
-    const { first, second } = await twoLinkedBills("2025-05", "C361", "C362");
+    const { first, second, secondUserId } = await twoLinkedBills("2025-05", "C361", "C362");
 
     const response = await sendAll("2025-05", [second.id]);
     expect(response.status).toBe(200);
@@ -608,7 +605,8 @@ describe("POST /api/bills/send-all", () => {
     expect(body.failed).toBe(0);
     expect(body.failedIds).toEqual([]);
     expect(body.skipped).toEqual([]);
-    expect(flexBodies()).toHaveLength(1);
+    expect(flexBodies().filter((push) => push.to === secondUserId)).toHaveLength(1);
+    expect(flexBodies().filter((push) => push.to === `U-C361`)).toEqual([]);
 
     expect(await sentAtOf("2025-05", first.id)).toBeNull();
     expect(await sentAtOf("2025-05", second.id)).not.toBeNull();

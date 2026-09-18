@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { lineChannelConfigured, pushMessage } from "../line/api";
 import { buildBillFlexMessage, type BillMessageIssuer } from "../line/bill-message";
-import { formatBaht, thaiPeriodLabel } from "../lib/invoice";
+import { ownerSendSummaryMessage } from "../line/messages";
+import { thaiPeriodLabel } from "../lib/invoice";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
 import { asRecord, errorBody, isIsoDate, readJsonObject, roomNumberOrder } from "./shared";
 
@@ -400,27 +401,6 @@ async function loadOwnerLineUserId(env: Env): Promise<string | null> {
   return row?.value ?? null;
 }
 
-function ownerSummaryText(summary: SendSummary): string {
-  const lines = [
-    `สรุปการส่งบิลทาง LINE ประจำเดือน ${thaiPeriodLabel(summary.period)}`,
-    `บิลทั้งหมด ${summary.count} ใบ`,
-    `ยอดรวม ${formatBaht(summary.total)} บาท`,
-    `ส่งสำเร็จ ${summary.sent} ใบ`,
-  ];
-
-  if (summary.failed > 0) {
-    lines.push(`ส่งไม่สำเร็จ ${summary.failed} ใบ: ${summary.failedRooms.join(", ")}`);
-  }
-
-  if (summary.skipped.length > 0) {
-    lines.push(
-      `ยังไม่เชื่อม LINE ${summary.skipped.length} ห้อง: ${summary.skipped.map((item) => `${item.roomNumber} ${item.tenantName}`).join(" · ")}`,
-    );
-  }
-
-  return lines.join("\n");
-}
-
 async function sendOwnerSummary(env: Env, summary: SendSummary): Promise<void> {
   const ownerId = await loadOwnerLineUserId(env);
 
@@ -428,7 +408,7 @@ async function sendOwnerSummary(env: Env, summary: SendSummary): Promise<void> {
     return;
   }
 
-  await pushMessage(env, ownerId, [{ type: "text", text: ownerSummaryText(summary) }]);
+  await pushMessage(env, ownerId, [ownerSendSummaryMessage(summary)]);
 }
 
 function parsePaidAt(value: unknown): string | null {

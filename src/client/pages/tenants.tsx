@@ -3,10 +3,12 @@ import {
   ApiError,
   checkoutTenant,
   createTenant,
+  fetchBills,
   fetchPendingLinks,
   fetchRooms,
   fetchTenants,
   updateTenant,
+  type Bill,
   type PendingLink,
   type Room,
   type Tenant,
@@ -30,8 +32,8 @@ import {
   Toast,
   type DataTableColumn,
 } from "../ui";
-import { bills as pinnedBills, type Tenant as PinnedTenant } from "../mock-data";
-import { baht, todayIso } from "./bills-shared";
+import type { Tenant as PinnedTenant } from "../mock-data";
+import { baht, monthCount, periodLabel, recentPeriods, todayIso } from "./bills-shared";
 import { PairingSurface, type PairingResult } from "./tenants-pairing";
 
 const thaiMonthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
@@ -357,6 +359,10 @@ export function TenantsPage() {
   const [tab, setTab] = useState<TenantStatus>("current");
   const [pairingOpen, setPairingOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [billPeriods] = useState<string[]>(() => recentPeriods(monthCount));
+  const [tenantBills, setTenantBills] = useState<Bill[]>([]);
+  const [billsLoading, setBillsLoading] = useState(false);
+  const [billsError, setBillsError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Tenant | null>(null);
   const [checkoutTarget, setCheckoutTarget] = useState<Tenant | null>(null);
@@ -403,6 +409,47 @@ export function TenantsPage() {
     };
   }, [toast]);
 
+  useEffect(() => {
+    if (selectedId === null) {
+      setTenantBills([]);
+      setBillsError(null);
+      setBillsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setBillsLoading(true);
+    setBillsError(null);
+
+    void Promise.all(billPeriods.map((period) => fetchBills(period)))
+      .then((lists) => {
+        if (!active) {
+          return;
+        }
+
+        const owned = lists.flat().filter((bill) => bill.tenantId === selectedId);
+        owned.sort((left, right) => (left.period < right.period ? 1 : left.period > right.period ? -1 : 0));
+        setTenantBills(owned);
+      })
+      .catch((loadError: unknown) => {
+        if (!active) {
+          return;
+        }
+
+        setTenantBills([]);
+        setBillsError(loadError instanceof ApiError ? loadError.message : "โหลดบิลของผู้เช่าไม่สำเร็จ");
+      })
+      .finally(() => {
+        if (active) {
+          setBillsLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedId, billPeriods]);
+
   const markPaired = (result: PairingResult) => {
     showToast(`เชื่อม LINE กับ คุณ${result.tenantName} แล้ว`);
     void load();
@@ -448,8 +495,6 @@ export function TenantsPage() {
       tenant.roomNumber.toLowerCase().includes(needle) ||
       tenant.phone.includes(needle),
   );
-
-  const recentBills = selectedTenant === null ? [] : pinnedBills.filter((bill) => bill.tenantId === selectedTenant.id);
 
   const openDetail = (tenant: Tenant) => {
     setSelectedId(tenant.id);
@@ -803,19 +848,25 @@ export function TenantsPage() {
             </div>
 
             <div>
-              <CardHeader title="บิลล่าสุด" description="บิลจากข้อมูลที่ปักหมุดไว้" />
-              {recentBills.length === 0 ? (
-                <p className="text-sm text-fog">บิลจะแสดงที่นี่เมื่อระบบออกบิลพร้อมใช้งาน</p>
+              <CardHeader title="บิลของผู้เช่า" description={`บิลของห้องนี้จากรอบบิลล่าสุด ${billPeriods.length} เดือน`} />
+              {billsLoading ? (
+                <p className="text-sm text-fog">กำลังโหลดบิล</p>
+              ) : billsError !== null ? (
+                <p className="text-sm text-danger">{billsError}</p>
+              ) : tenantBills.length === 0 ? (
+                <p className="text-sm text-fog">
+                  ยังไม่มีบิลของผู้เช่ารายนี้ในรอบบิลล่าสุด บิลจะแสดงที่นี่เมื่อออกบิลให้ห้องนี้จากหน้า บิล
+                </p>
               ) : (
                 <ul className="grid gap-2">
-                  {recentBills.map((bill) => (
+                  {tenantBills.map((bill) => (
                     <li
                       key={bill.id}
                       className="flex items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2"
                     >
                       <span className="min-w-0">
-                        <span className="block truncate text-sm text-charcoal">{bill.period}</span>
-                        <span className="num block text-xs text-fog">ห้อง {bill.roomId}</span>
+                        <span className="block truncate text-sm text-charcoal">{periodLabel(bill.period)}</span>
+                        <span className="num block text-xs text-fog">ห้อง {bill.roomNumber}</span>
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         <span className="num text-sm text-charcoal">{baht(bill.total)} บาท</span>

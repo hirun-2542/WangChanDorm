@@ -253,7 +253,7 @@ function BillList({
           <Card className="mb-4">
             <div className="flex flex-wrap items-end gap-3">
               <div className="w-full md:hidden sm:w-60">
-                <Field label="ค้นหาห้องหรือผู้เช่า" value={query} onChange={setQuery} placeholder="เช่น A103 หรือ ธนา" />
+                <Field label="ค้นหาห้องหรือผู้เช่า" value={query} onChange={setQuery} placeholder="เช่น 108/7 หรือ นงลักษณ์" />
               </div>
               <div className="w-full sm:w-40">
                 <Select

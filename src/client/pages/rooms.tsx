@@ -110,6 +110,18 @@ function electricText(room: Room, defaults: RateDefaults): string {
   return `${room.electricRate ?? defaults.electricRate} บาท/หน่วย`;
 }
 
+function rateValueClass(inherited: boolean): string {
+  return inherited ? "num text-fog" : "num font-medium text-charcoal";
+}
+
+function waterInherited(room: Room): boolean {
+  return room.waterRate === null;
+}
+
+function electricInherited(room: Room): boolean {
+  return room.electricMode === "meter" && room.electricRate === null;
+}
+
 function RoomStatusBadge({ room }: { room: Room }) {
   if (room.status === "vacant") {
     return <StatusBadge status="vacant" />;
@@ -546,7 +558,7 @@ export function RoomsPage() {
       align: "right",
       render: (room) => (
         <div className="flex items-center justify-end gap-2">
-          <span className="num">{waterRateText(room, defaults)}</span>
+          <span className={rateValueClass(waterInherited(room))}>{waterRateText(room, defaults)}</span>
           {room.waterRate !== null && <span className="chip">อัตราพิเศษ</span>}
         </div>
       ),
@@ -557,7 +569,7 @@ export function RoomsPage() {
       align: "right",
       render: (room) => (
         <div className="flex items-center justify-end gap-2">
-          <span className="num">{electricText(room, defaults)}</span>
+          <span className={rateValueClass(electricInherited(room))}>{electricText(room, defaults)}</span>
           {room.electricMode === "flat" && <span className="chip">ไฟเหมา</span>}
           {room.electricMode === "meter" && room.electricRate !== null && <span className="chip">อัตราพิเศษ</span>}
         </div>
@@ -606,7 +618,7 @@ export function RoomsPage() {
       <Card className="mb-4">
         <div className="flex flex-wrap items-end gap-3">
           <div className="w-full sm:w-60 md:hidden">
-            <Field label="ค้นหาห้องหรือผู้เช่า" value={query} onChange={setQuery} placeholder="เช่น A103 หรือ ธนา" />
+            <Field label="ค้นหาห้องหรือผู้เช่า" value={query} onChange={setQuery} placeholder="เช่น 108/7 หรือ นงลักษณ์" />
           </div>
           <div className="w-full sm:w-40">
             <Select
@@ -753,12 +765,12 @@ export function RoomsPage() {
                 </div>
                 <div>
                   <dt className="text-xs text-fog">ค่าน้ำ</dt>
-                  <dd className="num text-sm text-charcoal">{waterRateText(room, defaults)}</dd>
+                  <dd className={`${rateValueClass(waterInherited(room))} text-sm`}>{waterRateText(room, defaults)}</dd>
                   {room.waterRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
                 </div>
                 <div>
                   <dt className="text-xs text-fog">ค่าไฟ</dt>
-                  <dd className="num text-sm text-charcoal">{electricText(room, defaults)}</dd>
+                  <dd className={`${rateValueClass(electricInherited(room))} text-sm`}>{electricText(room, defaults)}</dd>
                   {room.electricMode === "flat" && <span className="chip mt-1">ไฟเหมา</span>}
                   {room.electricMode === "meter" && room.electricRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
                 </div>

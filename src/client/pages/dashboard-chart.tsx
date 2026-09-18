@@ -22,11 +22,12 @@ const BAR_RADIUS = 6;
 
 const MOBILE_WIDTH = 320;
 const MOBILE_HEIGHT = 180;
-const MOBILE_PAD_X = 10;
+const MOBILE_PAD_X = 12;
 const MOBILE_PAD_TOP = 30;
-const MOBILE_PAD_BOTTOM = 22;
-const MOBILE_GAP = 6;
-const MOBILE_FONT = 16;
+const MOBILE_PAD_BOTTOM = 26;
+const MOBILE_GAP = 8;
+const MOBILE_AXIS_FONT = 11;
+const MOBILE_VALUE_FONT = 10;
 
 function useIsWideViewport(): boolean {
   const [wide, setWide] = useState<boolean>(() =>
@@ -66,6 +67,7 @@ export function RevenueChart({ points, highlight, label }: RevenueChartProps) {
     <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={label} className="block w-full">
       {points.map((point, index) => {
         const active = point.month === highlight;
+        const filled = point.amount > 0;
         const height = Math.max((point.amount / scale) * innerHeight, 2);
         const x = PAD_X + index * (barWidth + GAP);
         const y = PAD_TOP + innerHeight - height;
@@ -79,13 +81,27 @@ export function RevenueChart({ points, highlight, label }: RevenueChartProps) {
               width={barWidth}
               height={height}
               rx={BAR_RADIUS}
-              fill={active ? "#2563eb" : "#f5f5f5"}
-              stroke="#e5e5e5"
+              fill={filled ? "#2563eb" : "#f5f5f5"}
+              stroke={filled ? "none" : "#e5e5e5"}
             />
-            <text x={centerX} y={y - 8} textAnchor="middle" fontSize={12} fill={active ? "#171717" : "#262626"}>
+            <text
+              x={centerX}
+              y={y - 8}
+              textAnchor="middle"
+              fontSize={12}
+              fontWeight={active ? 600 : 400}
+              fill={filled ? "#171717" : "#737373"}
+            >
               {baht(point.amount)}
             </text>
-            <text x={centerX} y={HEIGHT - 8} textAnchor="middle" fontSize={12} fill={active ? "#171717" : "#262626"}>
+            <text
+              x={centerX}
+              y={HEIGHT - 8}
+              textAnchor="middle"
+              fontSize={12}
+              fontWeight={active ? 600 : 400}
+              fill={active ? "#171717" : "#525252"}
+            >
               {point.month}
             </text>
           </g>
@@ -105,6 +121,7 @@ function MobileRevenueChart({ points, highlight, label }: RevenueChartProps) {
     <svg viewBox={`0 0 ${MOBILE_WIDTH} ${MOBILE_HEIGHT}`} role="img" aria-label={label} className="block w-full">
       {points.map((point, index) => {
         const active = point.month === highlight;
+        const filled = point.amount > 0;
         const height = Math.max((point.amount / scale) * innerHeight, 2);
         const x = MOBILE_PAD_X + index * (barWidth + MOBILE_GAP);
         const y = MOBILE_PAD_TOP + innerHeight - height;
@@ -118,20 +135,26 @@ function MobileRevenueChart({ points, highlight, label }: RevenueChartProps) {
               width={barWidth}
               height={height}
               rx={BAR_RADIUS}
-              fill={active ? "#2563eb" : "#f5f5f5"}
-              stroke="#e5e5e5"
+              fill={filled ? "#2563eb" : "#f5f5f5"}
+              stroke={filled ? "none" : "#e5e5e5"}
             />
-            {active && (
-              <text x={centerX} y={y - 8} textAnchor="middle" fontSize={MOBILE_FONT} fill="#171717">
-                {baht(point.amount)}
-              </text>
-            )}
             <text
               x={centerX}
-              y={MOBILE_HEIGHT - 6}
+              y={y - 6}
               textAnchor="middle"
-              fontSize={MOBILE_FONT}
-              fill={active ? "#171717" : "#262626"}
+              fontSize={MOBILE_VALUE_FONT}
+              fontWeight={active ? 600 : 400}
+              fill={filled ? "#171717" : "#737373"}
+            >
+              {baht(point.amount)}
+            </text>
+            <text
+              x={centerX}
+              y={MOBILE_HEIGHT - 8}
+              textAnchor="middle"
+              fontSize={MOBILE_AXIS_FONT}
+              fontWeight={active ? 600 : 400}
+              fill={active ? "#171717" : "#525252"}
             >
               {point.month}
             </text>

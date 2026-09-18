@@ -1,5 +1,6 @@
-import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { SELF, env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flexText } from "./flex";
 
 interface RoomPayload {
   id: string;
@@ -1023,5 +1024,150 @@ describe("room recurring charges", () => {
       { name: "ค่าบริการ", amount: 10 },
       { name: "ค่าไวไฟ", amount: 100 },
     ]);
+  });
+});
+
+describe("owner send summary", () => {
+  const linePushUrl = "https://api.line.me/v2/bot/message/push";
+  const ownerUserId = "U-owner-summary";
+
+  interface OutboundPush {
+    url: string;
+    to: string;
+    messages: Record<string, unknown>[];
+  }
+
+  let pushes: OutboundPush[] = [];
+  let failingUserIds = new Set<string>();
+
+  function pushesTo(lineUserId: string): OutboundPush[] {
+    return pushes.filter((push) => push.url === linePushUrl && push.to === lineUserId);
+  }
+
+  async function linkRoomLine(roomId: string, lineUserId: string): Promise<void> {
+    await env.DB.prepare("UPDATE tenants SET line_user_id = ? WHERE room_id = ?").bind(lineUserId, roomId).run();
+  }
+
+  async function linkOwner(): Promise<void> {
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('owner_line_user_id', ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+      .bind(ownerUserId)
+      .run();
+  }
+
+  beforeEach(() => {
+    pushes = [];
+    failingUserIds = new Set<string>();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const raw = typeof init?.body === "string" ? init.body : "";
+      const payload =
+        raw === ""
+          ? { to: "", messages: [] as Record<string, unknown>[] }
+          : (JSON.parse(raw) as { to: string; messages: Record<string, unknown>[] });
+
+      pushes.push({ url, to: payload.to, messages: payload.messages });
+
+      const status = url === linePushUrl && failingUserIds.has(payload.to) ? 500 : 200;
+
+      return Promise.resolve(new Response(JSON.stringify({}), { status, headers: { "content-type": "application/json" } }));
+    });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'owner_line_user_id'").run();
+  });
+
+  it("pushes the owner one success card carrying the real outcome of a clean send", async () => {
+    await putRates(18, 7);
+    const firstRoom = await occupiedRoom("S401", { rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    const secondRoom = await occupiedRoom("S402", { rent: 3600, waterMeterInit: 30, electricMeterInit: 40 });
+    await linkRoomLine(firstRoom.id, "U-s401");
+    await linkRoomLine(secondRoom.id, "U-s402");
+    await linkOwner();
+
+    const created = await generate({
+      period: "2026-03",
+      entries: [
+        { roomId: firstRoom.id, waterCurrent: 12, electricCurrent: 24 },
+        { roomId: secondRoom.id, waterCurrent: 33, electricCurrent: 44 },
+      ],
+    });
+    expect(created.status).toBe(201);
+
+    const response = await post(`${billsUrl}/send-all`, { period: "2026-03" });
+    expect(response.status).toBe(200);
+
+    const body = await response.json<{ ok: boolean; sent: number; failed: number; skipped: unknown[] }>();
+    expect(body.sent).toBe(2);
+    expect(body.failed).toBe(0);
+    expect(body.skipped).toEqual([]);
+
+    const owner = pushesTo(ownerUserId);
+    expect(owner).toHaveLength(1);
+
+    const message = first(first(owner).messages);
+    expect(message.type).toBe("flex");
+    expect(typeof message.altText).toBe("string");
+
+    const text = flexText(message);
+    expect(text).toContain("รอบบิล");
+    expect(text).toContain("มีนาคม 2569");
+    expect(text).toContain("บิลทั้งหมด");
+    expect(text).toContain("2 ใบ");
+    expect(text).toContain("7,246");
+    expect(text).toContain("ส่งสำเร็จ");
+    expect(text).toContain("ส่งไม่สำเร็จ");
+    expect(text).toContain("0 ใบ");
+    expect(text).toContain("ยังไม่เชื่อม LINE");
+    expect(text).toContain("0 ห้อง");
+    expect(text).not.toContain("S401");
+    expect(text).not.toContain("S402");
+    expect(JSON.stringify(message.contents)).toContain("#ECFDF5");
+  });
+
+  it("pushes the owner one warning card naming the rooms that failed or were skipped", async () => {
+    await putRates(18, 7);
+    const linked = await occupiedRoom("S411", { rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    const unlinked = await occupiedRoom("S412", { rent: 3600, waterMeterInit: 30, electricMeterInit: 40 });
+    await linkRoomLine(linked.id, "U-s411");
+    await linkOwner();
+
+    failingUserIds = new Set(["U-s411"]);
+
+    const created = await generate({
+      period: "2026-04",
+      entries: [
+        { roomId: linked.id, waterCurrent: 12, electricCurrent: 24 },
+        { roomId: unlinked.id, waterCurrent: 33, electricCurrent: 44 },
+      ],
+    });
+    expect(created.status).toBe(201);
+
+    const response = await post(`${billsUrl}/send-all`, { period: "2026-04" });
+    expect(response.status).toBe(200);
+
+    const body = await response.json<{ sent: number; failed: number; skipped: { roomNumber: string }[] }>();
+    expect(body.sent).toBe(0);
+    expect(body.failed).toBe(1);
+    expect(body.skipped.map((item) => item.roomNumber)).toEqual(["S412"]);
+
+    const message = first(first(pushesTo(ownerUserId)).messages);
+    expect(message.type).toBe("flex");
+
+    const text = flexText(message);
+    expect(text).toContain("เมษายน 2569");
+    expect(text).toContain("ส่งบิลไม่ครบทุกห้อง");
+    expect(text).toContain("ส่งสำเร็จ");
+    expect(text).toContain("0 ใบ");
+    expect(text).toContain("ส่งไม่สำเร็จ");
+    expect(text).toContain("1 ใบ");
+    expect(text).toContain("S411");
+    expect(text).toContain("S412");
+    expect(text).toContain("ผู้เช่า S412");
+    expect(JSON.stringify(message.contents)).toContain("#FFFBEB");
   });
 });

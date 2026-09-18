@@ -251,7 +251,7 @@ export function DashboardPage() {
 
           <div className="mb-4 grid items-start gap-4 xl:grid-cols-3">
             <Card className="xl:col-span-2">
-              <CardHeader title="รายรับ 6 เดือน" description={`เดือนที่เลือก ${periodLabel(selectedPeriod)} แสดงเป็นแท่งสีน้ำเงิน`} />
+              <CardHeader title="รายรับ 6 เดือน" description={`แท่งสีน้ำเงินคือเดือนที่มีรายรับ · เดือนที่เลือก ${periodLabel(selectedPeriod)}`} />
               <RevenueChart points={revenuePoints} highlight={shortMonth(selectedPeriod)} label={chartLabel} />
             </Card>
 

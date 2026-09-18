@@ -9,6 +9,7 @@ const tenantsUrl = "https://dorm.test/api/tenants";
 const settingsUrl = "https://dorm.test/api/settings";
 const pendingUrl = "https://dorm.test/api/line/pending";
 const billsUrl = "https://dorm.test/api/bills";
+const lineMessagesUrl = "https://dorm.test/api/line/messages";
 
 const lineReplyUrl = "https://api.line.me/v2/bot/message/reply";
 const lineProfileUrl = "https://api.line.me/v2/bot/profile";
@@ -823,5 +824,125 @@ describe("outbound LINE calls", () => {
     expect(flexText(welcome)).toContain("A101");
 
     expect((await pendingFor("U-bearer"))?.displayName).toBe("สมหญิง LINE");
+  });
+});
+
+interface LineMessageKindPayload {
+  key: string;
+  title: string;
+  audience: string;
+  trigger: string;
+  message: { type: string; altText?: string; contents?: unknown };
+}
+
+interface LineMessagesBody {
+  ok: boolean;
+  source: { period: string; roomNumber: string; tenantName: string } | null;
+  messages: LineMessageKindPayload[];
+}
+
+async function readLineMessages(): Promise<LineMessagesBody> {
+  const response = await SELF.fetch(lineMessagesUrl);
+  expect(response.status).toBe(200);
+  return response.json<LineMessagesBody>();
+}
+
+async function clearBills(): Promise<void> {
+  await env.DB.prepare("DELETE FROM bill_charges").run();
+  await env.DB.prepare("DELETE FROM bills").run();
+}
+
+describe("GET /api/line/messages", () => {
+  it("returns the real message kinds, each as a Flex card", async () => {
+    await clearBills();
+
+    const body = await readLineMessages();
+    expect(body.ok).toBe(true);
+    expect(body.messages.length).toBeGreaterThan(0);
+
+    for (const kind of body.messages) {
+      expect(kind.key).not.toBe("");
+      expect(kind.title).not.toBe("");
+      expect(kind.trigger).not.toBe("");
+      expect(["tenant", "owner"]).toContain(kind.audience);
+      expect(kind.message.type).toBe("flex");
+      expect(typeof kind.message.altText).toBe("string");
+      expect(typeof kind.message.contents).toBe("object");
+    }
+  });
+
+  it("omits the bill-dependent kinds when no bill exists", async () => {
+    await clearBills();
+
+    const body = await readLineMessages();
+    const keys = body.messages.map((kind) => kind.key);
+
+    expect(body.source).toBeNull();
+    expect(keys).not.toContain("bill");
+    expect(keys).not.toContain("payment");
+    expect(keys).not.toContain("owner_slip");
+    expect(keys).toContain("welcome");
+    expect(keys).toContain("slip_review");
+    expect(keys).toContain("contact_owner");
+  });
+
+  it("carries the real room number and total on the bill card when a bill exists", async () => {
+    await clearBills();
+
+    const room = await newRoom("M401");
+    await newTenant(room.id, "นงลักษณ์ มั่นคง");
+    const bill = await generateBill(room.id, "2026-11");
+
+    const body = await readLineMessages();
+    const billKind = body.messages.find((kind) => kind.key === "bill");
+
+    expect(billKind).toBeDefined();
+    expect(billKind?.message.type).toBe("flex");
+    expect(body.source?.roomNumber).toBe("M401");
+    expect(body.source?.tenantName).toBe("นงลักษณ์ มั่นคง");
+
+    const text = flexText(billKind?.message);
+    expect(text).toContain("M401");
+    expect(text).toContain("นงลักษณ์ มั่นคง");
+    expect(text).toContain(bill.total.toLocaleString("en-US"));
+  });
+
+  it("lists the owner send summary as a card built from the real bills of the latest period", async () => {
+    await clearBills();
+
+    const withoutBills = await readLineMessages();
+    expect(withoutBills.messages.some((kind) => kind.key === "owner_send_summary")).toBe(false);
+
+    const room = await newRoom("M402");
+    const tenant = await newTenant(room.id, "ปรีชา ส่งบิล");
+    const bill = await generateBill(room.id, "2026-12");
+
+    const body = await readLineMessages();
+    const summary = body.messages.find((kind) => kind.key === "owner_send_summary");
+
+    expect(summary).toBeDefined();
+    expect(summary?.audience).toBe("owner");
+    expect(summary?.title).not.toBe("");
+    expect(summary?.trigger).not.toBe("");
+    expect(summary?.message.type).toBe("flex");
+    expect(typeof summary?.message.altText).toBe("string");
+
+    const text = flexText(summary?.message);
+    expect(text).toContain("ธันวาคม 2569");
+    expect(text).toContain("บิลทั้งหมด");
+    expect(text).toContain(bill.total.toLocaleString("en-US"));
+    expect(text).toContain("ยังไม่เชื่อม LINE");
+    expect(text).toContain("M402");
+    expect(text).toContain("ปรีชา ส่งบิล");
+    expect(text).toContain("ส่งบิลไม่ครบทุกห้อง");
+
+    await env.DB.prepare("UPDATE tenants SET line_user_id = ? WHERE id = ?").bind("U-m402", tenant.id).run();
+
+    const linked = await readLineMessages();
+    const linkedText = flexText(linked.messages.find((kind) => kind.key === "owner_send_summary")?.message);
+    expect(linkedText).toContain("ไม่เชื่อม LINE 0 ห้อง");
+    expect(linkedText).toContain("ส่งไม่สำเร็จ 0 ใบ");
+    expect(linkedText).toContain("ส่งบิลไม่ครบทุกห้อง");
+    expect(linkedText).not.toContain("M402");
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { fetchSlips, reviewQueueChangedEvent } from "./api";
+import { fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
 import { LinePage } from "./pages/line";
@@ -161,6 +161,28 @@ function Shell() {
   const searchRef = useRef<HTMLInputElement>(null);
   const moreRef = useRef<HTMLDialogElement>(null);
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
+  const [jumpRooms, setJumpRooms] = useState<Room[]>([]);
+  const [jumpTenants, setJumpTenants] = useState<Tenant[]>([]);
+  const [panelDismissed, setPanelDismissed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    void Promise.all([fetchRooms(), fetchTenants()])
+      .then(([rooms, tenants]) => {
+        if (!active) {
+          return;
+        }
+
+        setJumpRooms(rooms);
+        setJumpTenants(tenants);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -214,6 +236,45 @@ function Shell() {
   const Page = pages[parsed.route];
   const title = routeTitle(parsed);
   const moreActive = moreRoutes.includes(parsed.route);
+
+  const needle = query.trim().toLowerCase();
+  const jumpResults =
+    needle === ""
+      ? []
+      : [
+          ...jumpRooms
+            .filter((room) => room.roomNumber.toLowerCase().includes(needle))
+            .slice(0, 4)
+            .map((room) => ({
+              key: `room-${room.id}`,
+              label: `ห้อง ${room.roomNumber}`,
+              detail: room.occupiedBy ?? "ห้องว่าง",
+              kind: "ห้องพัก",
+              hash: "#rooms",
+            })),
+          ...jumpTenants
+            .filter(
+              (tenant) =>
+                tenant.fullName.toLowerCase().includes(needle) ||
+                tenant.roomNumber.toLowerCase().includes(needle) ||
+                tenant.phone.includes(needle),
+            )
+            .slice(0, 4)
+            .map((tenant) => ({
+              key: `tenant-${tenant.id}`,
+              label: tenant.fullName,
+              detail: `ห้อง ${tenant.roomNumber}`,
+              kind: "ผู้เช่า",
+              hash: "#tenants",
+            })),
+        ].slice(0, 6);
+  const searchPanelOpen = needle !== "" && !panelDismissed;
+
+  const openResult = (hash: string) => {
+    setQuery("");
+    setPanelDismissed(true);
+    window.location.hash = hash;
+  };
 
   return (
     <div className="min-h-screen bg-canvas-white text-charcoal md:grid md:grid-cols-[72px_1fr] xl:grid-cols-[232px_1fr]">
@@ -272,15 +333,68 @@ function Shell() {
             <input
               ref={searchRef}
               type="search"
+              role="combobox"
+              aria-expanded={searchPanelOpen}
+              aria-controls="topbar-search-results"
+              aria-autocomplete="list"
               className="input h-11 pl-10 pr-20"
               placeholder="ค้นหาห้อง, ผู้เช่า, เบอร์โทร..."
               aria-label="ค้นหาห้อง, ผู้เช่า, เบอร์โทร"
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
+                setPanelDismissed(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && searchPanelOpen) {
+                  event.preventDefault();
+                  setPanelDismissed(true);
+                  return;
+                }
+
+                if (event.key === "Enter" && searchPanelOpen) {
+                  const first = jumpResults[0];
+
+                  if (first !== undefined) {
+                    event.preventDefault();
+                    openResult(first.hash);
+                  }
+                }
               }}
             />
             <span className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">Ctrl K</span>
+
+            {searchPanelOpen && (
+              <div
+                id="topbar-search-results"
+                className="absolute left-0 right-0 top-[calc(100%+6px)] z-40 overflow-hidden rounded-xl border border-ash bg-canvas-white py-1"
+              >
+                {jumpResults.length === 0 ? (
+                  <p className="px-3 py-2 text-sm text-steel">ไม่พบห้องหรือผู้เช่าที่ตรงกับคำค้น</p>
+                ) : (
+                  <div role="listbox" aria-label="ผลการค้นหาห้องและผู้เช่า">
+                    {jumpResults.map((result, index) => (
+                      <button
+                        key={result.key}
+                        type="button"
+                        role="option"
+                        aria-selected={index === 0}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-paper-mist"
+                        onClick={() => {
+                          openResult(result.hash);
+                        }}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm text-charcoal">{result.label}</span>
+                          <span className="num block truncate text-xs text-fog">{result.detail}</span>
+                        </span>
+                        <span className="chip shrink-0">{result.kind}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="ml-auto flex items-center gap-3">
@@ -302,9 +416,6 @@ function Shell() {
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] px-4 pb-28 pt-5 md:px-6 md:pb-12 md:pt-6">
-          <div className="mb-3">
-            <span className="chip">ข้อมูลตัวอย่าง</span>
-          </div>
           <Page view={parsed.view} />
         </main>
       </div>

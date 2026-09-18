@@ -211,6 +211,56 @@ export function ownerSlipPendingMessage(
   ]);
 }
 
+export interface OwnerSendSkip {
+  roomNumber: string;
+  tenantName: string;
+}
+
+export interface OwnerSendSummary {
+  period: string;
+  count: number;
+  total: number;
+  sent: number;
+  failed: number;
+  failedRooms: readonly string[];
+  skipped: readonly OwnerSendSkip[];
+}
+
+export function ownerSendSummaryMessage(summary: OwnerSendSummary): LineFlexMessage {
+  const periodLabel = thaiPeriodLabel(summary.period);
+  const skippedCount = summary.skipped.length;
+  const complete = summary.sent === summary.count && summary.failed === 0 && skippedCount === 0;
+  const tail: FlexContent[] = [];
+
+  if (summary.failed > 0) {
+    tail.push(separator(), note(`ส่งไม่สำเร็จ: ${summary.failedRooms.join(", ")}`));
+  }
+
+  if (skippedCount > 0) {
+    tail.push(
+      separator(),
+      note(`ยังไม่เชื่อม LINE: ${summary.skipped.map((item) => `${item.roomNumber} ${item.tenantName}`).join(" · ")}`),
+    );
+  }
+
+  return card(
+    complete ? "success" : "warning",
+    complete ? "ส่งบิลครบทุกห้อง" : "ส่งบิลไม่ครบทุกห้อง",
+    `สรุปการส่งบิลเดือน ${periodLabel} ส่งสำเร็จ ${summary.sent} ใบ จากทั้งหมด ${summary.count} ใบ`,
+    [
+      ...rows([
+        { label: "รอบบิล", value: periodLabel },
+        { label: "บิลทั้งหมด", value: `${summary.count} ใบ` },
+        { label: "ยอดรวม", value: `${bahtText(summary.total)} บาท`, bold: true },
+        { label: "ส่งสำเร็จ", value: `${summary.sent} ใบ` },
+        { label: "ส่งไม่สำเร็จ", value: `${summary.failed} ใบ` },
+        { label: "ยังไม่เชื่อม LINE", value: `${skippedCount} ห้อง` },
+      ]),
+      ...tail,
+    ],
+  );
+}
+
 export interface TenantBillSummary {
   period: string;
   total: number;
