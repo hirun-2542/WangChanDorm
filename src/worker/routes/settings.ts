@@ -11,6 +11,7 @@ export const defaultElectricRate = 7;
 const defaultSettings = {
   dorm_name: "หอพักวังจันทร์",
   owner_name: "สมศักดิ์ ใจดี",
+  owner_phone: "",
   default_water_rate: String(defaultWaterRate),
   default_electric_rate: String(defaultElectricRate),
   promptpay_type: "phone",
@@ -23,6 +24,7 @@ type SettingsKey = keyof typeof defaultSettings;
 const writableKeys = [
   "dormName",
   "ownerName",
+  "ownerPhone",
   "defaultWaterRate",
   "defaultElectricRate",
   "promptpayType",
@@ -35,6 +37,7 @@ type WritableKey = (typeof writableKeys)[number];
 const fieldToKey: Record<WritableKey, SettingsKey> = {
   dormName: "dorm_name",
   ownerName: "owner_name",
+  ownerPhone: "owner_phone",
   defaultWaterRate: "default_water_rate",
   defaultElectricRate: "default_electric_rate",
   promptpayType: "promptpay_type",
@@ -57,6 +60,7 @@ const rateMessages: Record<"defaultWaterRate" | "defaultElectricRate", string> =
 interface SettingsPayload {
   dormName: string;
   ownerName: string;
+  ownerPhone: string;
   defaultWaterRate: number;
   defaultElectricRate: number;
   promptpayType: PromptpayType;
@@ -108,6 +112,14 @@ function promptpayIdError(id: string, type: PromptpayType): string | null {
   return digits.length === 13 ? null : "พร้อมเพย์ไอดีประเภทเลขบัตรต้องเป็นเลข 13 หลัก";
 }
 
+function normalizeOwnerPhone(value: string): string {
+  return value.replace(/[\s-]/g, "");
+}
+
+function ownerPhoneError(value: string): string | null {
+  return /^0\d{9}$/.test(normalizeOwnerPhone(value)) ? null : "เบอร์โทรเจ้าของต้องเป็นเบอร์ 10 หลัก เริ่มด้วย 0";
+}
+
 async function readOwnerCode(env: Env, stored: Map<string, string>): Promise<string> {
   const existing = stored.get("owner_link_code");
 
@@ -136,6 +148,7 @@ async function loadSettings(env: Env): Promise<SettingsPayload> {
   return {
     dormName: valueOf("dorm_name"),
     ownerName: valueOf("owner_name"),
+    ownerPhone: valueOf("owner_phone"),
     defaultWaterRate: toNumber("default_water_rate", valueOf("default_water_rate"), Number(defaultSettings.default_water_rate)),
     defaultElectricRate: toNumber("default_electric_rate", valueOf("default_electric_rate"), Number(defaultSettings.default_electric_rate)),
     promptpayType,
@@ -187,6 +200,18 @@ settings.put("/", async (c) => {
 
       const value = body[key];
       const target = fieldToKey[key];
+
+      if (key === "ownerPhone") {
+        const raw = typeof value === "string" ? value.trim() : "";
+        const message = raw === "" ? null : ownerPhoneError(raw);
+
+        if (message !== null) {
+          return c.json(errorBody("VALIDATION", message, key), 400);
+        }
+
+        updates.set(target, normalizeOwnerPhone(raw));
+        continue;
+      }
 
       if (key === "dormName" || key === "ownerName" || key === "promptpayId" || key === "promptpayName") {
         const text = typeof value === "string" ? value.trim() : "";

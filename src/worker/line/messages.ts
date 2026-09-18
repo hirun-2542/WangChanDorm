@@ -61,3 +61,52 @@ export function ownerSlipPendingMessage(
 
   return `มีสลิปใหม่รอตรวจจากห้อง ${roomNumber} คุณ${tenantName} ${amountText} ${compareText} เปิดหน้าคิวรอตรวจเพื่อปิดบิลหรือปฏิเสธ`;
 }
+
+export interface TenantBillSummary {
+  period: string;
+  total: number;
+  status: "paid" | "unpaid";
+}
+
+export function slipInstructionMessage(): string {
+  return "ส่งรูปสลิปโอนเงินในแชทนี้ได้เลย ระบบจะตรวจสอบสลิปให้อัตโนมัติ";
+}
+
+export function billStatusMessage(roomNumber: string, bills: readonly TenantBillSummary[]): string {
+  const latest = bills[0];
+
+  if (latest === undefined) {
+    return `ยังไม่มีบิลของห้อง ${roomNumber} ในระบบ เมื่อเจ้าของหอออกบิลแล้วจะแจ้งให้ทราบในแชทนี้`;
+  }
+
+  const unpaid = bills.filter((bill) => bill.status === "unpaid");
+  const outstanding = unpaid[0];
+
+  if (outstanding === undefined) {
+    return `บิลล่าสุดของห้อง ${roomNumber} ประจำเดือน ${thaiPeriodLabel(latest.period)} ยอด ${formatBaht(latest.total)} บาท ชำระแล้ว ไม่มียอดค้างชำระ`;
+  }
+
+  const more = unpaid.length > 1 ? ` มียอดค้างชำระอีก ${unpaid.length - 1} ใบ` : "";
+
+  return `บิลของห้อง ${roomNumber} ประจำเดือน ${thaiPeriodLabel(outstanding.period)} ยอด ${formatBaht(outstanding.total)} บาท ยังไม่ชำระ${more} กรุณาชำระและส่งสลิปในแชทนี้`;
+}
+
+export function registerRequiredMessage(registerUrl: string): string {
+  return `กรุณาลงทะเบียนผู้เช่าเพื่อผูก LINE กับห้องของคุณก่อน ลงทะเบียนได้ที่ ${registerUrl}`;
+}
+
+export function registerLinkMessage(registerUrl: string): string {
+  return `ลิงก์ลงทะเบียนผู้เช่า ${registerUrl}`;
+}
+
+export function contactOwnerMessage(ownerName: string, ownerPhone: string): string {
+  const name = ownerName.trim();
+  const phone = ownerPhone.trim();
+  const who = name === "" ? "เจ้าของหอ" : `เจ้าของหอ ${name}`;
+
+  if (phone === "") {
+    return `${who} ยังไม่ได้บันทึกเบอร์โทรไว้ กรุณาฝากคำถามไว้ในแชทนี้แล้วรอการติดต่อกลับ`;
+  }
+
+  return `${who} เบอร์โทร ${phone}`;
+}

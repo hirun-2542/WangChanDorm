@@ -14,6 +14,8 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             LINE_CHANNEL_SECRET: "test-channel-secret",
             LINE_CHANNEL_ACCESS_TOKEN: "test-channel-access-token",
+            SLIPOK_API_KEY: "",
+            SLIPOK_BRANCH_ID: "",
           },
         },
       }),

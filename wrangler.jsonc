@@ -9,7 +9,8 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "SEAM_PROBE": "0"
+    "SEAM_PROBE": "0",
+    "LIFF_ID": ""
   },
   "d1_databases": [
     {
@@ -35,6 +36,6 @@
   "assets": {
     "directory": "./dist/client",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*", "/invoices/*"]
+    "run_worker_first": ["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*", "/invoices/*", "/register"]
   }
 }

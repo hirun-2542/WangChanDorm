@@ -110,6 +110,7 @@ export function SettingsPage() {
   const [saveError, setSaveError] = useState<{ message: string; field?: string } | null>(null);
   const [dormName, setDormName] = useState("");
   const [ownerName, setOwnerName] = useState("");
+  const [ownerPhone, setOwnerPhone] = useState("");
   const [waterRate, setWaterRate] = useState("");
   const [electricRate, setElectricRate] = useState("");
   const [payType, setPayType] = useState<PromptpayType>("phone");
@@ -124,6 +125,7 @@ export function SettingsPage() {
     setSettings(data);
     setDormName(data.dormName);
     setOwnerName(data.ownerName);
+    setOwnerPhone(data.ownerPhone);
     setWaterRate(String(data.defaultWaterRate));
     setElectricRate(String(data.defaultElectricRate));
     setPayType(data.promptpayType === "citizen-id" ? "citizen-id" : "phone");
@@ -204,9 +206,12 @@ export function SettingsPage() {
 
   const waterValue = numericValue(waterRate);
   const electricValue = numericValue(electricRate);
+  const ownerPhoneDigits = ownerPhone.replace(/[\s-]/g, "");
+  const ownerPhoneValid = ownerPhoneDigits === "" || /^0\d{9}$/.test(ownerPhoneDigits);
   const canSave =
     dormName.trim() !== "" &&
     payId.trim() !== "" &&
+    ownerPhoneValid &&
     waterValue !== null &&
     waterValue > 0 &&
     electricValue !== null &&
@@ -229,6 +234,7 @@ export function SettingsPage() {
       const updated = await updateSettings({
         dormName: dormName.trim(),
         ownerName: ownerName.trim(),
+        ownerPhone: ownerPhone.trim(),
         defaultWaterRate: waterValue ?? 0,
         defaultElectricRate: electricValue ?? 0,
         promptpayType: payType,
@@ -339,6 +345,14 @@ export function SettingsPage() {
                     value={ownerName}
                     onChange={setOwnerName}
                     error={fieldError("ownerName")}
+                  />
+                  <Field
+                    label="เบอร์โทรเจ้าของ"
+                    value={ownerPhone}
+                    onChange={setOwnerPhone}
+                    inputMode="tel"
+                    helper="ใช้ตอบกลับผู้เช่าที่พิมพ์ ติดต่อเจ้าของ"
+                    error={fieldError("ownerPhone") ?? (ownerPhoneValid ? undefined : "กรอกเบอร์ 10 หลัก เริ่มด้วย 0")}
                   />
                 </div>
               </Section>

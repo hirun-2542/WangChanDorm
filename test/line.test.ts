@@ -6,6 +6,7 @@ const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
 const settingsUrl = "https://dorm.test/api/settings";
 const pendingUrl = "https://dorm.test/api/line/pending";
+const billsUrl = "https://dorm.test/api/bills";
 
 const lineReplyUrl = "https://api.line.me/v2/bot/message/reply";
 const lineProfileUrl = "https://api.line.me/v2/bot/profile";
@@ -24,6 +25,11 @@ function notMatchedText(text: string): string {
 }
 
 const guidanceText = "ยังไม่พบห้องของคุณ กรุณาพิมพ์เลขห้อง เช่น A101 เพื่อเชื่อม LINE หรือติดต่อเจ้าของหอ";
+
+const registerUrl = "https://dorm.test/register";
+const slipInstructionText = "ส่งรูปสลิปโอนเงินในแชทนี้ได้เลย ระบบจะตรวจสอบสลิปให้อัตโนมัติ";
+const registerRequiredText = `กรุณาลงทะเบียนผู้เช่าเพื่อผูก LINE กับห้องของคุณก่อน ลงทะเบียนได้ที่ ${registerUrl}`;
+const registerLinkText = `ลิงก์ลงทะเบียนผู้เช่า ${registerUrl}`;
 
 interface RoomPayload {
   id: string;
@@ -47,6 +53,8 @@ interface TenantListBody {
 
 interface SettingsPayload {
   dormName: string;
+  ownerName: string;
+  ownerPhone: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
 }
@@ -54,6 +62,14 @@ interface SettingsPayload {
 interface SettingsBody {
   ok: boolean;
   settings: SettingsPayload;
+}
+
+interface BillPayload {
+  id: string;
+  roomId: string;
+  period: string;
+  total: number;
+  status: "paid" | "unpaid";
 }
 
 interface PendingLink {
@@ -217,6 +233,45 @@ function linkPending(lineUserId: string, tenantId: string): Promise<Response> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ tenantId }),
   });
+}
+
+function putSettings(payload: Record<string, unknown>): Promise<Response> {
+  return SELF.fetch(settingsUrl, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function linkRoom(lineUserId: string, roomNumber: string): Promise<void> {
+  const response = await postWebhook(lineEvents([textEvent(lineUserId, `tok-link-${lineUserId}`, roomNumber)]));
+  expect(response.status).toBe(200);
+}
+
+async function generateBill(roomId: string, period: string): Promise<BillPayload> {
+  const response = await SELF.fetch(`${billsUrl}/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ period, entries: [{ roomId, waterCurrent: 0, electricCurrent: 0 }] }),
+  });
+  expect(response.status).toBe(201);
+
+  const bill = (await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills[0];
+
+  if (bill === undefined) {
+    throw new Error("expected a generated bill");
+  }
+
+  return bill;
+}
+
+async function markBillPaid(billId: string): Promise<void> {
+  const response = await SELF.fetch(`${billsUrl}/${encodeURIComponent(billId)}/mark-paid`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: "transfer" }),
+  });
+  expect(response.status).toBe(200);
 }
 
 beforeAll(async () => {
@@ -460,6 +515,155 @@ describe("POST /webhook/line events", () => {
     expect(response.status).toBe(200);
     expect(outboundCalls).toEqual([]);
     expect(await readPending()).toEqual(before);
+  });
+});
+
+describe("LINE rich menu keywords", () => {
+  it("answers ส่งสลิป with the slip instruction for a linked tenant", async () => {
+    const room = await newRoom("K301");
+    await newTenant(room.id, "ก้อง LINE");
+    await linkRoom("U-keyword-slip", "K301");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-slip", "tok-keyword-slip", "ส่งสลิป")]));
+    expect(response.status).toBe(200);
+
+    expect(replyTexts()).toEqual([slipInstructionText]);
+  });
+
+  it("answers บิลของฉัน with the latest unpaid bill for a linked tenant", async () => {
+    const room = await newRoom("K302");
+    await newTenant(room.id, "บี LINE");
+    await generateBill(room.id, "2026-09");
+    await linkRoom("U-keyword-bills", "K302");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-bills", "tok-keyword-bills", "บิลของฉัน")]));
+    expect(response.status).toBe(200);
+
+    expect(replyTexts()).toEqual([
+      "บิลของห้อง K302 ประจำเดือน กันยายน 2569 ยอด 3,500 บาท ยังไม่ชำระ กรุณาชำระและส่งสลิปในแชทนี้",
+    ]);
+  });
+
+  it("tells a linked tenant their latest bill is paid when nothing is outstanding", async () => {
+    const room = await newRoom("K303");
+    await newTenant(room.id, "แคท LINE");
+    const bill = await generateBill(room.id, "2026-09");
+    await markBillPaid(bill.id);
+    await linkRoom("U-keyword-paid", "K303");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-paid", "tok-keyword-paid", "บิลของฉัน")]));
+    expect(response.status).toBe(200);
+
+    expect(replyTexts()).toEqual([
+      "บิลล่าสุดของห้อง K303 ประจำเดือน กันยายน 2569 ยอด 3,500 บาท ชำระแล้ว ไม่มียอดค้างชำระ",
+    ]);
+  });
+
+  it("answers บิลของฉัน honestly when a linked tenant has no bill yet", async () => {
+    const room = await newRoom("K304");
+    await newTenant(room.id, "ดิว LINE");
+    await linkRoom("U-keyword-nobill", "K304");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-nobill", "tok-keyword-nobill", "บิลของฉัน")]));
+    expect(response.status).toBe(200);
+
+    expect(replyTexts()).toEqual([
+      "ยังไม่มีบิลของห้อง K304 ในระบบ เมื่อเจ้าของหอออกบิลแล้วจะแจ้งให้ทราบในแชทนี้",
+    ]);
+  });
+
+  it("answers ติดต่อเจ้าของ with the configured owner name and phone for a linked tenant", async () => {
+    const room = await newRoom("K305");
+    await newTenant(room.id, "ฟ้า LINE");
+    await linkRoom("U-keyword-owner", "K305");
+
+    const saved = await putSettings({ ownerName: "สมศักดิ์ ใจดี", ownerPhone: "081-234-5678" });
+    expect(saved.status).toBe(200);
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-owner", "tok-keyword-owner", "ติดต่อเจ้าของ")]));
+    expect(response.status).toBe(200);
+
+    expect(replyTexts()).toEqual(["เจ้าของหอ สมศักดิ์ ใจดี เบอร์โทร 0812345678"]);
+  });
+
+  it("answers ติดต่อเจ้าของ without a blank number when the owner phone is empty", async () => {
+    const saved = await putSettings({ ownerName: "สมศักดิ์ ใจดี", ownerPhone: "" });
+    expect(saved.status).toBe(200);
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-owner-empty", "tok-keyword-owner-empty", "ติดต่อเจ้าของ")]));
+    expect(response.status).toBe(200);
+
+    const [text] = replyTexts();
+    expect(text).toBe("เจ้าของหอ สมศักดิ์ ใจดี ยังไม่ได้บันทึกเบอร์โทรไว้ กรุณาฝากคำถามไว้ในแชทนี้แล้วรอการติดต่อกลับ");
+    expect(text).not.toMatch(/เบอร์โทร\s*$/);
+  });
+
+  it("answers ลงทะเบียน with the registration link for a linked tenant", async () => {
+    const room = await newRoom("K306");
+    await newTenant(room.id, "เอ LINE");
+    await linkRoom("U-keyword-register", "K306");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-register", "tok-keyword-register", "ลงทะเบียน")]));
+    expect(response.status).toBe(200);
+
+    expect(replyTexts()).toEqual([registerLinkText]);
+  });
+
+  it("points บิลของฉัน and ลงทะเบียน from an unlinked user at registration and records no pending row", async () => {
+    const billsResponse = await postWebhook(lineEvents([textEvent("U-unlinked-bills", "tok-unlinked-bills", "บิลของฉัน")]));
+    expect(billsResponse.status).toBe(200);
+
+    const registerResponse = await postWebhook(lineEvents([textEvent("U-unlinked-register", "tok-unlinked-register", "ลงทะเบียน")]));
+    expect(registerResponse.status).toBe(200);
+
+    expect(replyTexts()).toEqual([registerRequiredText, registerRequiredText]);
+
+    expect(await pendingFor("U-unlinked-bills")).toBeUndefined();
+    expect(await pendingFor("U-unlinked-register")).toBeUndefined();
+  });
+
+  it("still ignores an already linked tenant's ordinary text", async () => {
+    const room = await newRoom("K307");
+    const tenant = await newTenant(room.id, "จีน LINE");
+    await linkRoom("U-keyword-plain", "K307");
+    expect((await tenantById(tenant.id)).lineUserId).toBe("U-keyword-plain");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-plain", "tok-keyword-plain", "A101")]));
+    expect(response.status).toBe(200);
+
+    expect(outboundCalls).toEqual([]);
+    expect(await pendingFor("U-keyword-plain")).toBeUndefined();
+  });
+});
+
+describe("owner phone setting", () => {
+  it("round-trips owner_phone through the settings API and rejects a malformed value", async () => {
+    const saved = await putSettings({ ownerPhone: "081-234-5678" });
+    expect(saved.status).toBe(200);
+    expect((await saved.json<SettingsBody>()).settings.ownerPhone).toBe("0812345678");
+
+    expect((await readSettings()).ownerPhone).toBe("0812345678");
+
+    const malformed = await putSettings({ ownerPhone: "08123" });
+    expect(malformed.status).toBe(400);
+
+    const body = await malformed.json<ErrorBody>();
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("VALIDATION");
+    expect(body.error.field).toBe("ownerPhone");
+    expect((await readSettings()).ownerPhone).toBe("0812345678");
+
+    const cleared = await putSettings({ ownerPhone: "" });
+    expect(cleared.status).toBe(200);
+    expect((await readSettings()).ownerPhone).toBe("");
   });
 });
 

@@ -82,9 +82,10 @@ npm test
 - `test/bills.test.ts` ยิง `/api/bills` ตรวจ meter sheet (เฉพาะห้องที่มีผู้เช่า + อัตราที่ใช้จริง), การสร้างบิลห้องมิเตอร์/ห้องเหมา/บิลที่มีค่าใช้จ่ายเพิ่ม, มิเตอร์ย้อนหลัง, สร้างซ้ำเดือนเดิม, ห้องว่าง, การ snapshot เลขมิเตอร์ลงบิลรอบถัดไป และการจัดการบิลหลังสร้าง (แก้/ลบ unpaid รวมค่าใช้จ่ายเพิ่มและยอดเหมา, ปฏิเสธ paid ด้วย `409`, ปิดบิลด้วย `mark-paid`, unknown id `404`)
 - `test/bills-render.test.ts` ตรวจ payload พร้อมเพย์ (CRC16 known vector + payload ที่ตรงกับ implementation อ้างอิง), ตัวสร้างแถวใบแจ้งหนี้ (ห้องมิเตอร์/ห้องเหมา/ค่าใช้จ่ายเพิ่ม) และ route สาธารณะ `/qr/:billId.png` กับ `/invoices/:billId.pdf` (สถานะ, content-type, PNG/PDF signature, ขนาดไฟล์, ยอดที่เปลี่ยนตามบิลหลัง `PATCH`, การฝังรูป QR ลงใน PDF โดยเทียบกับตอนยังไม่ตั้งพร้อมเพย์, unknown id `404`)
 - `test/bills-send.test.ts` ยิง endpoint ส่งบิลจริงโดยดัก outbound `fetch` ไป LINE ด้วย spy ตรวจว่า push ไป userId ของผู้เช่าเป็น flex ที่มียอดครบ (ห้องเหมา + ค่าใช้จ่ายเพิ่ม), QR/PDF URL, altText, `sent_at` ถูกตั้ง, ผู้เช่าที่ยังไม่เชื่อม `409` / ถูกข้าม, unknown id `404`, `send-all` นับ sent/failed/skipped และส่งสรุปถึงเจ้าของ (ไม่ส่งเมื่อเจ้าของยังไม่เชื่อม), push ล้มเหลวไม่บันทึก `sent_at` และเดือนที่ไม่มีบิล `400`
-- `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ — outbound `fetch` ไป LINE ถูกดักด้วย spy
+- `test/line.test.ts` เซ็น signature จริง (HMAC-SHA256 ด้วย `LINE_CHANNEL_SECRET` ของเทสต์) แล้วยิงเข้า `/webhook/line` ตรวจการปฏิเสธ signature ที่ผิด, event `follow`, การผูกผู้เช่าด้วยเลขห้อง, รหัสเจ้าของ, คิวรอเชื่อม และ endpoint จับคู่ด้วยมือ, คีย์เวิร์ดเมนูหลักทั้งสี่ (`ส่งสลิป` `บิลของฉัน` `ติดต่อเจ้าของ` `ลงทะเบียน`) ทั้งผู้ใช้ที่เชื่อมแล้วและยังไม่เชื่อม (สถานะบิลจริง: ค้าง/จ่ายแล้ว/ยังไม่มีบิล, เบอร์เจ้าของว่าง vs ตั้งค่า) และการ round-trip/ปฏิเสธค่า `owner_phone` ผ่าน `/api/settings` — outbound `fetch` ไป LINE ถูกดักด้วย spy
 - `test/slips.test.ts` เซ็น webhook จริงแล้วส่ง event รูปสลิปเข้า `/webhook/line` โดยดัก outbound `fetch` (ดาวน์โหลดรูปจาก data host, SlipOK, push LINE) ตรวจว่าดาวน์โหลดรูปและเก็บลง R2 แล้วเรียก `/slips/{key}.png` อ่าน bytes กลับมาได้, SlipOK ถูกเรียกด้วย URL สาธารณะของรูปพร้อมยอดบิลที่คาดไว้และ header `x-authorization`, ยอดตรงปิดบิล (`paid`, `paid_method: transfer`, `paid_at` เป็น ISO มาตรฐาน, slip `matched` พร้อม `bill_id`/`bill_total`, push ยืนยัน) ทั้งบิลที่มีค่าใช้จ่ายเพิ่มและห้องเหมาจ่าย และ fallback เป็นเวลาปัจจุบันเมื่อวันที่บนสลิปใช้ไม่ได้, ยอดต่าง 50 สตางค์ไม่ปิดบิล (slip `pending_review` พร้อม `bill_id`/`bill_total`/reason `mismatch`), ตรวจไม่ผ่าน (รหัส 1006/1007/1009), payload ที่ไม่ประกาศ `success`, payload ที่ไม่มี `amount` หรือไม่มีคีย์/รหัสสาขา = ไม่ปิดบิล (reason `not_verified`), ห้องไม่มีบิลค้าง (reason `no_unpaid_bill`), เจ้าของปิดบิลเองระหว่างตรวจสลิปแล้วสลิปไม่ re-pay, ส่ง `transRef` เดิมซ้ำ (รวม webhook สองอันพร้อมกัน) = ใบที่สอง `rejected` reason `duplicate_slip` และไม่ปิดบิลที่สอง, รหัส `1012` จากผู้ให้บริการ = สลิปถูกปฏิเสธแบบ `duplicate_slip` โดยไม่แตะบิล, รหัส `1013` = สลิปจริงแต่ยอดต่างแล้วให้การเทียบของเราตัดสิน, รูปที่ `content-type` ไม่ใช่ png/jpeg/webp หรือ body เกินขนาดถูกปฏิเสธโดยไม่เก็บอะไร, ผู้ส่งที่ยังไม่เชื่อม LINE ไม่เก็บรูป/ไม่สร้างแถวสลิป และ `/slips/{key}.png` ของคีย์ที่ไม่รู้จัก `404`; **ticket 10 เพิ่ม**: สลิปเข้าคิวแล้ว push แจ้งเจ้าของถูกเนื้อหา (ห้อง ชื่อผู้เช่า ยอดในสลิป vs ยอดบิลที่เทียบ และกรณีไม่มีบิลค้างบอกว่าไม่มีบิลให้เทียบ), เจ้าของยังไม่เชื่อม LINE = ไม่มี push และไม่มีอะไรพัง, `GET /api/slips` คืนเฉพาะ `pending_review` โดยปริยายพร้อมฟิลด์ที่หน้า รอตรวจ ใช้ครบ (path รูป, reason, ยอดในสลิป, ห้อง/เดือน/ยอดของบิลที่เทียบ) และ `?billId=` / `?status=` กรองได้ตามสัญญา (`status` ผิดคำศัพท์ `400`), `settle` ปิดบิล (`transfer`, วันที่จากสลิป) + สลิป `matched` + push ยืนยันถึงผู้เช่า และสลิปหายจากคิว, `settle` ที่บิลจ่ายแล้ว/`trans_ref` ซ้ำ/สลิปที่ตัดสินแล้ว = `409` โดยไม่มีอะไรเปลี่ยน, `billId` ใน body ใช้ปิดบิลที่ยังไม่ผูกกับสลิปได้ (ไม่มีทั้งคู่ `400`, บิลไม่รู้จัก `404`), `reject` ทำสลิปเป็น `rejected` (บันทึก `decision`/`decidedAt`) บิลไม่เปลี่ยน ไม่ push, และ id ที่ไม่รู้จัก `404` ทั้งสองคำสั่ง
 - `test/stats.test.ts` ยิง `/api/stats/dashboard` ตรวจ KPI ตรงกับบิลที่สร้าง (จ่าย/ค้าง/ห้องว่าง, `sentCount`/`paidCount`), กราฟรายรับ 6 เดือนจบที่เดือนที่เลือก (นับเฉพาะบิลที่จ่ายแล้ว เดือนที่ไม่มีบิลเป็น 0), ลิสต์บิลค้างเก่าสุดก่อนพร้อม `hasPendingSlip`, สลิป `pending_review` ขึ้นธงทั้งใน `unpaidBills` และ `rooms`, สถานะห้องตามบิลของเดือนนั้น, `period` ผิดหรือไม่ส่ง = `400`, และเดือนที่ไม่มีบิล = เลขศูนย์ + 6 แท่งศูนย์ (ทุกเทสต์รีเซ็ตตารางที่เขียนใน `beforeEach` แล้วสร้าง fixture ผ่าน API)
+- `test/register.test.ts` ยิง `/api/register` และ `/api/register/rooms` จริงโดยดัก outbound `fetch` (LINE profile + push) ตรวจว่าการลงทะเบียนที่ถูกต้องสร้างผู้เช่า ผูก LINE พลิกห้องเป็นมีผู้เช่า ลบแถว `line_pending` และ push ทั้งเจ้าของและผู้เช่า (assert เนื้อหาข้อความที่ส่งออกไป), token ผิด/หมดอายุ `401` โดยไม่สร้างอะไรและไม่ push, LINE ที่ลงทะเบียนไว้แล้ว `409` (บอกเลขห้อง), ห้องมีผู้เช่าแล้ว `409`, ไม่พบห้อง `404`, ค่าที่ผิด (ชื่อ/เบอร์/ห้อง/โทเคน) `400` พร้อม `field`, รายการห้องว่างเท่านั้นเรียงตามเลขห้องและไม่ leak ชื่อผู้เช่า และหน้า `GET /register` ฝัง LIFF id เมื่อตั้งค่าแล้วแต่แสดงหน้าจอ "เปิดจาก LINE" เมื่อว่าง
 - `test/setup.ts` apply D1 migrations ก่อนเทสต์ทุกไฟล์ โดยรับ migration list ผ่าน binding `TEST_MIGRATIONS` ที่กำหนดใน `vitest.config.ts`
 
 `POST /api/seam-probe` ถูกปิดใน production ด้วย var `SEAM_PROBE` (ค่า `0` ใน `wrangler.jsonc`) และเปิดเฉพาะในเทสต์ด้วย miniflare binding override ใน `vitest.config.ts`
@@ -195,16 +196,75 @@ npx wrangler secret put SLIPOK_BRANCH_ID
 
 รหัสเชื่อมเจ้าของไม่ใช่ secret — เก็บอยู่ในตาราง `settings` ของ D1 และแสดงในหน้าตั้งค่าของแอป (กดออกรหัสใหม่ได้จากที่นั่น) จึงไม่ต้องตั้งผ่าน `wrangler secret`
 
+`LIFF_ID` ก็ไม่ใช่ secret — เป็นค่า env ธรรมดาที่ตั้งใน `vars` ของ `wrangler.jsonc` (production) หรือ `.dev.vars` (local) เจ้าของหอใส่ LIFF ID ที่ได้จาก LINE Developers Console ที่นี่หลังสร้าง LIFF app (ดูหัวข้อ "ลงทะเบียนผู้เช่าด้วย LIFF") ปล่อยว่างไว้ก่อนได้ หน้าลงทะเบียนจะบอกให้เปิดจากในแอป LINE จนกว่าจะตั้งค่า
+
 Local: คัดลอก `.dev.vars.example` เป็น `.dev.vars` แล้วใส่ค่าจริง ไฟล์ `.dev.vars` ถูก gitignore ไว้แล้ว หลังใส่ค่าเสร็จให้รัน `npx wrangler types` เพื่อให้ `Env` มีชื่อ secret ครบ
 
 ## LINE bot
 
 - `POST /webhook/line` เป็น path สาธารณะ (ไม่มี Access) ตรวจ `X-Line-Signature` แบบ HMAC-SHA256 จาก raw body ก่อนทุกอย่าง ถ้า signature ไม่ถูกต้องตอบ `403` และไม่แตะฐานข้อมูล
 - event `follow` → บอททักทายและขอเลขห้อง; ข้อความ text ที่ตรงกับเลขห้องของผู้เช่าปัจจุบันที่ยังไม่เชื่อม → ผูก `tenants.line_user_id`; ข้อความที่ตรงกับรหัส 6 หลักใน `settings.owner_link_code` → บันทึก `settings.owner_line_user_id`; ข้อความอื่น → เก็บในตาราง `line_pending` ให้เจ้าของจับคู่เอง
+- ข้อความ text ที่ตรงกับคีย์เวิร์ดของเมนูหลัก (`ส่งสลิป` `บิลของฉัน` `ติดต่อเจ้าของ` `ลงทะเบียน`) ถูกจัดการ **ก่อน** ทุกอย่างอื่น (ตัดช่องว่างหัวท้ายแล้วเทียบแบบตรงตัว): `ส่งสลิป` → คำแนะนำให้ส่งรูปสลิปในแชท, `บิลของฉัน` → บิลล่าสุดของห้องพร้อมเดือน/ยอด/สถานะ (ผู้ใช้ที่ยังไม่เชื่อมจะได้คำแนะนำให้ลงทะเบียนพร้อมลิงก์), `ติดต่อเจ้าของ` → ชื่อและเบอร์เจ้าของจาก `owner_name`/`owner_phone` (เบอร์ว่างจะบอกว่ายังไม่ได้บันทึกเบอร์และให้ฝากคำถามไว้ในแชท), `ลงทะเบียน` → ลิงก์ลงทะเบียน (`https://liff.line.me/{LIFF_ID}` เมื่อตั้งค่า `LIFF_ID` ไม่งั้นใช้ `/register` ของ origin แอป) — ผู้ใช้ที่ยังไม่เชื่อมไม่ถูกเมิน ส่วนผู้เช่าที่เชื่อมแล้วพิมพ์คีย์เวิร์ดจะได้คำตอบแต่ข้อความอื่นของเขายังถูกเมินเหมือนเดิม
 - event `message` ที่เป็นรูป (`message.type = "image"`) → ถือเป็นสลิปการโอนของห้องผู้ส่ง ไปที่หัวข้อ "สลิป และการปิดบิลอัตโนมัติ" ด้านบน (ผู้ส่งที่ยังไม่เชื่อม LINE จะได้ข้อความให้พิมพ์เลขห้องก่อน)
 - `/api/line/pending` (GET) และ `/api/line/pending/:lineUserId/link` (POST) อยู่หลัง Access ใช้โดยหน้าผู้เช่าในส่วนจัดการการเชื่อม LINE
 - ข้อความบิลที่บอท push เป็น Flex message ที่แนบรูป QR พร้อมเพย์และปุ่มเปิดใบแจ้งหนี้ PDF ของบิลนั้น — ทั้งคู่คือสอง route สาธารณะ `/qr/:billId.png` และ `/invoices/:billId.pdf` ด้านบน จึงต้องอยู่นอก Access
 - ตอบ `200` เสมอเมื่อ signature ถูกต้อง เพื่อไม่ให้ LINE ยิงซ้ำเพราะ timeout; การเรียก LINE API ขาออกล้มเหลวได้โดยไม่ทำให้ webhook พัง
+
+## เมนูหลักของ LINE (rich menu)
+
+เมนูหลักของ OA `@490secnd` (channel id 2010515478) มีสี่ปุ่ม สร้างจากไฟล์ในโปรเจกต์นี้แล้วอัปโหลดขึ้น LINE ด้วยสคริปต์เดียว เป้าหมายคือแทนเมนูเดิมจากบอทบุคคลที่สามด้วยเมนูของแอปเอง
+
+- `assets/rich-menu/rich-menu.html` — ไฟล์ต้นทางของรูป ขนาดพอดี 2500 × 1686 พิกเซล แบ่งเป็น 2 × 2 ช่อง ช่องละ 1250 × 843 ใช้ฟอนต์ไทย `IBMPlexSansThai` จาก `src/worker/fonts/` ผ่าน `@font-face` ไฟล์นี้ไม่ถูกเสิร์ฟตอนรันแอป ใช้แค่เรนเดอร์เป็นรูป
+- `assets/rich-menu/rich-menu.png` — รูปที่เรนเดอร์แล้ว ขนาด 2500 × 1686 พิกเซล
+
+ปุ่มทั้งสี่และ action:
+
+| ช่อง | ปุ่ม | action |
+|------|------|--------|
+| ซ้ายบน | ลงทะเบียนผู้เช่า | `uri` → `https://liff.line.me/{LIFF_ID}` |
+| ขวาบน | ส่งสลิป | `message` → `ส่งสลิป` |
+| ซ้ายล่าง | บิลของฉัน | `message` → `บิลของฉัน` |
+| ขวาล่าง | ติดต่อเจ้าของ | `message` → `ติดต่อเจ้าของ` |
+
+`scripts/rich-menu.mjs` เป็น ESM ล้วน ไม่มี dependency ใช้ `LINE_CHANNEL_ACCESS_TOKEN` และ `LIFF_ID` จาก environment ก่อน ถ้าไม่มีจึงอ่านจาก `.dev.vars` ถ้าไม่มี token จะหยุดพร้อมข้อความบอก ถ้าไม่มี `LIFF_ID` จะไม่สร้างเมนูเพราะปุ่มลงทะเบียนจะกลายเป็นลิงก์ตาย สคริปต์พิมพ์แค่ id ไม่เคยพิมพ์ token (รันผ่าน `npm run` หรือ `node scripts/rich-menu.mjs` ก็ได้)
+
+```bash
+npm run rich-menu                              # สร้างเมนู + อัปโหลดรูป + ตั้งเป็นเมนูหลักของทุกคน
+npm run rich-menu:list                         # ดูเมนูทั้งหมดของ OA
+npm run rich-menu:delete -- richmenu-xxxxxxxx  # ลบเมนูตาม richMenuId
+```
+
+`npm run rich-menu` เรียก `POST /v2/bot/richmenu` แล้ว `POST /v2/bot/richmenu/{richMenuId}/content` ที่โฮสต์ `api-data.line.me` แล้วปิดท้ายด้วย `POST /v2/bot/user/all/richmenu/{richMenuId}` ถ้าขั้นไหนล้มเหลวจะพิมพ์ HTTP status และ body ที่ LINE ตอบกลับมาให้เห็นว่า LINE ไม่รับตรงไหน
+
+ข้อความตอบกลับของปุ่มแบบ `message` (`ส่งสลิป` `บิลของฉัน` `ติดต่อเจ้าของ`) และคำสั่งพิมพ์เอง `ลงทะเบียน` อยู่ในฝั่ง webhook (`handleTextMessage` ใน `src/worker/routes/line.ts`) แยกจากสคริปต์นี้ ข้อความทั้งหมดสร้างจาก `src/worker/line/messages.ts`
+
+### เรนเดอร์รูปเมนูใหม่
+
+เมื่อแก้ `rich-menu.html` แล้วต้องสร้าง `rich-menu.png` ใหม่ ให้เปิดไฟล์ด้วยเบราว์เซอร์ที่ viewport ขนาด 2500 × 1686 พิกเซลพอดี แล้วบันทึกภาพ ต้องเห็นฟอนต์ไทยถูกต้อง ไม่มีสระหรือวรรณยุกต์ลอย (เช่นใช้ `agent-browser` เปิด `file://` แล้ว `set viewport 2500 1686` จากนั้น `screenshot`)
+
+## ลงทะเบียนผู้เช่าด้วย LIFF
+
+ผู้เช่าเปิดลิงก์ LIFF จากในแชท LINE กรอกชื่อ-นามสกุล เบอร์โทร และเลือกห้องที่ว่าง ระบบยืนยันตัวตนด้วย access token ของ LIFF ฝั่งเซิร์ฟเวอร์ แล้วสร้างผู้เช่า ผูก LINE แจ้งเจ้าของ และยืนยันกลับให้ผู้เช่า — เจ้าของไม่ต้องกรอกข้อมูลเอง
+
+### หน้าลงทะเบียน (สาธารณะ)
+
+- `GET /register` — หน้าฟอร์ม LIFF เป็น HTML เดี่ยว (ไม่ใช่ SPA และไม่ผูกกับเปลือกแอป) โหลด LIFF SDK แล้ว `liff.init({ liffId })` โดยอ่าน LIFF ID จาก env `LIFF_ID` แล้ว `liff.getAccessToken()`; ถ้า `LIFF_ID` ว่าง เปิดนอกแอป LINE หรือ init ไม่สำเร็จ จะแสดงข้อความภาษาไทยให้เปิดจากในแอป LINE เท่านั้น พร้อมขั้นตอนตั้งค่าที่เจ้าของต้องทำ — ไม่มีหน้าจอพังหรือเงียบ
+- ฟอร์มมี ชื่อ-นามสกุล / เบอร์โทร / ห้อง (dropdown จาก `GET /api/register/rooms` โหลดใหม่ทุกครั้งที่เปิดหน้า) ปุ่มส่งที่มีสถานะกำลังทำงาน การตรวจค่าในหน้าแบบ inline และหน้าสำเร็จที่โชว์ชื่อ+ห้องพร้อมปุ่ม `liff.closeWindow()`; ข้อความ error จากเซิร์ฟเวอร์ (`409`/`401`) แสดงในหน้าและให้แก้ไขส่งใหม่ได้ — หน้าออกแบบตาม `DESIGN.md` ด้วยชุดสีของแอป (พื้นโทนกระดาษ เส้นขอบ 1px มุมโค้ง และปุ่มหลักสีเข้มทึบ) ใช้ฟอนต์ไทยชุดเดียวกับแอป (Inter + Noto Sans Thai) และไม่มี dependency/ขั้นตอน build
+- หน้าอยู่ก่อน SPA fallback ด้วยการเพิ่ม `/register` ใน `assets.run_worker_first`
+
+### Endpoints (สาธารณะ)
+
+- `GET /api/register/rooms` — คืน `{ ok: true, rooms: [{ id, roomNumber }] }` เฉพาะห้องที่ว่าง เรียงตามเลขห้อง ไม่มีชื่อผู้เช่า ค่าเช่า หรือข้อมูลอื่นติดออกไป
+- `POST /api/register` — body `{ name, phone, roomId, accessToken }`; ตรวจค่าก่อนแตะฐานข้อมูล (ชื่อ ≥ 2 ตัวอักษร, เบอร์โทรไทย 10 หลักเริ่มด้วย 0 โดยตัดช่องว่าง/ขีดออก, `roomId` และ `accessToken` ต้องไม่ว่าง) → `400` พร้อม `field`; แล้วเรียก `GET https://api.line.me/v2/profile` ด้วย `Authorization: Bearer {accessToken}` เพื่อยืนยันตัวตน **ฝั่งเซิร์ฟเวอร์เสมอ ไม่รับ userId จาก body** (ล้มเหลวทุกกรณี → `401` "ลิงก์ยืนยันตัวตนไม่ถูกต้อง กรุณาเปิดฟอร์มจาก LINE อีกครั้ง" และไม่สร้างอะไร) ใช้ `userId` ที่ได้เป็นตัวตน; LINE ที่ผูกกับผู้เช่าอยู่แล้ว → `409` (บอกเลขห้องในข้อความ); ไม่พบห้อง → `404`; ห้องที่มีผู้เช่าอยู่แล้ว → `409`
+- เมื่อผ่านทุกข้อ: สร้างผู้เช่าด้วยกฎเดียวกับ `POST /api/tenants` (วันเข้า = วันนี้, ห้องเป็น `occupied`, ผ่าน partial unique index หนึ่งผู้เช่าปัจจุบันต่อห้อง) พร้อมลบแถว `line_pending` ของผู้ใช้นั้นใน `DB.batch` เดียว → แล้ว (หลัง commit, แบบ fail-soft) push `ผู้เช่าลงทะเบียนใหม่: {ชื่อ} ห้อง {เลขห้อง} เบอร์ {เบอร์}` ถึงเจ้าของ (เฉพาะเมื่อมี `settings.owner_line_user_id`; ล้มเหลวไม่ทำให้คำขอพัง) และ push ข้อความยืนยันสั้นๆ ถึงผู้เช่า → ตอบ `200 { ok: true, tenant: { name, roomNumber } }`; ความล้มเหลว log แบบมีโครงสร้าง
+- อยู่ **นอก Cloudflare Access** เหมือน `/webhook/*`, `/qr/*` และ `/slips/*` เพราะเปิดจากใน LINE ก่อนผู้ใช้ล็อกอินได้ — `/api/*` glob ครอบ `/api/register/*` อยู่แล้ว ส่วน `/register` ถูกใส่ใน `run_worker_first` และต้องเพิ่มใน Access bypass ด้วย
+
+### ขั้นตอนที่เจ้าของทำใน LINE Developers Console
+
+1. สร้าง LIFF app ผูกกับ LINE Login channel ของหอพัก
+2. ตั้ง Endpoint URL เป็น `https://wangchan-dorm.nodhk2545.workers.dev/register`
+3. ตั้งขนาดเป็น Full และเพิ่ม scope `profile` (จำเป็นต่อการได้ access token ที่ยืนยันตัวตนได้)
+4. ก๊อป LIFF ID ที่ได้ไปใส่ค่า env `LIFF_ID` (production: `vars` ใน `wrangler.jsonc` แล้ว deploy ใหม่; local: `.dev.vars`) — ว่างไว้ก่อนได้ หน้าลงทะเบียนจะบอกให้เปิดจากใน LINE จนกว่าจะตั้งค่า
 
 ## Deploy
 
@@ -221,19 +281,19 @@ npm run deploy
 1. ผูก custom domain ให้ Worker (เช่น `dorm.example.com`) — Access ครอบโดเมน `*.workers.dev` ไม่ได้ ต้องมี custom domain ก่อน
 2. สร้าง Access application ครอบโฮสต์นั้น
 3. เพิ่ม policy แบบ Allow เฉพาะอีเมลของเจ้าของ
-4. แยก path ที่ต้องเปิดสาธารณะออกจาก Access: `/webhook/*` (LINE เรียกเข้ามา), `/qr/*` และ `/invoices/*` (ลิงก์รูป QR และใบแจ้งหนี้ PDF ที่ฝังในข้อความ LINE) และ `/slips/*` (ให้ SlipOK ดึงรูปสลิปไปตรวจ) — เช่นใช้ Bypass policy ตาม path
+4. แยก path ที่ต้องเปิดสาธารณะออกจาก Access: `/webhook/*` (LINE เรียกเข้ามา), `/qr/*` และ `/invoices/*` (ลิงก์รูป QR และใบแจ้งหนี้ PDF ที่ฝังในข้อความ LINE), `/slips/*` (ให้ SlipOK ดึงรูปสลิปไปตรวจ) และ `/register` + `/api/register/*` (หน้าลงทะเบียนผู้เช่าที่เปิดจากในแอป LINE ก่อนผู้ใช้ล็อกอินได้) — เช่นใช้ Bypass policy ตาม path
 
 `/slips/*` **ต้องอยู่นอก Access เสมอ**: ถ้าถูกบังคับล็อกอิน SlipOK จะดึงรูปไปตรวจไม่ได้ (ได้หน้า login แทนรูป) และการปิดบิลอัตโนมัติจะหยุดทำงานทั้งระบบ เหตุผลเดียวกับ `/qr/*` และ `/invoices/*` ที่ลิงก์ถูกส่งออกไปนอกแอป — ความลับของรูปคือคีย์สุ่ม 128-bit ที่เดาไม่ได้ ไม่ใช่การบังคับล็อกอิน
 
 การจัดการ asset และ API:
 
-- `assets.run_worker_first` เป็น array ของ glob `["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*", "/invoices/*"]` ทำให้ path เหล่านี้วิ่งเข้า Worker เสมอ ส่วน path อื่นถูกเสิร์ฟเป็น static asset และ fallback เป็น SPA (`not_found_handling: "single-page-application"`)
+- `assets.run_worker_first` เป็น array ของ glob `["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*", "/invoices/*", "/register"]` ทำให้ path เหล่านี้วิ่งเข้า Worker เสมอ ส่วน path อื่นถูกเสิร์ฟเป็น static asset และ fallback เป็น SPA (`not_found_handling: "single-page-application"`) — `/register` ต้องอยู่ในลิสต์นี้ ไม่งั้นจะได้ `index.html` ของ SPA แทนหน้าลงทะเบียน
 - ถ้าเพิ่ม path API ใหม่ ต้องเพิ่ม glob ใน `assets.run_worker_first` ด้วย ไม่งั้นจะได้ index.html แทน JSON
 
 ## โครงสร้างไฟล์
 
 ```
-src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, seam-probe, bills-render, slips, slips-admin, stats)
+src/worker/       Hono app (index.ts) และ routes (health, rooms, tenants, bills, settings, line, register, seam-probe, bills-render, slips, slips-admin, stats)
 src/worker/line/  signature (HMAC-SHA256), LINE Messaging API client, SlipOK client และข้อความภาษาไทย
 src/worker/lib/   ตรรกะที่ไม่ผูกกับ request: promptpay (payload + CRC16), png, qr, invoice (ตัวสร้างเอกสาร), pdf, slips (รับสลิป + แจ้งเจ้าของ)
 src/worker/fonts/ ฟอนต์ไทยสำหรับ PDF (IBM Plex Sans Thai Regular/Bold, OFL 1.1)
@@ -244,6 +304,8 @@ seed/             ข้อมูลตัวอย่าง (rooms.sql, tenants
 test/             vitest + @cloudflare/vitest-pool-workers
 design/           prototype UX/UI (ไฟล์อ้างอิง ไม่ได้ build)
 docs/             spec และ ADR
+assets/           ไฟล์ต้นทางรูป rich menu (rich-menu.html + rich-menu.png, ไม่ได้ build)
+scripts/          สคริปต์สำหรับผู้ดูแล (rich-menu.mjs)
 ```
 
 ## หมายเหตุเรื่อง UI

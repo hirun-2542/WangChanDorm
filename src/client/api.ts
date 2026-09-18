@@ -138,6 +138,7 @@ export interface SettingsIntegrations {
 export interface Settings {
   dormName: string;
   ownerName: string;
+  ownerPhone: string;
   defaultWaterRate: number;
   defaultElectricRate: number;
   promptpayType: PromptpayType;
@@ -151,6 +152,7 @@ export interface Settings {
 export interface SettingsUpdate {
   dormName?: string;
   ownerName?: string;
+  ownerPhone?: string;
   defaultWaterRate?: number;
   defaultElectricRate?: number;
   promptpayType?: PromptpayType;

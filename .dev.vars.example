@@ -9,3 +9,7 @@ LINE_CHANNEL_SECRET=
 # คีย์และรหัสสาขาสำหรับตรวจสลิปโอนเงินผ่าน SlipOK
 SLIPOK_API_KEY=
 SLIPOK_BRANCH_ID=
+
+# LIFF ID ของแอปลงทะเบียนผู้เช่า สร้างใน LINE Developers Console (ขนาด Full, scope profile)
+# แล้วใส่ค่าที่นี่ ปล่อยว่างได้จนกว่าจะสร้างแอป — หน้าลงทะเบียนจะแจ้งให้เปิดจากในแอป LINE จนกว่าจะตั้งค่า
+LIFF_ID=

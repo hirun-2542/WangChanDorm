@@ -1,7 +1,18 @@
 import { Hono } from "hono";
 import { handleSlipImage } from "../lib/slips";
 import { fetchProfile, replyMessage } from "../line/api";
-import { linkedMessage, notMatchedMessage, ownerLinkedMessage, welcomeMessage } from "../line/messages";
+import {
+  billStatusMessage,
+  contactOwnerMessage,
+  linkedMessage,
+  notMatchedMessage,
+  ownerLinkedMessage,
+  registerLinkMessage,
+  registerRequiredMessage,
+  slipInstructionMessage,
+  type TenantBillSummary,
+  welcomeMessage,
+} from "../line/messages";
 import { verifyLineSignature } from "../line/signature";
 import { asRecord, errorBody, readJsonObject, upsertSettingSql } from "./shared";
 
@@ -25,6 +36,16 @@ interface TenantRow {
   full_name: string;
   room_number: string;
 }
+
+interface LinkedTenantRow {
+  id: string;
+  room_number: string;
+}
+
+const slipKeyword = "ส่งสลิป";
+const myBillsKeyword = "บิลของฉัน";
+const contactOwnerKeyword = "ติดต่อเจ้าของ";
+const registerKeyword = "ลงทะเบียน";
 
 interface PendingPayload {
   lineUserId: string;
@@ -76,6 +97,11 @@ async function readSetting(env: Env, key: string): Promise<string | null> {
   return row?.value ?? null;
 }
 
+function registrationUrl(env: Env, origin: string): string {
+  const liffId = typeof env.LIFF_ID === "string" ? env.LIFF_ID.trim() : "";
+  return liffId === "" ? `${origin}/register` : `https://liff.line.me/${liffId}`;
+}
+
 async function upsertPending(env: Env, lineUserId: string, displayName: string | null, lastMessage: string | null): Promise<void> {
   await env.DB.prepare(upsertPendingSql).bind(lineUserId, displayName, lastMessage).run();
 }
@@ -95,14 +121,54 @@ async function linkTenant(env: Env, userId: string, target: TenantRow): Promise<
   ]);
 }
 
-async function handleTextMessage(env: Env, userId: string, replyToken: string, text: string): Promise<void> {
-  const sender = await env.DB.prepare("SELECT id FROM tenants WHERE line_user_id = ?").bind(userId).first<{ id: string }>();
+async function handleTextMessage(env: Env, origin: string, userId: string, replyToken: string, text: string): Promise<void> {
+  const sender = await env.DB.prepare(
+    "SELECT t.id, r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.line_user_id = ?",
+  )
+    .bind(userId)
+    .first<LinkedTenantRow>();
+
+  const trimmed = text.trim();
+
+  if (trimmed === slipKeyword) {
+    await replyMessage(env, replyToken, slipInstructionMessage());
+    return;
+  }
+
+  if (trimmed === myBillsKeyword) {
+    if (sender === null) {
+      await replyMessage(env, replyToken, registerRequiredMessage(registrationUrl(env, origin)));
+    } else {
+      const bills = await env.DB.prepare("SELECT period, total, status FROM bills WHERE tenant_id = ? ORDER BY period DESC")
+        .bind(sender.id)
+        .all<TenantBillSummary>();
+
+      await replyMessage(env, replyToken, billStatusMessage(sender.room_number, bills.results));
+    }
+
+    return;
+  }
+
+  if (trimmed === contactOwnerKeyword) {
+    const ownerName = (await readSetting(env, "owner_name")) ?? "";
+    const ownerPhone = (await readSetting(env, "owner_phone")) ?? "";
+
+    await replyMessage(env, replyToken, contactOwnerMessage(ownerName, ownerPhone));
+    return;
+  }
+
+  if (trimmed === registerKeyword) {
+    const url = registrationUrl(env, origin);
+
+    await replyMessage(env, replyToken, sender === null ? registerRequiredMessage(url) : registerLinkMessage(url));
+    return;
+  }
 
   if (sender !== null) {
     return;
   }
 
-  const roomNumber = text.trim().toUpperCase();
+  const roomNumber = trimmed.toUpperCase();
 
   if (roomNumber !== "") {
     const target = await env.DB.prepare(
@@ -120,7 +186,7 @@ async function handleTextMessage(env: Env, userId: string, replyToken: string, t
 
   const ownerCode = await readSetting(env, "owner_link_code");
 
-  if (ownerCode !== null && ownerCode !== "" && text.trim() === ownerCode) {
+  if (ownerCode !== null && ownerCode !== "" && trimmed === ownerCode) {
     await env.DB.batch([
       env.DB.prepare(upsertSettingSql).bind("owner_line_user_id", userId),
       env.DB.prepare("DELETE FROM line_pending WHERE line_user_id = ?").bind(userId),
@@ -168,7 +234,7 @@ async function handleEvent(env: Env, origin: string, value: unknown): Promise<vo
   const messageType = readString(message, "type");
 
   if (messageType === "text") {
-    await handleTextMessage(env, userId, replyToken, readString(message, "text"));
+    await handleTextMessage(env, origin, userId, replyToken, readString(message, "text"));
     return;
   }
 
