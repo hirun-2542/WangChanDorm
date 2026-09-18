@@ -16,6 +16,8 @@ interface RoomPayload {
   waterMeterInit: number;
   electricMeterInit: number;
   status: "vacant" | "occupied";
+  lastElectricAmount: number | null;
+  lastElectricPeriod: string | null;
   charges: ChargePayload[];
 }
 
@@ -35,6 +37,8 @@ interface ErrorBody {
 }
 
 const roomsUrl = "https://dorm.test/api/rooms";
+const tenantsUrl = "https://dorm.test/api/tenants";
+const billsUrl = "https://dorm.test/api/bills";
 
 function createRoom(payload: Record<string, unknown>): Promise<Response> {
   return SELF.fetch(roomsUrl, {
@@ -50,6 +54,31 @@ function patchRoom(id: string, payload: Record<string, unknown>): Promise<Respon
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+async function occupyRoom(roomId: string, fullName: string): Promise<void> {
+  const response = await SELF.fetch(tenantsUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fullName, phone: "081-234-5678", roomId, checkInDate: "2025-03-01" }),
+  });
+
+  expect(response.status).toBe(201);
+}
+
+async function generateFlatBill(roomId: string, period: string, waterCurrent: number, electricCurrent: number, amount: number): Promise<void> {
+  const response = await SELF.fetch(`${billsUrl}/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ period, entries: [{ roomId, waterCurrent, electricCurrent, flatElectricAmount: amount }] }),
+  });
+
+  expect(response.status).toBe(201);
+}
+
+async function listedRoom(id: string): Promise<RoomPayload | undefined> {
+  const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+  return list.rooms.find((room) => room.id === id);
 }
 
 describe("rooms crud", () => {
@@ -322,5 +351,81 @@ describe("rooms crud", () => {
 
     const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
     expect(list.rooms.find((room) => room.id === created.room.id)?.charges).toEqual([{ name: "ค่าขยะ", amount: 20 }]);
+  });
+});
+
+describe("room recurring charges and latest electric reading", () => {
+  it("accepts recurring charges at creation and reports a total that matches their sum", async () => {
+    const response = await createRoom({
+      roomNumber: "H801",
+      rent: 3200,
+      charges: [
+        { name: "ค่าบริการ", amount: 10 },
+        { name: "ค่าขยะ", amount: 20 },
+        { name: "ค่าไวไฟ", amount: 100 },
+      ],
+    });
+    expect(response.status).toBe(201);
+
+    const created = await response.json<RoomBody>();
+    expect(created.room.charges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+
+    const row = await listedRoom(created.room.id);
+    expect(row?.charges).toHaveLength(3);
+    expect((row?.charges ?? []).reduce((sum, charge) => sum + charge.amount, 0)).toBe(130);
+
+    const bare = await createRoom({ roomNumber: "H802", rent: 3200 });
+    expect(bare.status).toBe(201);
+
+    const bareCreated = await bare.json<RoomBody>();
+    expect(bareCreated.room.charges).toEqual([]);
+    expect(bareCreated.room.lastElectricAmount).toBeNull();
+    expect(bareCreated.room.lastElectricPeriod).toBeNull();
+
+    const bareRow = await listedRoom(bareCreated.room.id);
+    expect(bareRow?.charges).toEqual([]);
+    expect((bareRow?.charges ?? []).reduce((sum, charge) => sum + charge.amount, 0)).toBe(0);
+  });
+
+  it("rejects malformed recurring charges on creation with 400 and a field", async () => {
+    const emptyName = await createRoom({ roomNumber: "H803", rent: 3200, charges: [{ name: " ", amount: 10 }] });
+    expect(emptyName.status).toBe(400);
+    expect((await emptyName.json<ErrorBody>()).error.field).toBe("charges");
+
+    const fractional = await createRoom({ roomNumber: "H804", rent: 3200, charges: [{ name: "ค่าบริการ", amount: 12.5 }] });
+    expect(fractional.status).toBe(400);
+    expect((await fractional.json<ErrorBody>()).error.field).toBe("charges");
+
+    const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+    expect(list.rooms.some((room) => room.roomNumber === "H803")).toBe(false);
+    expect(list.rooms.some((room) => room.roomNumber === "H804")).toBe(false);
+  });
+
+  it("reports the latest billed electric amount and period for a flat room, and null before any bill", async () => {
+    const created = await createRoom({ roomNumber: "H805", rent: 3200, electricMode: "flat", waterMeterInit: 0, electricMeterInit: 0 });
+    expect(created.status).toBe(201);
+
+    const room = (await created.json<RoomBody>()).room;
+    expect(room.lastElectricAmount).toBeNull();
+    expect(room.lastElectricPeriod).toBeNull();
+
+    await occupyRoom(room.id, "ผู้เช่า H805");
+    await generateFlatBill(room.id, "2026-08", 10, 470, 600);
+    await generateFlatBill(room.id, "2026-09", 20, 480, 720);
+
+    const row = await listedRoom(room.id);
+    expect(row?.lastElectricPeriod).toBe("2026-09");
+    expect(row?.lastElectricAmount).toBe(720);
+
+    const patched = await patchRoom(room.id, { rent: 3300 });
+    expect(patched.status).toBe(200);
+
+    const patchedRoom = (await patched.json<RoomBody>()).room;
+    expect(patchedRoom.lastElectricPeriod).toBe("2026-09");
+    expect(patchedRoom.lastElectricAmount).toBe(720);
   });
 });

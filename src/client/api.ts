@@ -13,6 +13,8 @@ export interface Room {
   electricMeterInit: number;
   status: RoomStatus;
   occupiedBy: string | null;
+  lastElectricAmount: number | null;
+  lastElectricPeriod: string | null;
   charges: BillCharge[];
 }
 

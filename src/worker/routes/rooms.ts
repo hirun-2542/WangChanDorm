@@ -18,6 +18,8 @@ interface RoomRow {
   status: string;
   created_at: string;
   occupied_by: string | null;
+  last_electric_amount: number | null;
+  last_electric_period: string | null;
 }
 
 interface ChargePayload {
@@ -36,11 +38,16 @@ interface RoomPayload {
   electricMeterInit: number;
   status: RoomStatus;
   occupiedBy: string | null;
+  lastElectricAmount: number | null;
+  lastElectricPeriod: string | null;
   charges: ChargePayload[];
 }
 
-const roomColumns =
-  "r.id, r.room_number, r.rent, r.water_rate, r.electric_mode, r.electric_rate, r.water_meter_init, r.electric_meter_init, r.status, r.created_at, t.full_name AS occupied_by";
+const lastElectricAmountSql = "(SELECT b.electric_amount FROM bills b WHERE b.room_id = r.id ORDER BY b.period DESC LIMIT 1)";
+
+const lastElectricPeriodSql = "(SELECT b.period FROM bills b WHERE b.room_id = r.id ORDER BY b.period DESC LIMIT 1)";
+
+const roomColumns = `r.id, r.room_number, r.rent, r.water_rate, r.electric_mode, r.electric_rate, r.water_meter_init, r.electric_meter_init, r.status, r.created_at, t.full_name AS occupied_by, ${lastElectricAmountSql} AS last_electric_amount, ${lastElectricPeriodSql} AS last_electric_period`;
 
 const roomFrom = "FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current'";
 
@@ -58,6 +65,8 @@ function toRoom(row: RoomRow, charges: ChargePayload[]): RoomPayload {
     electricMeterInit: row.electric_meter_init,
     status: row.status === "occupied" ? "occupied" : "vacant",
     occupiedBy: row.occupied_by,
+    lastElectricAmount: row.last_electric_amount,
+    lastElectricPeriod: row.last_electric_period,
     charges,
   };
 }
@@ -197,6 +206,12 @@ rooms.post("/", async (c) => {
   }
 
   const storedElectricRate = electricMode === "flat" ? null : electricRate.value;
+  const charges = body.charges === undefined ? [] : parseRoomCharges(body.charges);
+
+  if (charges === null) {
+    return c.json(errorBody("VALIDATION", "ค่าใช้จ่ายประจำต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ ไม่เกิน 10 รายการ", "charges"), 400);
+  }
+
   const id = crypto.randomUUID();
 
   try {
@@ -206,11 +221,25 @@ rooms.post("/", async (c) => {
       return c.json(errorBody("DUPLICATE", "เลขห้องนี้ถูกใช้แล้ว", "roomNumber"), 409);
     }
 
-    await c.env.DB.prepare(
-      "INSERT INTO rooms (id, room_number, rent, water_rate, electric_mode, electric_rate, water_meter_init, electric_meter_init, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'vacant')",
-    )
-      .bind(id, roomNumber, rent, waterRate.value, electricMode, storedElectricRate, waterMeterInit, electricMeterInit)
-      .run();
+    const statements: D1PreparedStatement[] = [
+      c.env.DB.prepare(
+        "INSERT INTO rooms (id, room_number, rent, water_rate, electric_mode, electric_rate, water_meter_init, electric_meter_init, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'vacant')",
+      ).bind(id, roomNumber, rent, waterRate.value, electricMode, storedElectricRate, waterMeterInit, electricMeterInit),
+    ];
+
+    charges.forEach((charge, index) => {
+      statements.push(
+        c.env.DB.prepare("INSERT INTO room_charges (id, room_id, name, amount, position) VALUES (?, ?, ?, ?, ?)").bind(
+          crypto.randomUUID(),
+          id,
+          charge.name,
+          charge.amount,
+          index,
+        ),
+      );
+    });
+
+    await c.env.DB.batch(statements);
 
     const row = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} WHERE r.id = ?`).bind(id).first<RoomRow>();
 
@@ -219,7 +248,7 @@ rooms.post("/", async (c) => {
       return c.json(errorBody("INTERNAL", "สร้างห้องไม่สำเร็จ"), 500);
     }
 
-    return c.json({ ok: true, room: toRoom(row, []) }, 201);
+    return c.json({ ok: true, room: toRoom(row, charges) }, 201);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "create room failed", error: detail }));
