@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { billsFocusHash, billsFocusOf, billsFocusTarget } from "../src/client/api";
 import { flexText } from "./flex";
 
 interface RoomPayload {
@@ -12,6 +13,7 @@ interface RoomPayload {
   waterMeterInit: number;
   electricMeterInit: number;
   status: "vacant" | "occupied";
+  lastElectricPeriod: string | null;
 }
 
 interface TenantPayload {
@@ -1169,5 +1171,59 @@ describe("owner send summary", () => {
     expect(text).toContain("S412");
     expect(text).toContain("ผู้เช่า S412");
     expect(JSON.stringify(message.contents)).toContain("#FFFBEB");
+  });
+});
+
+describe("room-scoped ดูบิล link", () => {
+  it("points at the period the room was last billed, not the dorm's newest, and that period holds the room's bill", async () => {
+    await putRates(18, 7);
+    const stale = await occupiedRoom("H601", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    const newest = await occupiedRoom("H602", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+
+    await generate({ period: "2026-07", entries: [{ roomId: stale.id, waterCurrent: 10, electricCurrent: 20 }] });
+    await generate({ period: "2026-08", entries: [{ roomId: newest.id, waterCurrent: 10, electricCurrent: 20 }] });
+
+    const listedRooms = await roomsList();
+    const staleRoom = pick(listedRooms, (room) => room.id === stale.id);
+    const newestRoom = pick(listedRooms, (room) => room.id === newest.id);
+
+    expect(staleRoom.lastElectricPeriod).toBe("2026-07");
+    expect(newestRoom.lastElectricPeriod).toBe("2026-08");
+
+    const hash = billsFocusHash(billsFocusTarget(staleRoom, "2026-09"));
+    expect(hash).toBe("#bills?room=H601&period=2026-07");
+
+    const arrived = billsFocusOf(hash);
+
+    if (arrived === null) {
+      throw new Error("expected the ดูบิล hash to parse back to a room and period");
+    }
+
+    expect(arrived).toEqual({ roomNumber: "H601", period: "2026-07" });
+
+    const arrivedBills = (await listBills(arrived.period)).filter((bill) => bill.roomNumber === arrived.roomNumber);
+    expect(arrivedBills).toHaveLength(1);
+    expect(arrivedBills[0]?.period).toBe("2026-07");
+    expect(arrivedBills[0]?.roomId).toBe(stale.id);
+  });
+
+  it("falls back to the period selected on the rooms page for a room with no bill yet", async () => {
+    await putRates(18, 7);
+    const fresh = await occupiedRoom("H501", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    const freshRoom = pick(await roomsList(), (room) => room.id === fresh.id);
+
+    expect(freshRoom.lastElectricPeriod).toBeNull();
+    expect(billsFocusTarget(freshRoom, "2026-09")).toEqual({ roomNumber: "H501", period: "2026-09" });
+    expect(billsFocusHash(billsFocusTarget(freshRoom, null))).toBe("#bills?room=H501");
+    expect(billsFocusOf("#bills?room=H501")).toEqual({ roomNumber: "H501", period: "" });
+  });
+
+  it("round-trips a room number shaped like a path segment and ignores hashes without a room", () => {
+    expect(billsFocusHash({ roomNumber: "108/7", period: "2026-08" })).toBe("#bills?room=108%2F7&period=2026-08");
+    expect(billsFocusOf("#bills?room=108%2F7&period=2026-08")).toEqual({ roomNumber: "108/7", period: "2026-08" });
+
+    expect(billsFocusOf("#bills")).toBeNull();
+    expect(billsFocusOf("#bills?period=2026-08")).toBeNull();
+    expect(billsFocusOf("#tenants?room=108&period=2026-08")).toBeNull();
   });
 });

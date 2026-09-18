@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
+  billsFocusHash,
+  billsFocusOf,
   fetchBills,
   fetchSettings,
   fetchTenants,
   sendBill,
   sendBills,
   type Bill,
+  type BillsFocus,
   type SendAllResult,
   type Settings,
   type Tenant,
@@ -42,8 +45,10 @@ interface BillListProps {
   periods: string[];
   connectedIds: Set<string> | null;
   statusFilter: string;
+  roomFilter: string;
   onPeriodChange: (period: string) => void;
   onStatusFilterChange: (value: string) => void;
+  onClearRoom: () => void;
   onOpen: (bill: Bill) => void;
   onManage: (bill: Bill) => void;
   onSend: (bill: Bill) => void;
@@ -77,8 +82,10 @@ function BillList({
   periods,
   connectedIds,
   statusFilter,
+  roomFilter,
   onPeriodChange,
   onStatusFilterChange,
+  onClearRoom,
   onOpen,
   onManage,
   onSend,
@@ -97,12 +104,13 @@ function BillList({
     const connected = connectedOf(bill);
     return connected === true ? undefined : connected === false ? "ผู้เช่ายังไม่เชื่อม LINE" : "ยังไม่ทราบสถานะ LINE ของผู้เช่า";
   };
-  const paidCount = bills.filter((bill) => bill.status === "paid").length;
-  const unpaidCount = bills.length - paidCount;
-  const monthTotal = bills.reduce((sum, bill) => sum + bill.total, 0);
+  const scoped = roomFilter === "" ? bills : bills.filter((bill) => bill.roomNumber === roomFilter);
+  const paidCount = scoped.filter((bill) => bill.status === "paid").length;
+  const unpaidCount = scoped.length - paidCount;
+  const monthTotal = scoped.reduce((sum, bill) => sum + bill.total, 0);
 
   const needle = query.trim().toLowerCase();
-  const filtered = bills.filter((bill) => {
+  const filtered = scoped.filter((bill) => {
     const matchesQuery =
       needle === "" || bill.roomNumber.toLowerCase().includes(needle) || bill.tenantName.toLowerCase().includes(needle);
     const matchesStatus = statusFilter === "all" || bill.status === statusFilter;
@@ -176,17 +184,18 @@ function BillList({
     },
   ];
 
+  const scopeLabel = roomFilter === "" ? periodLabel(period) : `ห้อง ${roomFilter} · ${periodLabel(period)}`;
+  const supporting = loading
+    ? "กำลังโหลดข้อมูลบิล"
+    : error !== null
+      ? undefined
+      : `${scopeLabel} · ${scoped.length} ใบ · จ่ายแล้ว ${paidCount} · ยังไม่จ่าย ${unpaidCount}`;
+
   return (
     <div>
       <PageHeader
         title="บิล"
-        supporting={
-          loading
-            ? "กำลังโหลดข้อมูลบิล"
-            : error !== null
-              ? "โหลดข้อมูลบิลไม่สำเร็จ"
-              : `${periodLabel(period)} · ${bills.length} ใบ · จ่ายแล้ว ${paidCount} · ยังไม่จ่าย ${unpaidCount}`
-        }
+        supporting={supporting}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <label className="field-label mb-0" htmlFor="bills-period">
@@ -206,7 +215,7 @@ function BillList({
                 </option>
               ))}
             </select>
-            <Button variant="secondary" icon="send" disabled={bills.length === 0 || bulkSending} onClick={onSendAll}>
+            <Button variant="secondary" icon="send" disabled={scoped.length === 0 || bulkSending} onClick={onSendAll}>
               ส่งบิลทาง LINE
             </Button>
             <Button variant="primary" icon="add" onClick={onCreate}>
@@ -243,7 +252,7 @@ function BillList({
         <>
           <Card className="mb-4">
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <StatBlock label="จำนวนบิล" value={`${bills.length} ใบ`} supporting={periodLabel(period)} />
+              <StatBlock label="จำนวนบิล" value={`${scoped.length} ใบ`} supporting={scopeLabel} />
               <StatBlock label="จ่ายแล้ว" value={String(paidCount)} />
               <StatBlock label="ยังไม่จ่าย" value={String(unpaidCount)} />
               <StatBlock label="ยอดรวม" value={`${baht(monthTotal)} บาท`} />
@@ -251,6 +260,15 @@ function BillList({
           </Card>
 
           <Card className="mb-4">
+            {roomFilter !== "" && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-ash pb-3">
+                <span className="chip">{`กรองเฉพาะห้อง ${roomFilter}`}</span>
+                <span className="text-xs text-fog">กำลังดูบิลของห้องนี้เท่านั้น</span>
+                <Button size="sm" variant="secondary" icon="filter_alt_off" className="ml-auto" onClick={onClearRoom}>
+                  ดูบิลทั้งหอ
+                </Button>
+              </div>
+            )}
             <div className="flex flex-wrap items-end gap-3">
               <div className="w-full md:hidden sm:w-60">
                 <Field label="ค้นหาห้องหรือผู้เช่า" value={query} onChange={setQuery} placeholder="เช่น 108/7 หรือ นงลักษณ์" />
@@ -318,18 +336,31 @@ function BillList({
             </Card>
           )}
 
-          {bills.length === 0 ? (
+          {scoped.length === 0 ? (
             <Card>
-              <EmptyState
-                icon="receipt_long"
-                title="ยังไม่มีบิลเดือนนี้"
-                description="เริ่มสร้างบิลทั้งหอจากการกรอกเลขมิเตอร์ของทุกห้องในครั้งเดียว"
-                action={
-                  <Button variant="primary" icon="add" onClick={onCreate}>
-                    สร้างบิลเดือนนี้
-                  </Button>
-                }
-              />
+              {roomFilter === "" ? (
+                <EmptyState
+                  icon="receipt_long"
+                  title="ยังไม่มีบิลเดือนนี้"
+                  description="เริ่มสร้างบิลทั้งหอจากการกรอกเลขมิเตอร์ของทุกห้องในครั้งเดียว"
+                  action={
+                    <Button variant="primary" icon="add" onClick={onCreate}>
+                      สร้างบิลเดือนนี้
+                    </Button>
+                  }
+                />
+              ) : (
+                <EmptyState
+                  icon="receipt_long"
+                  title={`ห้อง ${roomFilter} ยังไม่มีบิลในรอบนี้`}
+                  description="ลองเปลี่ยนรอบบิลด้านบน หรือกลับไปดูบิลทั้งหอ"
+                  action={
+                    <Button variant="secondary" icon="filter_alt_off" onClick={onClearRoom}>
+                      ดูบิลทั้งหอ
+                    </Button>
+                  }
+                />
+              )}
             </Card>
           ) : (
             <>
@@ -400,8 +431,18 @@ function BillList({
 }
 
 export function BillsPage({ view }: PageProps) {
-  const [periods] = useState<string[]>(() => recentPeriods(monthCount));
-  const [period, setPeriod] = useState<string>(() => periods[0] ?? "");
+  const [focus] = useState<BillsFocus | null>(() => billsFocusOf(window.location.hash));
+  const [periods] = useState<string[]>(() => {
+    const list = recentPeriods(monthCount);
+
+    if (focus !== null && focus.period !== "" && !list.includes(focus.period)) {
+      return [...list, focus.period].sort().reverse();
+    }
+
+    return list;
+  });
+  const [period, setPeriod] = useState<string>(() => (focus !== null && focus.period !== "" ? focus.period : periods[0] ?? ""));
+  const [roomFilter, setRoomFilter] = useState<string>(() => focus?.roomNumber ?? "");
   const [bills, setBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -515,6 +556,10 @@ export function BillsPage({ view }: PageProps) {
     window.location.hash = hash;
   };
 
+  const replaceFocusHash = useCallback((roomNumber: string, nextPeriod: string) => {
+    window.history.replaceState(null, "", roomNumber === "" ? "#bills" : billsFocusHash({ roomNumber, period: nextPeriod }));
+  }, []);
+
   const selectedBill = bills.find((bill) => bill.id === selectedId) ?? null;
   const menuBill = bills.find((bill) => bill.id === menuBillId) ?? null;
 
@@ -566,8 +611,10 @@ export function BillsPage({ view }: PageProps) {
       });
   };
 
+  const scopedBills = roomFilter === "" ? bills : bills.filter((bill) => bill.roomNumber === roomFilter);
+
   const handleSendAll = () => {
-    runBulkSend();
+    runBulkSend(roomFilter === "" ? undefined : scopedBills.map((bill) => bill.id));
   };
 
   const handleRetryFailed = () => {
@@ -578,8 +625,8 @@ export function BillsPage({ view }: PageProps) {
     runBulkSend(sendResult.failedIds);
   };
 
-  const linkedBills = connectedIds === null ? null : bills.filter((bill) => connectedIds.has(bill.tenantId));
-  const unlinkedBills = connectedIds === null ? null : bills.filter((bill) => !connectedIds.has(bill.tenantId));
+  const linkedBills = connectedIds === null ? null : scopedBills.filter((bill) => connectedIds.has(bill.tenantId));
+  const unlinkedBills = connectedIds === null ? null : scopedBills.filter((bill) => !connectedIds.has(bill.tenantId));
 
   if (view === "create") {
     return (
@@ -663,8 +710,16 @@ export function BillsPage({ view }: PageProps) {
         periods={periods}
         connectedIds={connectedIds}
         statusFilter={statusFilter}
-        onPeriodChange={setPeriod}
+        roomFilter={roomFilter}
+        onPeriodChange={(value) => {
+          setPeriod(value);
+          replaceFocusHash(roomFilter, value);
+        }}
         onStatusFilterChange={setStatusFilter}
+        onClearRoom={() => {
+          setRoomFilter("");
+          replaceFocusHash("", period);
+        }}
         onOpen={(bill) => {
           setSelectedId(bill.id);
           go("#bills/detail");
@@ -705,14 +760,15 @@ export function BillsPage({ view }: PageProps) {
             >
               ยกเลิก
             </Button>
-            <Button variant="primary" icon="send" disabled={bulkSending || bills.length === 0} onClick={handleSendAll}>
-              {bulkSending ? "กำลังส่งบิล" : `ส่งบิล ${bills.length} ใบ`}
+            <Button variant="primary" icon="send" disabled={bulkSending || scopedBills.length === 0} onClick={handleSendAll}>
+              {bulkSending ? "กำลังส่งบิล" : `ส่งบิล ${scopedBills.length} ใบ`}
             </Button>
           </div>
         }
       >
         <div className="grid gap-2 text-sm">
           <p className="text-steel">ระบบจะส่งบิลของเดือนนี้ให้ผู้เช่าที่เชื่อม LINE แล้ว และส่งสรุปยอดให้เจ้าของทาง LINE</p>
+          {roomFilter !== "" && <p className="text-charcoal">{`ส่งเฉพาะบิลของห้อง ${roomFilter}`}</p>}
           {linkedBills !== null && <p className="text-charcoal">{`จะส่งถึง ${linkedBills.length} ห้อง`}</p>}
           {unlinkedBills !== null && unlinkedBills.length > 0 && (
             <p className="text-fog">

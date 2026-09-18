@@ -57,7 +57,8 @@ function findRoute(id: RouteId) {
 }
 
 function parseRoute(hash: string): ParsedRoute {
-  const [routePart = "", viewPart = ""] = hash.replace(/^#/, "").split("/");
+  const [pathPart = ""] = hash.replace(/^#/, "").split("?");
+  const [routePart = "", viewPart = ""] = pathPart.split("/");
   const match = routeList.find((item) => item.id === routePart);
 
   if (match === undefined) {
@@ -367,7 +368,7 @@ function Shell() {
             {searchPanelOpen && (
               <div
                 id="topbar-search-results"
-                className="absolute left-0 right-0 top-[calc(100%+6px)] z-40 overflow-hidden rounded-xl border border-ash bg-canvas-white py-1"
+                className="absolute left-0 right-0 top-[calc(100%+6px)] z-40 overflow-hidden rounded-xl border border-ash bg-canvas-white py-1 shadow-sm"
               >
                 {jumpResults.length === 0 ? (
                   <p className="px-3 py-2 text-sm text-steel">ไม่พบห้องหรือผู้เช่าที่ตรงกับคำค้น</p>

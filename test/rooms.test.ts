@@ -1,5 +1,5 @@
-import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { SELF, env } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
 
 interface ChargePayload {
   name: string;
@@ -31,6 +31,30 @@ interface RoomBody {
   room: RoomPayload;
 }
 
+interface BillPayload {
+  id: string;
+  roomId: string;
+  roomNumber: string;
+  period: string;
+  status: "paid" | "unpaid";
+}
+
+interface RoomStatPayload {
+  id: string;
+  roomNumber: string;
+  status: string;
+  hasPendingSlip: boolean;
+  lastBilledPeriod: string | null;
+  behindPeriods: number;
+}
+
+interface DashboardPayload {
+  ok: boolean;
+  period: string;
+  latestBilledPeriod: string | null;
+  rooms: RoomStatPayload[];
+}
+
 interface ErrorBody {
   ok: boolean;
   error: { code: string; message: string; field?: string };
@@ -39,6 +63,7 @@ interface ErrorBody {
 const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
 const billsUrl = "https://dorm.test/api/bills";
+const statsUrl = "https://dorm.test/api/stats/dashboard";
 
 function createRoom(payload: Record<string, unknown>): Promise<Response> {
   return SELF.fetch(roomsUrl, {
@@ -66,7 +91,7 @@ async function occupyRoom(roomId: string, fullName: string): Promise<void> {
   expect(response.status).toBe(201);
 }
 
-async function generateFlatBill(roomId: string, period: string, waterCurrent: number, electricCurrent: number, amount: number): Promise<void> {
+async function generateFlatBill(roomId: string, period: string, waterCurrent: number, electricCurrent: number, amount: number): Promise<BillPayload> {
   const response = await SELF.fetch(`${billsUrl}/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -74,6 +99,59 @@ async function generateFlatBill(roomId: string, period: string, waterCurrent: nu
   });
 
   expect(response.status).toBe(201);
+
+  const body = await response.json<{ ok: boolean; bills: BillPayload[] }>();
+  const bill = body.bills[0];
+
+  if (bill === undefined) {
+    throw new Error("expected a generated bill");
+  }
+
+  return bill;
+}
+
+async function markBillPaid(id: string): Promise<void> {
+  const response = await SELF.fetch(`${billsUrl}/${id}/mark-paid`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: "transfer" }),
+  });
+
+  expect(response.status).toBe(200);
+}
+
+async function dashboardOf(period: string): Promise<DashboardPayload> {
+  const response = await SELF.fetch(`${statsUrl}?period=${period}`);
+  expect(response.status).toBe(200);
+  return await response.json<DashboardPayload>();
+}
+
+function roomStat(payload: DashboardPayload, roomNumber: string): RoomStatPayload {
+  const found = payload.rooms.find((room) => room.roomNumber === roomNumber);
+
+  if (found === undefined) {
+    throw new Error(`expected a dashboard row for room ${roomNumber}`);
+  }
+
+  return found;
+}
+
+async function occupiedRoom(roomNumber: string): Promise<RoomPayload> {
+  const response = await createRoom({
+    roomNumber,
+    rent: 3500,
+    waterRate: 18,
+    electricMode: "flat",
+    waterMeterInit: 0,
+    electricMeterInit: 0,
+  });
+
+  expect(response.status).toBe(201);
+
+  const room = (await response.json<RoomBody>()).room;
+  await occupyRoom(room.id, `ผู้เช่า ${roomNumber}`);
+
+  return room;
 }
 
 async function listedRoom(id: string): Promise<RoomPayload | undefined> {
@@ -427,5 +505,67 @@ describe("room recurring charges and latest electric reading", () => {
     const patchedRoom = (await patched.json<RoomBody>()).room;
     expect(patchedRoom.lastElectricPeriod).toBe("2026-09");
     expect(patchedRoom.lastElectricAmount).toBe(720);
+  });
+});
+
+describe("room billing state for a period", () => {
+  beforeEach(async () => {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM bill_charges"),
+      env.DB.prepare("DELETE FROM room_charges"),
+      env.DB.prepare("DELETE FROM slips"),
+      env.DB.prepare("DELETE FROM bills"),
+      env.DB.prepare("DELETE FROM tenants"),
+      env.DB.prepare("DELETE FROM rooms"),
+    ]);
+  });
+
+  it("reports paid for a paid bill, unbilled for a missing bill, behind for an older last bill, and never behind when vacant", async () => {
+    const paidRoom = await occupiedRoom("K101");
+    await occupiedRoom("K102");
+    const behindRoom = await occupiedRoom("K103");
+    const vacantRoom = (await (await createRoom({ roomNumber: "K104", rent: 3200, waterMeterInit: 0, electricMeterInit: 0 })).json<RoomBody>())
+      .room;
+
+    expect(vacantRoom.status).toBe("vacant");
+
+    const augustBill = await generateFlatBill(paidRoom.id, "2026-08", 10, 470, 600);
+    await markBillPaid(augustBill.id);
+    await generateFlatBill(behindRoom.id, "2026-07", 20, 480, 700);
+
+    const payload = await dashboardOf("2026-08");
+
+    expect(payload.latestBilledPeriod).toBe("2026-08");
+
+    const paidStat = roomStat(payload, "K101");
+    expect(paidStat.status).toBe("paid");
+    expect(paidStat.lastBilledPeriod).toBe("2026-08");
+    expect(paidStat.behindPeriods).toBe(0);
+
+    const unbilledStat = roomStat(payload, "K102");
+    expect(unbilledStat.status).toBe("unbilled");
+    expect(unbilledStat.status).not.toBe("unpaid");
+    expect(unbilledStat.behindPeriods).toBe(0);
+
+    const behindStat = roomStat(payload, "K103");
+    expect(behindStat.status).toBe("unbilled");
+    expect(behindStat.lastBilledPeriod).toBe("2026-07");
+    expect(behindStat.behindPeriods).toBe(1);
+
+    const vacantStat = roomStat(payload, "K104");
+    expect(vacantStat.status).toBe("vacant");
+    expect(vacantStat.behindPeriods).toBe(0);
+  });
+
+  it("reads every room as unbilled for a period that has no bills yet, without borrowing an older period", async () => {
+    const room = await occupiedRoom("K111");
+    await generateFlatBill(room.id, "2026-08", 10, 470, 600);
+
+    const payload = await dashboardOf("2026-09");
+
+    expect(payload.latestBilledPeriod).toBe("2026-08");
+    expect(roomStat(payload, "K111").status).toBe("unbilled");
+    expect(roomStat(payload, "K111").lastBilledPeriod).toBe("2026-08");
+    expect(roomStat(payload, "K111").behindPeriods).toBe(0);
   });
 });

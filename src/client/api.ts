@@ -355,6 +355,46 @@ export async function fetchBills(period: string): Promise<Bill[]> {
   return body.bills;
 }
 
+export interface BillsFocus {
+  roomNumber: string;
+  period: string;
+}
+
+export function billsFocusTarget(
+  room: { roomNumber: string; lastElectricPeriod: string | null },
+  fallbackPeriod: string | null,
+): BillsFocus {
+  return { roomNumber: room.roomNumber, period: room.lastElectricPeriod ?? fallbackPeriod ?? "" };
+}
+
+export function billsFocusHash(focus: BillsFocus): string {
+  const params = new URLSearchParams();
+  params.set("room", focus.roomNumber);
+
+  if (focus.period !== "") {
+    params.set("period", focus.period);
+  }
+
+  return `#bills?${params.toString()}`;
+}
+
+export function billsFocusOf(hash: string): BillsFocus | null {
+  const [routePart = "", searchPart = ""] = hash.replace(/^#/, "").split("?");
+
+  if (routePart !== "bills" || searchPart === "") {
+    return null;
+  }
+
+  const params = new URLSearchParams(searchPart);
+  const roomNumber = params.get("room") ?? "";
+
+  if (roomNumber === "") {
+    return null;
+  }
+
+  return { roomNumber, period: params.get("period") ?? "" };
+}
+
 export async function fetchMeterSheet(period: string): Promise<MeterSheetRow[]> {
   const body = await apiGet<{ ok: true; period: string; rows: MeterSheetRow[] }>(
     `/api/bills/meter-sheet?period=${encodeURIComponent(period)}`,
@@ -468,7 +508,8 @@ export async function resolveSlip(id: string, action: SlipResolveAction, billId?
 export const reviewQueueChangedEvent = "wangchan:review-queue-changed";
 
 export function announceReviewQueueChanged(): void {
-  window.dispatchEvent(new Event(reviewQueueChangedEvent));
+  const target = globalThis as unknown as EventTarget;
+  target.dispatchEvent(new Event(reviewQueueChangedEvent));
 }
 
 export interface DashboardKpis {
@@ -506,10 +547,13 @@ export interface DashboardRoom {
   roomNumber: string;
   status: DashboardRoomStatus;
   hasPendingSlip: boolean;
+  lastBilledPeriod: string | null;
+  behindPeriods: number;
 }
 
 export interface DashboardStats {
   period: string;
+  latestBilledPeriod: string | null;
   kpis: DashboardKpis;
   revenue: RevenuePoint[];
   unpaidBills: UnpaidBillStat[];
@@ -523,6 +567,7 @@ export async function fetchDashboardStats(period: string): Promise<DashboardStat
 
   return {
     period: body.period,
+    latestBilledPeriod: body.latestBilledPeriod,
     kpis: body.kpis,
     revenue: body.revenue,
     unpaidBills: body.unpaidBills,

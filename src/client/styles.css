@@ -48,6 +48,9 @@
   --radius-panel: 16px;
   --radius-pill: 9999px;
 
+  --shadow-subtle: rgba(0, 0, 0, 0.05) 0 1px 2px;
+  --shadow-sm: rgba(0, 0, 0, 0.1) 0 4px 6px -1px, rgba(0, 0, 0, 0.1) 0 2px 4px -2px;
+
   --font-sans: Inter, "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -180,7 +183,7 @@
   .btn-primary {
     background-color: var(--color-primary-action-fill);
     color: var(--color-canvas-white);
-    box-shadow: rgba(0, 0, 0, 0.05) 0 1px 2px;
+    box-shadow: var(--shadow-subtle);
   }
 
   .btn-primary:hover {
@@ -369,6 +372,7 @@
     border: 1px solid var(--color-ash);
     border-radius: var(--radius-card);
     background-color: var(--color-canvas-white);
+    box-shadow: var(--shadow-sm);
   }
 
   .row-menu-item {
@@ -434,6 +438,7 @@
   }
 
   .table-wrap {
+    position: relative;
     overflow-x: auto;
   }
 
@@ -504,7 +509,7 @@
     background-color: var(--color-charcoal);
     color: var(--color-canvas-white);
     font-size: 14px;
-    box-shadow: rgba(15, 23, 42, 0.18) 0 12px 32px;
+    box-shadow: var(--shadow-sm);
     transform: translateX(-50%);
   }
 
@@ -522,7 +527,7 @@
   }
 
   dialog::backdrop {
-    background-color: rgba(15, 23, 42, 0.45);
+    background-color: rgba(10, 10, 10, 0.45);
   }
 
   .dialog-panel {
@@ -531,7 +536,7 @@
     overflow-y: auto;
     border-radius: var(--radius-panel);
     background-color: var(--color-canvas-white);
-    box-shadow: rgba(15, 23, 42, 0.18) 0 12px 32px;
+    box-shadow: var(--shadow-sm);
   }
 
   dialog.drawer {
@@ -544,7 +549,7 @@
     max-height: none;
     border-radius: var(--radius-panel) 0 0 var(--radius-panel);
     background-color: var(--color-canvas-white);
-    box-shadow: rgba(15, 23, 42, 0.18) 0 12px 32px;
+    box-shadow: var(--shadow-sm);
     overflow-y: auto;
   }
 
@@ -569,7 +574,7 @@
     max-width: 100%;
     border-radius: var(--radius-panel) var(--radius-panel) 0 0;
     background-color: var(--color-canvas-white);
-    box-shadow: rgba(15, 23, 42, 0.18) 0 12px 32px;
+    box-shadow: var(--shadow-sm);
     padding-bottom: env(safe-area-inset-bottom);
   }
 

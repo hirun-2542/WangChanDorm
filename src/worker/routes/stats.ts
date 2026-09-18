@@ -15,6 +15,7 @@ interface RoomStatsRow {
   tenant_id: string | null;
   bill_id: string | null;
   bill_status: string | null;
+  last_billed_period: string | null;
 }
 
 interface BillStatsRow {
@@ -69,9 +70,15 @@ interface RoomStat {
   roomNumber: string;
   status: RoomBillStatus;
   hasPendingSlip: boolean;
+  lastBilledPeriod: string | null;
+  behindPeriods: number;
 }
 
-const roomsSql = `SELECT r.id, r.room_number, t.id AS tenant_id, b.id AS bill_id, b.status AS bill_status FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current' LEFT JOIN bills b ON b.room_id = r.id AND b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`;
+const lastBilledPeriodSql = "(SELECT b2.period FROM bills b2 WHERE b2.room_id = r.id ORDER BY b2.period DESC LIMIT 1)";
+
+const roomsSql = `SELECT r.id, r.room_number, t.id AS tenant_id, b.id AS bill_id, b.status AS bill_status, ${lastBilledPeriodSql} AS last_billed_period FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current' LEFT JOIN bills b ON b.room_id = r.id AND b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`;
+
+const latestBilledPeriodSql = "SELECT period FROM bills ORDER BY period DESC LIMIT 1";
 
 const billsSql = `SELECT b.id, r.room_number, t.full_name AS tenant_name, b.status, b.total, b.sent_at, b.created_at FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.period = ? ORDER BY b.created_at ASC, ${roomNumberOrder("r.room_number")}`;
 
@@ -95,6 +102,13 @@ function shiftPeriod(period: string, delta: number): string {
   return `${String(shiftedYear).padStart(4, "0")}-${String(shiftedMonth).padStart(2, "0")}`;
 }
 
+function monthsBetween(from: string, to: string): number {
+  const fromIndex = Number(from.slice(0, 4)) * 12 + Number(from.slice(5, 7));
+  const toIndex = Number(to.slice(0, 4)) * 12 + Number(to.slice(5, 7));
+
+  return toIndex - fromIndex;
+}
+
 stats.get("/dashboard", async (c) => {
   const period = c.req.query("period") ?? "";
 
@@ -105,12 +119,15 @@ stats.get("/dashboard", async (c) => {
   try {
     const revenueStart = shiftPeriod(period, -(revenueMonths - 1));
 
-    const [roomResult, billResult, slipResult, revenueResult] = await Promise.all([
+    const [roomResult, billResult, slipResult, revenueResult, latestResult] = await Promise.all([
       c.env.DB.prepare(roomsSql).bind(period).all<RoomStatsRow>(),
       c.env.DB.prepare(billsSql).bind(period).all<BillStatsRow>(),
       c.env.DB.prepare(pendingSlipsSql).bind(period).all<PendingSlipRow>(),
       c.env.DB.prepare(revenueSql).bind(revenueStart, period).all<RevenueRow>(),
+      c.env.DB.prepare(latestBilledPeriodSql).all<{ period: string }>(),
     ]);
+
+    const latestBilledPeriod = latestResult.results[0]?.period ?? null;
 
     const pendingSlipBillIds = new Set(
       slipResult.results.map((row) => row.bill_id).filter((id): id is string => id !== null),
@@ -165,11 +182,23 @@ stats.get("/dashboard", async (c) => {
         status = "paid";
       }
 
+      let behindPeriods = 0;
+
+      if (status !== "vacant" && room.last_billed_period !== null && latestBilledPeriod !== null) {
+        const gap = monthsBetween(room.last_billed_period, latestBilledPeriod);
+
+        if (gap > 0) {
+          behindPeriods = gap;
+        }
+      }
+
       return {
         id: room.id,
         roomNumber: room.room_number,
         status,
         hasPendingSlip: room.bill_id !== null && pendingSlipBillIds.has(room.bill_id),
+        lastBilledPeriod: room.last_billed_period,
+        behindPeriods,
       };
     });
 
@@ -194,7 +223,7 @@ stats.get("/dashboard", async (c) => {
       paidCount,
     };
 
-    return c.json({ ok: true, period, kpis, revenue, unpaidBills, rooms }, 200);
+    return c.json({ ok: true, period, latestBilledPeriod, kpis, revenue, unpaidBills, rooms }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "load dashboard stats failed", period, error: detail }));

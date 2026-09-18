@@ -69,11 +69,14 @@ interface RoomStatPayload {
   roomNumber: string;
   status: string;
   hasPendingSlip: boolean;
+  lastBilledPeriod: string | null;
+  behindPeriods: number;
 }
 
 interface DashboardPayload {
   ok: boolean;
   period: string;
+  latestBilledPeriod: string | null;
   kpis: DashboardKpis;
   revenue: RevenuePoint[];
   unpaidBills: UnpaidBillPayload[];
@@ -357,6 +360,61 @@ describe("GET /api/stats/dashboard", () => {
     expect(octoberStatus.get("P142")).toBe("unbilled");
     expect(octoberStatus.get("P143")).toBe("vacant");
     expect(octoberPayload.kpis.unbilledRooms).toBe(1);
+  });
+
+  it("reports the newest billed period and how many periods each occupied room is behind it", async () => {
+    await putRates(18, 7);
+    const behind = await occupiedRoom("Q201", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    const current = await occupiedRoom("Q202", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    await occupiedRoom("Q203", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    await newRoom({ roomNumber: "Q204", rent: 3200, waterMeterInit: 0, electricMeterInit: 0 });
+
+    await generateOne("2026-07", behind.room.id, { waterCurrent: 5, electricCurrent: 5 });
+    await generateOne("2026-08", current.room.id, { waterCurrent: 5, electricCurrent: 5 });
+
+    const payload = await dashboard("2026-08");
+
+    expect(payload.latestBilledPeriod).toBe("2026-08");
+
+    const behindStat = pick(payload.rooms, (room) => room.roomNumber === "Q201");
+    expect(behindStat.status).toBe("unbilled");
+    expect(behindStat.lastBilledPeriod).toBe("2026-07");
+    expect(behindStat.behindPeriods).toBe(1);
+
+    const currentStat = pick(payload.rooms, (room) => room.roomNumber === "Q202");
+    expect(currentStat.status).toBe("unpaid");
+    expect(currentStat.lastBilledPeriod).toBe("2026-08");
+    expect(currentStat.behindPeriods).toBe(0);
+
+    const neverStat = pick(payload.rooms, (room) => room.roomNumber === "Q203");
+    expect(neverStat.status).toBe("unbilled");
+    expect(neverStat.lastBilledPeriod).toBeNull();
+    expect(neverStat.behindPeriods).toBe(0);
+
+    const vacantStat = pick(payload.rooms, (room) => room.roomNumber === "Q204");
+    expect(vacantStat.status).toBe("vacant");
+    expect(vacantStat.behindPeriods).toBe(0);
+  });
+
+  it("never flags a vacant room as behind even when its last bill predates the newest period", async () => {
+    await putRates(18, 7);
+    const movedOut = await occupiedRoom("Q211", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    const stays = await occupiedRoom("Q212", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+
+    await generateOne("2026-07", movedOut.room.id, { waterCurrent: 5, electricCurrent: 5 });
+    await generateOne("2026-08", stays.room.id, { waterCurrent: 5, electricCurrent: 5 });
+
+    const checkout = await post(`${tenantsUrl}/${movedOut.tenant.id}/checkout`, { checkOutDate: "2026-08-31" });
+    expect(checkout.status).toBe(200);
+
+    const payload = await dashboard("2026-08");
+
+    expect(payload.latestBilledPeriod).toBe("2026-08");
+
+    const stat = pick(payload.rooms, (room) => room.roomNumber === "Q211");
+    expect(stat.status).toBe("vacant");
+    expect(stat.lastBilledPeriod).toBe("2026-07");
+    expect(stat.behindPeriods).toBe(0);
   });
 
   it("reports every occupied room as unbilled for a month with no bills", async () => {
