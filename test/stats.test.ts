@@ -161,7 +161,7 @@ async function linkTenant(tenantId: string, lineUserId: string): Promise<void> {
 
 async function insertPendingSlip(billId: string, lineUserId: string, imageKey: string): Promise<void> {
   await env.DB.prepare(
-    "INSERT INTO slips (id, bill_id, line_user_id, image_key, easyslip_result, amount, trans_ref, bill_total, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review')",
+    "INSERT INTO slips (id, bill_id, line_user_id, image_key, verify_result, amount, trans_ref, bill_total, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review')",
   )
     .bind(
       crypto.randomUUID(),

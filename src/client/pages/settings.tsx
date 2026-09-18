@@ -449,9 +449,9 @@ export function SettingsPage() {
                     configured={settings.integrations.lineConfigured}
                   />
                   <IntegrationRow
-                    name="EasySlip"
+                    name="SlipOK"
                     description="ตรวจสลิปอัตโนมัติเมื่อผู้เช่าส่งสลิปเข้ามา"
-                    configured={settings.integrations.easySlipConfigured}
+                    configured={settings.integrations.slipOkConfigured}
                   />
                 </ul>
                 <p className="mt-3 text-xs text-fog">ระบบเก็บคีย์การเชื่อมต่อไว้ฝั่งเซิร์ฟเวอร์ จึงไม่แสดงคีย์ในหน้านี้</p>

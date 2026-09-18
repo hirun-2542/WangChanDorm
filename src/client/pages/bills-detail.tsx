@@ -46,7 +46,7 @@ function paymentHistory(bill: Bill, includeManualClose: boolean): PaymentRecord[
 }
 
 function slipTransferLabel(slip: Slip): string {
-  const when = slip.transferAt ?? slip.easyslip.date;
+  const when = slip.transferAt ?? slip.verify.date;
 
   return when === null ? "ไม่พบเวลาที่โอน" : `โอนเมื่อ ${stampLabel(when)}`;
 }

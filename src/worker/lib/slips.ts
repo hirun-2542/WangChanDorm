@@ -1,5 +1,5 @@
 import { failureDetail, fetchMessageContent, logLineFailure, pushMessage, replyMessage } from "../line/api";
-import { type EasySlipResult, verifySlip } from "../line/easyslip";
+import { type SlipOkResult, verifySlip } from "../line/slipok";
 import {
   ownerSlipPendingMessage,
   slipDownloadFailedMessage,
@@ -34,11 +34,11 @@ const emptySlipResult: StoredSlipResult = {
 
 const insertSlipSql = "INSERT INTO slips (id, line_user_id, image_key, status) VALUES (?, ?, ?, 'pending_review')";
 
-const updateSlipSql = "UPDATE slips SET status = ?, bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, easyslip_result = ? WHERE id = ?";
+const updateSlipSql = "UPDATE slips SET status = ?, bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, verify_result = ? WHERE id = ?";
 
 const closeBillSql = "UPDATE bills SET status = 'paid', paid_at = ?, paid_method = 'transfer' WHERE id = ? AND status = 'unpaid'";
 
-const matchSlipSql = "UPDATE slips SET status = 'matched', bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, easyslip_result = ? WHERE id = ?";
+const matchSlipSql = "UPDATE slips SET status = 'matched', bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, verify_result = ? WHERE id = ?";
 
 interface SlipSenderRow {
   id: string;
@@ -153,7 +153,7 @@ function toSatang(amount: number): number {
   return Math.round(amount * 100);
 }
 
-function slipResultJson(result: EasySlipResult, reason: SlipReason | null): string {
+function slipResultJson(result: SlipOkResult, reason: SlipReason | null): string {
   const payload: Record<string, unknown> = {
     verified: result.verified,
     amount: result.amount,
@@ -192,7 +192,7 @@ async function notifyOwnerOfSlipInReview(env: Env, slipId: string, alert: SlipOw
 async function keepSlipForReview(
   env: Env,
   slipId: string,
-  result: EasySlipResult,
+  result: SlipOkResult,
   lineUserId: string,
   reason: SlipReason,
   bill: UnpaidBillRow | null,
@@ -215,14 +215,12 @@ async function keepSlipForReview(
 async function rejectDuplicateSlip(
   env: Env,
   slipId: string,
-  result: EasySlipResult,
-  amount: number,
-  transRef: string,
+  result: SlipOkResult,
   lineUserId: string,
   usedSlipId: string | null,
 ): Promise<void> {
   await env.DB.prepare(updateSlipSql)
-    .bind("rejected", null, null, amount, transRef, slipResultJson(result, "duplicate_slip"), slipId)
+    .bind("rejected", null, null, result.amount, result.transRef, slipResultJson(result, "duplicate_slip"), slipId)
     .run();
 
   console.log(JSON.stringify({ message: "slip rejected as a duplicate transfer reference", slipId, lineUserId, usedSlipId }));
@@ -254,28 +252,41 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
   await env.SLIPS.put(imageKey, content.bytes, { httpMetadata: { contentType: content.contentType } });
   await env.DB.prepare(insertSlipSql).bind(slipId, userId, imageKey).run();
 
-  const result = await verifySlip(env, `${origin}/slips/${imageKey}`);
-  const amount = result.amount;
-  const transRef = result.transRef;
   const bill = await env.DB.prepare(
     "SELECT id, period, total FROM bills WHERE room_id = ? AND tenant_id = ? AND status = 'unpaid' ORDER BY period DESC LIMIT 1",
   )
     .bind(sender.room_id, sender.id)
     .first<UnpaidBillRow>();
 
-  if (!result.verified || amount === null || transRef === null || bill === null || toSatang(amount) !== toSatang(bill.total)) {
-    const reason: SlipReason = bill === null ? "no_unpaid_bill" : !result.verified || amount === null || transRef === null ? "not_verified" : "mismatch";
+  const result = await verifySlip(env, `${origin}/slips/${imageKey}`, bill?.total ?? null);
+  const amount = result.amount;
+  const transRef = result.transRef;
+
+  if (result.duplicate) {
+    const used = transRef === null
+      ? null
+      : await env.DB.prepare("SELECT id FROM slips WHERE trans_ref = ? AND status <> 'rejected' LIMIT 1")
+          .bind(transRef)
+          .first<{ id: string }>();
+    await rejectDuplicateSlip(env, slipId, result, userId, used?.id ?? null);
+    return;
+  }
+
+  if (!result.verified || amount === null || bill === null || toSatang(amount) !== toSatang(bill.total)) {
+    const reason: SlipReason = bill === null ? "no_unpaid_bill" : !result.verified || amount === null ? "not_verified" : "mismatch";
     await keepSlipForReview(env, slipId, result, userId, reason, bill, sender);
     return;
   }
 
-  const used = await env.DB.prepare("SELECT id FROM slips WHERE trans_ref = ? AND status <> 'rejected' LIMIT 1")
-    .bind(transRef)
-    .first<{ id: string }>();
+  if (transRef !== null) {
+    const used = await env.DB.prepare("SELECT id FROM slips WHERE trans_ref = ? AND status <> 'rejected' LIMIT 1")
+      .bind(transRef)
+      .first<{ id: string }>();
 
-  if (used !== null) {
-    await rejectDuplicateSlip(env, slipId, result, amount, transRef, userId, used.id);
-    return;
+    if (used !== null) {
+      await rejectDuplicateSlip(env, slipId, result, userId, used.id);
+      return;
+    }
   }
 
   try {
@@ -290,7 +301,7 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
     }
   } catch (error) {
     if (isUniqueViolation(error)) {
-      await rejectDuplicateSlip(env, slipId, result, amount, transRef, userId, null);
+      await rejectDuplicateSlip(env, slipId, result, userId, null);
       return;
     }
 

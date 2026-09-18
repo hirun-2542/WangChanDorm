@@ -12,7 +12,8 @@ const slipsUrl = "https://dorm.test/api/slips";
 const lineContentBase = "https://api-data.line.me/v2/bot/message";
 const linePushUrl = "https://api.line.me/v2/bot/message/push";
 const lineReplyUrl = "https://api.line.me/v2/bot/message/reply";
-const easySlipUrl = "https://api.easyslip.com/v2/verify/bank";
+const slipOkBranchId = "10275";
+const slipOkUrl = `https://api.slipok.com/api/line/apikey/${slipOkBranchId}`;
 
 const slipDate = "2026-09-03T10:15:00+07:00";
 const slipPaidAt = "2026-09-03T03:15:00.000Z";
@@ -69,7 +70,7 @@ interface SlipRow {
   bill_id: string | null;
   line_user_id: string;
   image_key: string;
-  easyslip_result: string | null;
+  verify_result: string | null;
   amount: number | null;
   trans_ref: string | null;
   bill_total: number | null;
@@ -100,7 +101,7 @@ interface QueueSlip {
   slipAmount: number | null;
   bill: QueueBill | null;
   verified: boolean;
-  easyslip: { verified: boolean; transRef: string | null; date: string | null };
+  verify: { verified: boolean; transRef: string | null; date: string | null };
   transferAt: string | null;
 }
 
@@ -109,6 +110,7 @@ interface OutboundCall {
   method: string;
   body: string;
   authorization: string;
+  xAuthorization: string;
 }
 
 interface LineMessage {
@@ -136,9 +138,9 @@ let imageStatus = 200;
 let imageContentType = "image/png";
 let imageBytes: Uint8Array = slipImageBytes;
 let imageContentLength: number | null = null;
-let easySlipStatus = 200;
-let easySlipBody: unknown = {};
-let beforeEasySlipResponse: (() => Promise<void>) | null = null;
+let slipOkStatus = 200;
+let slipOkBody: unknown = {};
+let beforeSlipOkResponse: (() => Promise<void>) | null = null;
 
 function first<T>(items: T[]): T {
   const [item] = items;
@@ -224,8 +226,8 @@ function downloadCalls(): OutboundCall[] {
   return outboundCalls.filter((call) => call.url.startsWith(lineContentBase));
 }
 
-function easySlipCalls(): OutboundCall[] {
-  return outboundCalls.filter((call) => call.url === easySlipUrl);
+function slipOkCalls(): OutboundCall[] {
+  return outboundCalls.filter((call) => call.url === slipOkUrl);
 }
 
 function pushTexts(): TextResult[] {
@@ -249,23 +251,17 @@ function replyTexts(): string[] {
     .map((call) => asJson<ReplyBody>(call.body).messages[0]?.text ?? "");
 }
 
-function verifiedBody(amount: number, transRef: string, date: string = slipDate): unknown {
+function verifiedBody(amount: number, transRef: string, date = "2026-09-03", time = "10:15"): unknown {
   return {
     success: true,
-    message: "Bank slip verified successfully",
     data: {
-      isDuplicate: false,
-      amountInSlip: amount,
-      rawSlip: {
-        payload: "0000000000000000000000000000000000000000",
-        transRef,
-        date,
-        countryCode: "TH",
-        amount: { amount, local: { amount, currency: "THB" } },
-        fee: 0,
-        sender: { bank: { id: "004", name: "กสิกรไทย", short: "KBANK" } },
-        receiver: { bank: { id: "014", name: "ไทยพาณิชย์", short: "SCB" } },
-      },
+      amount,
+      date,
+      time,
+      bank: "KBANK",
+      sender: "สมชาย ใจดี",
+      receiver: "หอพักวังจันทร์",
+      transRef,
     },
   };
 }
@@ -343,7 +339,7 @@ async function sendSlip(lineUserId: string, messageId: string): Promise<Response
 }
 
 function slipResultOf(slip: SlipRow): Record<string, unknown> {
-  return asJson<Record<string, unknown>>(slip.easyslip_result ?? "null");
+  return asJson<Record<string, unknown>>(slip.verify_result ?? "null");
 }
 
 function queueIds(slips: QueueSlip[]): string[] {
@@ -382,10 +378,11 @@ beforeEach(() => {
   imageContentType = "image/png";
   imageBytes = slipImageBytes;
   imageContentLength = null;
-  easySlipStatus = 200;
-  easySlipBody = {};
-  beforeEasySlipResponse = null;
-  env.EASYSLIP_API_KEY = "test-easyslip-api-key";
+  slipOkStatus = 200;
+  slipOkBody = {};
+  beforeSlipOkResponse = null;
+  env.SLIPOK_API_KEY = "test-slipok-api-key";
+  env.SLIPOK_BRANCH_ID = slipOkBranchId;
 
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -396,6 +393,7 @@ beforeEach(() => {
       method: init?.method ?? "GET",
       body: typeof init?.body === "string" ? init.body : "",
       authorization: headers.get("authorization") ?? "",
+      xAuthorization: headers.get("x-authorization") ?? "",
     });
 
     if (url.startsWith(`${lineContentBase}/`)) {
@@ -412,12 +410,12 @@ beforeEach(() => {
       return new Response(imageBytes, { status: 200, headers: responseHeaders });
     }
 
-    if (url === easySlipUrl) {
-      if (beforeEasySlipResponse !== null) {
-        await beforeEasySlipResponse();
+    if (url === slipOkUrl) {
+      if (beforeSlipOkResponse !== null) {
+        await beforeSlipOkResponse();
       }
 
-      return new Response(JSON.stringify(easySlipBody), { status: easySlipStatus, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(slipOkBody), { status: slipOkStatus, headers: { "content-type": "application/json" } });
     }
 
     return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
@@ -425,7 +423,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  env.EASYSLIP_API_KEY = "test-easyslip-api-key";
+  env.SLIPOK_API_KEY = "test-slipok-api-key";
+  env.SLIPOK_BRANCH_ID = slipOkBranchId;
   vi.restoreAllMocks();
 });
 
@@ -440,7 +439,7 @@ describe("POST /webhook/line image events", () => {
     expect(bill.total).toBe(3550);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0001");
+    slipOkBody = verifiedBody(3550, "TR-0001");
 
     const response = await sendSlip("U-slip-1", "msg-slip-1");
     expect(response.status).toBe(200);
@@ -469,12 +468,15 @@ describe("POST /webhook/line image events", () => {
     expect(stored.headers.get("cache-control")).toBe("public, max-age=86400");
     expect(new Uint8Array(await stored.arrayBuffer())).toEqual(slipImageBytes);
 
-    const verifies = easySlipCalls();
+    const verifies = slipOkCalls();
     expect(verifies).toHaveLength(1);
     expect(verifies[0]?.method).toBe("POST");
-    expect(verifies[0]?.authorization).toBe(`Bearer ${env.EASYSLIP_API_KEY}`);
+    expect(verifies[0]?.url).toBe(slipOkUrl);
+    expect(verifies[0]?.xAuthorization).toBe(env.SLIPOK_API_KEY);
     expect(asJson<Record<string, unknown>>(verifies[0]?.body ?? "")).toEqual({
       url: `https://dorm.test/slips/${slip.image_key}`,
+      log: false,
+      amount: 3550,
     });
 
     const paid = await billOf("2026-09", bill.id);
@@ -488,6 +490,7 @@ describe("POST /webhook/line image events", () => {
     expect(result.verified).toBe(true);
     expect(result.transRef).toBe("TR-0001");
     expect(result.amount).toBe(3550);
+    expect(result.date).toBe(slipDate);
   });
 
   it("closes a bill that carries extra charges using the bill total", async () => {
@@ -507,7 +510,7 @@ describe("POST /webhook/line image events", () => {
     expect(bill.total).toBe(3790);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3790, "TR-0002");
+    slipOkBody = verifiedBody(3790, "TR-0002");
 
     const response = await sendSlip("U-slip-2", "msg-slip-2");
     expect(response.status).toBe(200);
@@ -533,7 +536,7 @@ describe("POST /webhook/line image events", () => {
     expect(bill.total).toBe(4490);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(4490, "TR-0003");
+    slipOkBody = verifiedBody(4490, "TR-0003");
 
     const response = await sendSlip("U-slip-3", "msg-slip-3");
     expect(response.status).toBe(200);
@@ -553,7 +556,7 @@ describe("POST /webhook/line image events", () => {
     expect(bill.total).toBe(3550);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-0004");
+    slipOkBody = verifiedBody(3550.5, "TR-0004");
 
     const response = await sendSlip("U-slip-4", "msg-slip-4");
     expect(response.status).toBe(200);
@@ -585,8 +588,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipStatus = 404;
-    easySlipBody = { success: false, error: { code: "SLIP_NOT_FOUND", message: "The slip could not be found or is invalid" } };
+    slipOkBody = { success: false, code: 1006, message: "รูปแบบไฟล์รูปภาพไม่ถูกต้อง" };
 
     const response = await sendSlip("U-slip-5", "msg-slip-5");
     expect(response.status).toBe(200);
@@ -607,22 +609,72 @@ describe("POST /webhook/line image events", () => {
     expect(pushTextsFor("U-slip-5")).toEqual([pendingReviewText]);
   });
 
-  it("never treats a verified payload without a transfer reference as a match", async () => {
+  it("keeps the slip for review when SlipOK finds no QR code in the image", async () => {
     await putRates(18, 7);
-    const room = await newRoom({ roomNumber: "S106", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
-    await newTenant(room.id, "สมนึก ไม่มีเลขอ้างอิง");
-    await linkTenantByRoomNumber("S106", "U-slip-6", "สมนึก ไม่มีเลขอ้างอิง");
+    const room = await newRoom({ roomNumber: "S119", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมนึก ไม่เจอคิวอาร์");
+    await linkTenantByRoomNumber("S119", "U-slip-19", "สมนึก ไม่เจอคิวอาร์");
 
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = { success: true, data: { amountInSlip: 3550 } };
+    slipOkBody = { success: false, code: 1007, message: "ไม่พบ QR ในรูปภาพ" };
+
+    const response = await sendSlip("U-slip-19", "msg-slip-19");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-19");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.amount).toBeNull();
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slipResultOf(slip).verified).toBe(false);
+    expect(slipResultOf(slip).reason).toBe("not_verified");
+    expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
+    expect(pushTextsFor("U-slip-19")).toEqual([pendingReviewText]);
+  });
+
+  it("keeps the slip for review when the bank is temporarily unavailable", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S120", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหญิง ธนาคารไม่ว่าง");
+    await linkTenantByRoomNumber("S120", "U-slip-20", "สมหญิง ธนาคารไม่ว่าง");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkStatus = 503;
+    slipOkBody = { success: false, code: 1009, message: "ธนาคารไม่พร้อมให้บริการชั่วคราว" };
+
+    const response = await sendSlip("U-slip-20", "msg-slip-20");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-20");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slip.bill_total).toBe(3550);
+    expect(slipResultOf(slip).verified).toBe(false);
+    expect(slipResultOf(slip).reason).toBe("not_verified");
+    expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
+    expect(pushTextsFor("U-slip-20")).toEqual([pendingReviewText]);
+  });
+
+  it("never treats a success payload without an amount as a match", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S106", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมนึก ไม่มียอด");
+    await linkTenantByRoomNumber("S106", "U-slip-6", "สมนึก ไม่มียอด");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkBody = { success: true, data: { date: "2026-09-03", time: "10:15", bank: "KBANK", sender: "สมชาย ใจดี" } };
 
     const response = await sendSlip("U-slip-6", "msg-slip-6");
     expect(response.status).toBe(200);
 
     const slip = await readOneSlipFor("U-slip-6");
     expect(slip.status).toBe("pending_review");
+    expect(slip.amount).toBeNull();
     expect(slip.trans_ref).toBeNull();
     expect(slip.bill_id).toBe(bill.id);
     expect(slip.bill_total).toBe(3550);
@@ -632,16 +684,16 @@ describe("POST /webhook/line image events", () => {
     expect(pushTextsFor("U-slip-6")).toEqual([pendingReviewText]);
   });
 
-  it("keeps the slip for review for the legacy status-only payload", async () => {
+  it("keeps the slip for review for a payload without the success flag", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S107", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
-    await newTenant(room.id, "สมจิตร ตรวจแบบเก่า");
-    await linkTenantByRoomNumber("S107", "U-slip-7", "สมจิตร ตรวจแบบเก่า");
+    await newTenant(room.id, "สมจิตร ไม่มีสถานะ");
+    await linkTenantByRoomNumber("S107", "U-slip-7", "สมจิตร ไม่มีสถานะ");
 
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = { status: 200, data: { transRef: "TR-0007", date: slipDate, amount: { amount: 3550, local: { amount: 3550, currency: "THB" } } } };
+    slipOkBody = { status: 200, data: { amount: 3550, date: "2026-09-03", time: "10:15", bank: "KBANK", sender: "สมชาย ใจดี", transRef: "TR-0007" } };
 
     const response = await sendSlip("U-slip-7", "msg-slip-7");
     expect(response.status).toBe(200);
@@ -655,7 +707,7 @@ describe("POST /webhook/line image events", () => {
     expect(pushTextsFor("U-slip-7")).toEqual([pendingReviewText]);
   });
 
-  it("never treats a status 200 payload that also says success false as verified", async () => {
+  it("never treats a payload that says success false as verified", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S112", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
     await newTenant(room.id, "สมพงษ์ สถานะขัดกัน");
@@ -664,8 +716,8 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipStatus = 200;
-    easySlipBody = { status: 200, success: false, data: { rawSlip: { transRef: "TR-0012", date: slipDate, amount: { amount: 3550 } } } };
+    slipOkStatus = 200;
+    slipOkBody = { success: false, code: 1007, message: "ไม่พบ QR ในรูปภาพ", data: { amount: 3550, date: "2026-09-03", time: "10:15" } };
 
     const response = await sendSlip("U-slip-12", "msg-slip-12");
     expect(response.status).toBe(200);
@@ -680,7 +732,71 @@ describe("POST /webhook/line image events", () => {
     expect(pushTextsFor("U-slip-12")).toEqual([pendingReviewText]);
   });
 
-  it("keeps the slip for review when the EasySlip key is not configured", async () => {
+  it("rejects a slip the provider reports as already submitted without touching the bill", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S121", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมปอง สลิปซ้ำผู้ให้บริการ");
+    await linkTenantByRoomNumber("S121", "U-slip-21", "สมปอง สลิปซ้ำผู้ให้บริการ");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = { success: false, code: 1012, message: "สลิปนี้ถูกส่งเข้ามาแล้ว" };
+
+    const response = await sendSlip("U-slip-21", "msg-slip-21");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-21");
+    expect(slip.status).toBe("rejected");
+    expect(slip.bill_id).toBeNull();
+    expect(slip.bill_total).toBeNull();
+    expect(slipResultOf(slip).verified).toBe(false);
+    expect(slipResultOf(slip).reason).toBe("duplicate_slip");
+
+    expect(pushTextsFor("U-slip-21")).toEqual([duplicateText]);
+
+    const unchanged = await billOf("2026-09", bill.id);
+    expect(unchanged.status).toBe("unpaid");
+    expect(unchanged.paidAt).toBeNull();
+    expect(unchanged.paidMethod).toBeNull();
+  });
+
+  it("keeps a provider amount mismatch out of the auto-close and lets our comparison decide", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S122", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมศรี ผู้ให้บริการยอดไม่ตรง");
+    await linkTenantByRoomNumber("S122", "U-slip-22", "สมศรี ผู้ให้บริการยอดไม่ตรง");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = {
+      success: false,
+      code: 1013,
+      message: "ยอดเงินที่ส่งไปไม่ตรงกับสลิป",
+      data: { amount: 3500, date: "2026-09-03", time: "10:15", bank: "KBANK", sender: "สมศรี ผู้ให้บริการยอดไม่ตรง", transRef: "TR-3001" },
+    };
+
+    const response = await sendSlip("U-slip-22", "msg-slip-22");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-22");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slip.bill_total).toBe(3550);
+    expect(slip.amount).toBe(3500);
+    expect(slip.trans_ref).toBe("TR-3001");
+    expect(slipResultOf(slip).verified).toBe(true);
+    expect(slipResultOf(slip).reason).toBe("mismatch");
+
+    const unchanged = await billOf("2026-09", bill.id);
+    expect(unchanged.status).toBe("unpaid");
+    expect(pushTextsFor("U-slip-22")).toEqual([pendingReviewText]);
+  });
+
+  it("keeps the slip for review when the SlipOK key is not configured", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S108", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
     await newTenant(room.id, "สมพงษ์ ไม่มีคีย์");
@@ -689,12 +805,12 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    env.EASYSLIP_API_KEY = "";
+    env.SLIPOK_API_KEY = "";
 
     const response = await sendSlip("U-slip-8", "msg-slip-8");
     expect(response.status).toBe(200);
 
-    expect(easySlipCalls()).toEqual([]);
+    expect(slipOkCalls()).toEqual([]);
 
     const slip = await readOneSlipFor("U-slip-8");
     expect(slip.status).toBe("pending_review");
@@ -704,6 +820,31 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
     expect(pushTextsFor("U-slip-8")).toEqual([pendingReviewText]);
+  });
+
+  it("keeps the slip for review when the SlipOK branch id is not configured", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S123", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหมาย ไม่มีสาขา");
+    await linkTenantByRoomNumber("S123", "U-slip-23", "สมหมาย ไม่มีสาขา");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    env.SLIPOK_BRANCH_ID = "";
+
+    const response = await sendSlip("U-slip-23", "msg-slip-23");
+    expect(response.status).toBe(200);
+
+    expect(slipOkCalls()).toEqual([]);
+
+    const slip = await readOneSlipFor("U-slip-23");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slipResultOf(slip).verified).toBe(false);
+    expect(slipResultOf(slip).reason).toBe("not_verified");
+    expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
+    expect(pushTextsFor("U-slip-23")).toEqual([pendingReviewText]);
   });
 
   it("keeps the slip for review when the room has no unpaid bill", async () => {
@@ -717,7 +858,7 @@ describe("POST /webhook/line image events", () => {
     expect(settled.status).toBe(200);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0009");
+    slipOkBody = verifiedBody(3550, "TR-0009");
 
     const response = await sendSlip("U-slip-9", "msg-slip-9");
     expect(response.status).toBe(200);
@@ -751,7 +892,7 @@ describe("POST /webhook/line image events", () => {
     expect(second.total).toBe(3550);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0010");
+    slipOkBody = verifiedBody(3550, "TR-0010");
 
     const opened = await sendSlip("U-slip-10", "msg-slip-10a");
     expect(opened.status).toBe(200);
@@ -801,7 +942,7 @@ describe("POST /webhook/line image events", () => {
 
     expect(replyTexts()).toEqual([notLinkedText]);
     expect(downloadCalls()).toEqual([]);
-    expect(easySlipCalls()).toEqual([]);
+    expect(slipOkCalls()).toEqual([]);
     expect(pushTexts()).toEqual([]);
     expect(await readSlipsFor("U-stray")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
@@ -822,7 +963,7 @@ describe("POST /webhook/line image events", () => {
 
     expect(downloadCalls()).toHaveLength(1);
     expect(replyTexts()).toEqual([downloadFailedText]);
-    expect(easySlipCalls()).toEqual([]);
+    expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-11")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
   });
@@ -836,7 +977,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0013", "17/09/2026");
+    slipOkBody = verifiedBody(3550, "TR-0013", "17/09/2026");
 
     const response = await sendSlip("U-slip-13", "msg-slip-13");
     expect(response.status).toBe(200);
@@ -862,7 +1003,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0014");
+    slipOkBody = verifiedBody(3550, "TR-0014");
     imageBytes = new Uint8Array(5 * 1024 * 1024 + 1);
     const imagesBefore = await storedImageKeys();
 
@@ -871,7 +1012,7 @@ describe("POST /webhook/line image events", () => {
 
     expect(downloadCalls()).toHaveLength(1);
     expect(replyTexts()).toEqual([downloadFailedText]);
-    expect(easySlipCalls()).toEqual([]);
+    expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-14")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
@@ -886,7 +1027,7 @@ describe("POST /webhook/line image events", () => {
     await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0015");
+    slipOkBody = verifiedBody(3550, "TR-0015");
     imageBytes = slipImageBytes;
     imageContentLength = 5 * 1024 * 1024 + 1;
     const imagesBefore = await storedImageKeys();
@@ -896,7 +1037,7 @@ describe("POST /webhook/line image events", () => {
 
     expect(downloadCalls()).toHaveLength(1);
     expect(replyTexts()).toEqual([downloadFailedText]);
-    expect(easySlipCalls()).toEqual([]);
+    expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-15")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
   });
@@ -910,7 +1051,7 @@ describe("POST /webhook/line image events", () => {
     await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0016");
+    slipOkBody = verifiedBody(3550, "TR-0016");
     imageContentType = "image/svg+xml";
     const imagesBefore = await storedImageKeys();
 
@@ -919,7 +1060,7 @@ describe("POST /webhook/line image events", () => {
 
     expect(downloadCalls()).toHaveLength(1);
     expect(replyTexts()).toEqual([downloadFailedText]);
-    expect(easySlipCalls()).toEqual([]);
+    expect(slipOkCalls()).toEqual([]);
     expect(await readSlipsFor("U-slip-16")).toEqual([]);
     expect(await storedImageKeys()).toEqual(imagesBefore);
   });
@@ -933,8 +1074,8 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0017");
-    beforeEasySlipResponse = async () => {
+    slipOkBody = verifiedBody(3550, "TR-0017");
+    beforeSlipOkResponse = async () => {
       await env.DB.prepare("UPDATE bills SET status = 'paid', paid_at = ?, paid_method = ? WHERE id = ?")
         .bind("2026-09-02", "cash", bill.id)
         .run();
@@ -969,7 +1110,7 @@ describe("POST /webhook/line image events", () => {
     expect(second.total).toBe(3550);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-0018");
+    slipOkBody = verifiedBody(3550, "TR-0018");
 
     const [a, b] = await Promise.all([sendSlip("U-slip-18", "msg-slip-18a"), sendSlip("U-slip-18", "msg-slip-18b")]);
     expect(a.status).toBe(200);
@@ -998,7 +1139,7 @@ describe("owner alert for slips that land in review", () => {
     expect(bill.total).toBe(3550);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2001");
+    slipOkBody = verifiedBody(3550.5, "TR-2001");
 
     const response = await sendSlip("U-alert-1", "msg-alert-1");
     expect(response.status).toBe(200);
@@ -1022,7 +1163,7 @@ describe("owner alert for slips that land in review", () => {
     await linkOwner("U-boss-2");
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-2002");
+    slipOkBody = verifiedBody(3550, "TR-2002");
 
     const response = await sendSlip("U-alert-2", "msg-alert-2");
     expect(response.status).toBe(200);
@@ -1046,7 +1187,7 @@ describe("owner alert for slips that land in review", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2003");
+    slipOkBody = verifiedBody(3550.5, "TR-2003");
 
     const response = await sendSlip("U-alert-3", "msg-alert-3");
     expect(response.status).toBe(200);
@@ -1074,10 +1215,10 @@ describe("GET /api/slips", () => {
     const closedBill = await generateBill(closedRoom.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2004");
+    slipOkBody = verifiedBody(3550.5, "TR-2004");
     expect((await sendSlip("U-queue-1", "msg-queue-1")).status).toBe(200);
 
-    easySlipBody = verifiedBody(3550, "TR-2005");
+    slipOkBody = verifiedBody(3550, "TR-2005");
     expect((await sendSlip("U-queue-2", "msg-queue-2")).status).toBe(200);
 
     const reviewSlip = await readOneSlipFor("U-queue-1");
@@ -1097,7 +1238,7 @@ describe("GET /api/slips", () => {
     expect(item.reason).toBe("mismatch");
     expect(item.slipAmount).toBe(3550.5);
     expect(item.verified).toBe(true);
-    expect(item.easyslip).toEqual({ verified: true, transRef: "TR-2004", date: slipDate });
+    expect(item.verify).toEqual({ verified: true, transRef: "TR-2004", date: slipDate });
     expect(item.transferAt).toBe(slipDate);
     expect(item.bill).toEqual({
       id: reviewBill.id,
@@ -1153,7 +1294,7 @@ describe("POST /api/slips/:id/resolve", () => {
     expect(bill.total).toBe(3550);
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2006");
+    slipOkBody = verifiedBody(3550.5, "TR-2006");
     expect((await sendSlip("U-resolve-1", "msg-resolve-1")).status).toBe(200);
 
     const slip = await readOneSlipFor("U-resolve-1");
@@ -1200,7 +1341,7 @@ describe("POST /api/slips/:id/resolve", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2007");
+    slipOkBody = verifiedBody(3550.5, "TR-2007");
     expect((await sendSlip("U-resolve-2", "msg-resolve-2")).status).toBe(200);
 
     const slip = await readOneSlipFor("U-resolve-2");
@@ -1239,9 +1380,9 @@ describe("POST /api/slips/:id/resolve", () => {
     const secondBill = await generateBill(secondRoom.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2008");
+    slipOkBody = verifiedBody(3550.5, "TR-2008");
     expect((await sendSlip("U-resolve-3", "msg-resolve-3")).status).toBe(200);
-    easySlipBody = verifiedBody(3550.5, "TR-2008");
+    slipOkBody = verifiedBody(3550.5, "TR-2008");
     expect((await sendSlip("U-resolve-4", "msg-resolve-4")).status).toBe(200);
 
     const firstSlip = await readOneSlipFor("U-resolve-3");
@@ -1279,7 +1420,7 @@ describe("POST /api/slips/:id/resolve", () => {
     await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2009");
+    slipOkBody = verifiedBody(3550.5, "TR-2009");
     expect((await sendSlip("U-resolve-5", "msg-resolve-5")).status).toBe(200);
 
     const slip = await readOneSlipFor("U-resolve-5");
@@ -1303,7 +1444,7 @@ describe("POST /api/slips/:id/resolve", () => {
     await linkTenantByRoomNumber("S211", "U-resolve-6", "สมชาย เลือกบิลเอง");
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550, "TR-2010");
+    slipOkBody = verifiedBody(3550, "TR-2010");
     expect((await sendSlip("U-resolve-6", "msg-resolve-6")).status).toBe(200);
 
     const slip = await readOneSlipFor("U-resolve-6");
@@ -1360,7 +1501,7 @@ describe("POST /api/slips/:id/resolve", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    easySlipBody = verifiedBody(3550.5, "TR-2011");
+    slipOkBody = verifiedBody(3550.5, "TR-2011");
     expect((await sendSlip("U-resolve-7", "msg-resolve-7")).status).toBe(200);
 
     const slip = await readOneSlipFor("U-resolve-7");

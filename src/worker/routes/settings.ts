@@ -64,7 +64,7 @@ interface SettingsPayload {
   promptpayName: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
-  integrations: { lineConfigured: boolean; easySlipConfigured: boolean };
+  integrations: { lineConfigured: boolean; slipOkConfigured: boolean };
 }
 
 function isWritableKey(key: string): key is WritableKey {
@@ -145,7 +145,7 @@ async function loadSettings(env: Env): Promise<SettingsPayload> {
     ownerLineConnected: ownerLineUserId !== "",
     integrations: {
       lineConfigured: isConfigured(env.LINE_CHANNEL_ACCESS_TOKEN),
-      easySlipConfigured: isConfigured(env.EASYSLIP_API_KEY),
+      slipOkConfigured: isConfigured(env.SLIPOK_API_KEY) && isConfigured(env.SLIPOK_BRANCH_ID),
     },
   };
 }

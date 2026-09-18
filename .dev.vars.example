@@ -6,5 +6,6 @@ LINE_CHANNEL_ACCESS_TOKEN=
 # รหัสลับสำหรับตรวจลายเซ็น webhook ที่ LINE ส่งเข้ามา
 LINE_CHANNEL_SECRET=
 
-# คีย์สำหรับตรวจสลิปโอนเงินผ่าน EasySlip
-EASYSLIP_API_KEY=
+# คีย์และรหัสสาขาสำหรับตรวจสลิปโอนเงินผ่าน SlipOK
+SLIPOK_API_KEY=
+SLIPOK_BRANCH_ID=

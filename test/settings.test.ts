@@ -11,7 +11,7 @@ interface SettingsPayload {
   promptpayName: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
-  integrations: { lineConfigured: boolean; easySlipConfigured: boolean };
+  integrations: { lineConfigured: boolean; slipOkConfigured: boolean };
 }
 
 interface SettingsBody {
@@ -82,10 +82,10 @@ describe("dorm settings", () => {
     expect(body.settings.ownerLineConnected).toBe(false);
   });
 
-  it("reports the LINE integration as configured and EasySlip as not configured", async () => {
+  it("reports the LINE integration as configured and SlipOK as not configured", async () => {
     const settings = await readSettings();
     expect(settings.integrations.lineConfigured).toBe(true);
-    expect(settings.integrations.easySlipConfigured).toBe(false);
+    expect(settings.integrations.slipOkConfigured).toBe(false);
   });
 
   it("writes a subset and leaves the other keys untouched", async () => {

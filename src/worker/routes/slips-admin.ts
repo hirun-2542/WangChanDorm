@@ -20,7 +20,7 @@ const slipStatuses: readonly SlipStatus[] = ["pending_review", "matched", "rejec
 const defaultSlipStatus: SlipStatus = "pending_review";
 
 const slipColumns =
-  "s.id, s.created_at, s.image_key, s.status, s.easyslip_result, s.amount, s.bill_id, s.bill_total, s.trans_ref, s.line_user_id, b.period AS bill_period, b.total AS bill_row_total, r.room_number AS bill_room_number, t.full_name AS bill_tenant_name";
+  "s.id, s.created_at, s.image_key, s.status, s.verify_result, s.amount, s.bill_id, s.bill_total, s.trans_ref, s.line_user_id, b.period AS bill_period, b.total AS bill_row_total, r.room_number AS bill_room_number, t.full_name AS bill_tenant_name";
 
 const slipFrom =
   "FROM slips s LEFT JOIN bills b ON b.id = s.bill_id LEFT JOIN rooms r ON r.id = b.room_id LEFT JOIN tenants t ON t.id = b.tenant_id";
@@ -36,14 +36,14 @@ const matchSlipSql = "UPDATE slips SET status = 'matched', bill_id = ?, bill_tot
 
 const restoreSlipSql = "UPDATE slips SET status = 'pending_review', bill_id = ?, bill_total = ? WHERE id = ?";
 
-const rejectSlipSql = "UPDATE slips SET status = 'rejected', easyslip_result = ? WHERE id = ? AND status = 'pending_review'";
+const rejectSlipSql = "UPDATE slips SET status = 'rejected', verify_result = ? WHERE id = ? AND status = 'pending_review'";
 
 interface SlipRow {
   id: string;
   created_at: string;
   image_key: string;
   status: string;
-  easyslip_result: string | null;
+  verify_result: string | null;
   amount: number | null;
   bill_id: string | null;
   bill_total: number | null;
@@ -82,7 +82,7 @@ interface SlipPayload {
   slipAmount: number | null;
   bill: BillPayload | null;
   verified: boolean;
-  easyslip: { verified: boolean; transRef: string | null; date: string | null };
+  verify: { verified: boolean; transRef: string | null; date: string | null };
   transferAt: string | null;
 }
 
@@ -105,7 +105,7 @@ function toBillPayload(row: SlipRow): BillPayload | null {
 }
 
 function toSlipPayload(row: SlipRow): SlipPayload {
-  const stored = parseSlipResult(row.easyslip_result);
+  const stored = parseSlipResult(row.verify_result);
 
   return {
     id: row.id,
@@ -117,7 +117,7 @@ function toSlipPayload(row: SlipRow): SlipPayload {
     slipAmount: row.amount,
     bill: toBillPayload(row),
     verified: stored.verified,
-    easyslip: { verified: stored.verified, transRef: row.trans_ref ?? stored.transRef, date: stored.date },
+    verify: { verified: stored.verified, transRef: row.trans_ref ?? stored.transRef, date: stored.date },
     transferAt: stored.date,
   };
 }
@@ -165,7 +165,7 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
     }
   }
 
-  const paidAt = canonicalPaidAt(parseSlipResult(slip.easyslip_result).date);
+  const paidAt = canonicalPaidAt(parseSlipResult(slip.verify_result).date);
 
   let results: D1Result[];
 
@@ -197,7 +197,7 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
 async function rejectSlip(c: Context<{ Bindings: Env }>, slip: SlipRow): Promise<Response> {
   const decidedAt = new Date().toISOString();
   const updated = await c.env.DB.prepare(rejectSlipSql)
-    .bind(rejectedSlipResultJson(slip.easyslip_result, decidedAt), slip.id)
+    .bind(rejectedSlipResultJson(slip.verify_result, decidedAt), slip.id)
     .run();
 
   if ((updated.meta.changes ?? 0) === 0) {

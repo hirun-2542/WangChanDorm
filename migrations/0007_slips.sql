@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS slips (
   bill_id TEXT,
   line_user_id TEXT NOT NULL,
   image_key TEXT NOT NULL,
-  easyslip_result TEXT,
+  verify_result TEXT,
   amount INTEGER,
   trans_ref TEXT,
   bill_total INTEGER,

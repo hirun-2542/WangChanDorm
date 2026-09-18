@@ -99,18 +99,18 @@ function deltaTone(delta: number | null): string {
   return delta < 0 ? "text-danger" : "text-tangerine";
 }
 
-function easyslipLabel(slip: Slip): string {
-  return slip.verified ? "สลิปจริง" : "EasySlip ตรวจไม่ผ่าน";
+function verifyLabel(slip: Slip): string {
+  return slip.verified ? "สลิปจริง" : "SlipOK ตรวจไม่ผ่าน";
 }
 
 function transRefLabel(slip: Slip): string {
-  const transRef = slip.easyslip.transRef;
+  const transRef = slip.verify.transRef;
 
   return transRef === null ? "ไม่พบเลขอ้างอิงการโอน" : `เลขอ้างอิง ${transRef}`;
 }
 
 function transferLabel(slip: Slip): string {
-  const when = slip.transferAt ?? slip.easyslip.date;
+  const when = slip.transferAt ?? slip.verify.date;
 
   return when === null ? "ไม่พบเวลาที่โอน" : stampLabel(when);
 }
@@ -306,7 +306,7 @@ export function ReviewPage() {
             <EmptyState
               icon="check_circle"
               title="ไม่มีสลิปรอตรวจ"
-              description="สลิปที่ยอดไม่ตรงหรือ EasySlip ตรวจไม่ผ่าน พร้อมยอดเทียบก่อนปิดบิล จะแสดงที่นี่"
+              description="สลิปที่ยอดไม่ตรงหรือ SlipOK ตรวจไม่ผ่าน พร้อมยอดเทียบก่อนปิดบิล จะแสดงที่นี่"
             />
           </Card>
         ) : (
@@ -403,7 +403,7 @@ export function ReviewPage() {
                   <div className="panel-muted">
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-sm text-charcoal">สลิปโอนเงินที่ผู้เช่าส่งมา</span>
-                      <Badge tone={selected.verified ? "paid" : "danger"}>{easyslipLabel(selected)}</Badge>
+                      <Badge tone={selected.verified ? "paid" : "danger"}>{verifyLabel(selected)}</Badge>
                     </div>
                     <a href={selected.imageUrl} target="_blank" rel="noreferrer" className="mt-3 block">
                       <img
@@ -416,7 +416,7 @@ export function ReviewPage() {
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2">
-                    <span className="text-sm text-steel">ผลตรวจจาก EasySlip</span>
+                    <span className="text-sm text-steel">ผลตรวจจาก SlipOK</span>
                     <span className="flex flex-wrap items-center gap-2">
                       <Badge tone={selected.verified ? "paid" : "danger"} icon={selected.verified ? "verified" : "error"}>
                         {selected.verified ? "สลิปจริง" : "ตรวจไม่ผ่าน"}

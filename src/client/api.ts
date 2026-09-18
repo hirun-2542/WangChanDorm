@@ -132,7 +132,7 @@ export type PromptpayType = "phone" | "citizen-id";
 
 export interface SettingsIntegrations {
   lineConfigured: boolean;
-  easySlipConfigured: boolean;
+  slipOkConfigured: boolean;
 }
 
 export interface Settings {
@@ -393,7 +393,7 @@ export interface Slip {
   slipAmount: number | null;
   bill: SlipBill | null;
   verified: boolean;
-  easyslip: { verified: boolean; transRef: string | null; date: string | null };
+  verify: { verified: boolean; transRef: string | null; date: string | null };
   transferAt: string | null;
 }
 
