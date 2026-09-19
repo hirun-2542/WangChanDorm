@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
   billsFocusHash,
@@ -10,6 +10,7 @@ import {
   fetchTenants,
   updateRoom,
   type BillCharge,
+  type DashboardKpis,
   type DashboardRoom,
   type DashboardRoomStatus,
   type Room,
@@ -29,15 +30,14 @@ import {
   PageHeader,
   Select,
   Skeleton,
-  StatusBadge,
   Toast,
   type BadgeTone,
   type DataTableColumn,
 } from "../ui";
-import { baht, chargesTotal, periodAt, periodLabel, recentPeriods } from "./bills-shared";
+import { baht, chargesTotal, periodAt, periodLabel, periodOptions } from "./bills-shared";
 import { ChoiceRow, numericValue } from "./dorm-shared";
 
-type StatusFilter = "all" | "occupied" | "vacant";
+type StatusFilter = "all" | "occupied" | "vacant" | "unpaid" | "unbilled";
 type RoomView = "table" | "cards";
 type WaterMode = "default" | "custom";
 type ElectricChoice = "default" | "custom" | "flat";
@@ -121,115 +121,73 @@ function parseChargeAmount(value: string): number | null {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-const emptyRoomForm = (defaults: RateDefaults, charges: BillCharge[]): RoomForm => ({
+function rateFieldText(rate: number | undefined): string {
+  return rate === undefined ? "" : String(rate);
+}
+
+const emptyRoomForm = (defaults: RateDefaults | null, charges: BillCharge[]): RoomForm => ({
   id: "",
   rent: "",
   waterMeterInit: "0",
   electricMeterInit: "0",
   waterMode: "default",
-  waterRate: String(defaults.waterRate),
+  waterRate: rateFieldText(defaults?.waterRate),
   electricChoice: "default",
-  electricRate: String(defaults.electricRate),
+  electricRate: rateFieldText(defaults?.electricRate),
   charges: chargeDrafts(charges),
 });
 
-const roomFormOf = (room: Room, defaults: RateDefaults): RoomForm => ({
+const roomFormOf = (room: Room, defaults: RateDefaults | null): RoomForm => ({
   id: room.roomNumber,
   rent: String(room.rent),
   waterMeterInit: String(room.waterMeterInit),
   electricMeterInit: String(room.electricMeterInit),
   waterMode: room.waterRate === null ? "default" : "custom",
-  waterRate: String(room.waterRate ?? defaults.waterRate),
+  waterRate: room.waterRate === null ? rateFieldText(defaults?.waterRate) : String(room.waterRate),
   electricChoice: room.electricMode === "flat" ? "flat" : room.electricRate === null ? "default" : "custom",
-  electricRate: String(room.electricRate ?? defaults.electricRate),
+  electricRate: room.electricRate === null ? rateFieldText(defaults?.electricRate) : String(room.electricRate),
   charges: chargeDrafts(room.charges),
 });
 
-function waterRateText(room: Room, defaults: RateDefaults): string {
-  return `${room.waterRate ?? defaults.waterRate} บาท/หน่วย`;
-}
-
-function electricText(room: Room, defaults: RateDefaults): string {
-  if (room.electricMode === "flat") {
-    if (room.lastElectricPeriod === null || room.lastElectricAmount === null) {
-      return "เหมาจ่าย";
-    }
-
-    return `เหมาจ่าย ${moneyText(room.lastElectricAmount)}`;
-  }
-
-  return `${room.electricRate ?? defaults.electricRate} บาท/หน่วย`;
-}
-
-function flatElectricNote(room: Room): string {
-  if (room.lastElectricPeriod === null || room.lastElectricAmount === null) {
-    return "ยังไม่เคยออกบิล · กรอกยอดตอนสร้างบิล";
-  }
-
-  return `ยอดที่ออกบิลล่าสุด ${periodLabel(room.lastElectricPeriod)} · กรอกยอดใหม่ตอนสร้างบิล`;
-}
-
 function moneyText(value: number): string {
   return `${baht(value)} บาท`;
+}
+
+function rateText(value: number): string {
+  return value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 function chargeBreakdownText(charges: BillCharge[]): string {
   return `${charges.map((charge) => `${charge.name} ${baht(charge.amount)}`).join(" · ")} บาท`;
 }
 
-function meterText(room: Room): string {
-  return `น้ำ ${room.waterMeterInit.toLocaleString("en-US")} หน่วย · ไฟ ${room.electricMeterInit.toLocaleString("en-US")} หน่วย`;
-}
-
-function RoomMoney({ room, label, children }: { room: Room; label: string; children: ReactNode }) {
-  return (
-    <span className="num">
-      <span className="sr-only">{`ห้อง ${room.roomNumber} ${label} `}</span>
-      {children}
-    </span>
-  );
-}
-
-function RecurringCharges({ room, align }: { room: Room; align: "left" | "right" }) {
-  const alignClass = align === "right" ? "items-end text-right" : "items-start text-left";
-
-  return (
-    <span className={`inline-flex flex-col gap-1 ${alignClass}`}>
-      <span className="chip">
-        <span className="sr-only">{`ห้อง ${room.roomNumber} `}</span>
-        {`ค่าประจำ `}
-        <span className="num">{moneyText(chargesTotal(room.charges))}</span>
-      </span>
-      <span className="num text-[11px] text-fog">{chargeBreakdownText(room.charges)}</span>
-    </span>
-  );
-}
-
 function rateValueClass(inherited: boolean): string {
   return inherited ? "num text-fog" : "num font-medium text-charcoal";
-}
-
-function rateTextClass(inherited: boolean, nowrap: boolean): string {
-  return nowrap ? `${rateValueClass(inherited)} whitespace-nowrap` : rateValueClass(inherited);
-}
-
-function waterInherited(room: Room): boolean {
-  return room.waterRate === null;
 }
 
 function electricInherited(room: Room): boolean {
   return room.electricMode === "meter" && room.electricRate === null;
 }
 
-function RoomStatusBadge({ room }: { room: Room }) {
-  if (room.status === "vacant") {
-    return <StatusBadge status="vacant" />;
+function ElectricFact({ room, defaults, align }: { room: Room; defaults: RateDefaults | null; align: "left" | "right" }) {
+  const justify = align === "right" ? "justify-end" : "justify-start";
+
+  if (room.electricMode === "flat") {
+    return (
+      <span className={`flex items-baseline gap-1.5 ${justify}`}>
+        <span className="chip">ไฟเหมา</span>
+        <span className="num">{room.lastElectricAmount === null ? "—" : moneyText(room.lastElectricAmount)}</span>
+      </span>
+    );
   }
 
+  const rate = room.electricRate ?? defaults?.electricRate ?? null;
+
   return (
-    <Badge tone="neutral" icon="person">
-      มีผู้เช่า
-    </Badge>
+    <span className={`flex items-baseline gap-1.5 ${justify}`}>
+      <span className="text-[11px] text-fog">หน่วยละ</span>
+      <span className={rateValueClass(electricInherited(room))}>{rate === null ? "—" : `${rateText(rate)} บาท`}</span>
+    </span>
   );
 }
 
@@ -248,28 +206,29 @@ function billStateOf(room: DashboardRoom): { word: string; tone: BadgeTone; icon
   return billStateMeta[room.status];
 }
 
-function RoomBillState({ stat, align }: { stat: DashboardRoom | null; align: "left" | "right" }) {
+function RoomBillState({ stat }: { stat: DashboardRoom | null }) {
   if (stat === null) {
     return <span className="text-xs text-fog">ยังไม่มีข้อมูลบิล</span>;
   }
 
+  if (stat.status === "vacant") {
+    return <span className="text-fog">ว่าง</span>;
+  }
+
   const meta = billStateOf(stat);
-  const items = align === "right" ? "items-end text-right" : "items-start text-left";
 
   return (
-    <div className={`flex flex-col gap-1 ${items}`}>
+    <span className="flex items-center gap-1.5">
       <Badge tone={meta.tone} icon={meta.icon}>
         {meta.word}
       </Badge>
       {stat.behindPeriods > 0 && stat.lastBilledPeriod !== null && (
-        <span className={`flex flex-col gap-0.5 ${items}`}>
-          <Badge tone="danger" icon="error">
-            {`ค้าง ${stat.behindPeriods} งวด`}
-          </Badge>
-          <span className="text-[11px] text-fog">{`บิลล่าสุด ${periodLabel(stat.lastBilledPeriod)}`}</span>
-        </span>
+        <Badge tone="danger" icon="error">
+          {`ค้าง ${stat.behindPeriods} งวด`}
+          <span className="sr-only">{` · บิลล่าสุด ${periodLabel(stat.lastBilledPeriod)}`}</span>
+        </Badge>
       )}
-    </div>
+    </span>
   );
 }
 
@@ -297,16 +256,42 @@ interface RoomMenuState {
 interface RoomMenuProps {
   state: RoomMenuState;
   period: string | null;
+  createBill: boolean;
   onClose: (restoreFocus: boolean) => void;
   onEdit: (room: Room) => void;
 }
 
-function RoomMenu({ state, period, onClose, onEdit }: RoomMenuProps) {
+function RoomMenu({ state, period, createBill, onClose, onEdit }: RoomMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ top: state.top, right: state.right });
 
   useEffect(() => {
     ref.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
   }, []);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+
+    if (node === null) {
+      return;
+    }
+
+    const gap = 6;
+    const margin = 8;
+    const menuBox = node.getBoundingClientRect();
+    const triggerBox = state.trigger.getBoundingClientRect();
+    const below = triggerBox.bottom + gap;
+    const above = triggerBox.top - gap - menuBox.height;
+    const top = below + menuBox.height > window.innerHeight - margin && above >= margin ? above : below;
+
+    setPosition({
+      top: Math.min(Math.max(top, margin), Math.max(margin, window.innerHeight - margin - menuBox.height)),
+      right: Math.min(
+        Math.max(window.innerWidth - triggerBox.right, margin),
+        Math.max(margin, window.innerWidth - margin - menuBox.width),
+      ),
+    });
+  }, [state.trigger, state.top, state.right]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -337,13 +322,13 @@ function RoomMenu({ state, period, onClose, onEdit }: RoomMenuProps) {
     };
 
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
     window.addEventListener("resize", onViewportChange);
     document.addEventListener("pointerdown", onPointerDown, true);
 
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
       window.removeEventListener("resize", onViewportChange);
       document.removeEventListener("pointerdown", onPointerDown, true);
     };
@@ -361,7 +346,7 @@ function RoomMenu({ state, period, onClose, onEdit }: RoomMenuProps) {
       role="menu"
       aria-label={`เมนูจัดการห้อง ${state.room.roomNumber}`}
       className="row-menu"
-      style={{ top: state.top, right: state.right }}
+      style={{ top: position.top, right: position.right }}
       onKeyDown={(event) => {
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
           return;
@@ -411,6 +396,23 @@ function RoomMenu({ state, period, onClose, onEdit }: RoomMenuProps) {
         </span>
         ดูบิล
       </button>
+      {createBill && (
+        <button
+          type="button"
+          role="menuitem"
+          className="row-menu-item"
+          onClick={() => {
+            run((room) => {
+              window.location.hash = billsFocusHash(billsFocusTarget(room, period));
+            });
+          }}
+        >
+          <span className="ms text-[18px]" aria-hidden="true">
+            note_add
+          </span>
+          สร้างบิลห้องนี้
+        </button>
+      )}
       {state.room.status === "vacant" && (
         <button
           type="button"
@@ -437,7 +439,7 @@ interface RoomDrawerProps {
   seedKey: string;
   base: Room | null;
   form: RoomForm;
-  defaults: RateDefaults;
+  defaults: RateDefaults | null;
   duplicateId: boolean;
   saving: boolean;
   serverError: { message: string; field?: string } | null;
@@ -492,6 +494,7 @@ function RoomDrawer({
 
   const idBlank = form.id.trim() === "";
   const canSave =
+    defaults !== null &&
     !idBlank &&
     !duplicateId &&
     !rentInvalid &&
@@ -546,13 +549,19 @@ function RoomDrawer({
           <Button variant="ghost" onClick={onClose}>
             ยกเลิก
           </Button>
-          <Button variant="primary" icon="save" disabled={!canSave} onClick={save}>
+          <Button variant="primary" icon="save" className={primaryFillClass} disabled={!canSave} onClick={save}>
             บันทึกห้อง
           </Button>
         </>
       }
     >
       <div className="grid gap-4">
+        {defaults === null && (
+          <div className="rounded-xl border border-danger bg-danger-soft px-4 py-3" role="alert">
+            <p className="text-sm text-danger">โหลดอัตราน้ำไฟของหอไม่สำเร็จ จึงยังตั้งอัตราของห้องนี้ไม่ได้ และยังบันทึกไม่ได้</p>
+          </div>
+        )}
+
         <div
           onBlur={() => {
             touch("id");
@@ -624,7 +633,7 @@ function RoomDrawer({
             name="room-water"
             checked={form.waterMode === "default"}
             title="ใช้อัตราทั้งหอ"
-            helper={`ใช้อัตราทั้งหอ ${defaults.waterRate} บาท/หน่วย`}
+            helper={defaults === null ? "ยังโหลดอัตราทั้งหอไม่สำเร็จ" : `ใช้อัตราทั้งหอ ${defaults.waterRate} บาท/หน่วย`}
             onSelect={() => {
               update({ waterMode: "default" });
             }}
@@ -633,7 +642,11 @@ function RoomDrawer({
             name="room-water"
             checked={form.waterMode === "custom"}
             title="กำหนดเอง"
-            helper={`ห้องนี้คิดค่าน้ำเอง เริ่มจากอัตราทั้งหอ ${defaults.waterRate} บาท/หน่วย`}
+            helper={
+              defaults === null
+                ? "ห้องนี้คิดค่าน้ำเอง กรอกอัตราต่อหน่วยของห้องนี้"
+                : `ห้องนี้คิดค่าน้ำเอง เริ่มจากอัตราทั้งหอ ${defaults.waterRate} บาท/หน่วย`
+            }
             onSelect={() => {
               update({ waterMode: "custom" });
             }}
@@ -664,7 +677,7 @@ function RoomDrawer({
             name="room-electric"
             checked={form.electricChoice === "default"}
             title="ใช้อัตราทั้งหอ"
-            helper={`ใช้อัตราทั้งหอ ${defaults.electricRate} บาท/หน่วย`}
+            helper={defaults === null ? "ยังโหลดอัตราทั้งหอไม่สำเร็จ" : `ใช้อัตราทั้งหอ ${defaults.electricRate} บาท/หน่วย`}
             onSelect={() => {
               update({ electricChoice: "default" });
             }}
@@ -708,11 +721,16 @@ function RoomDrawer({
           {form.electricChoice === "flat" && (
             <p className="pl-7 text-xs text-fog">โหมดเหมาจ่ายไม่ใช้อัตราต่อหน่วย จะกรอกยอดค่าไฟเต็มตอนสร้างบิล</p>
           )}
+          {form.electricChoice === "flat" && base !== null && base.electricMode === "flat" && base.lastElectricPeriod !== null && base.lastElectricAmount !== null && (
+            <p className="num pl-7 text-xs text-fog">
+              {`ยอดที่ออกบิลล่าสุด ${periodLabel(base.lastElectricPeriod)} · ${moneyText(base.lastElectricAmount)}`}
+            </p>
+          )}
           {fieldError("electricMode") !== undefined && <p className="text-xs text-danger">{fieldError("electricMode")}</p>}
         </fieldset>
 
         <fieldset className="grid gap-2">
-          <legend className="field-label">ค่าใช้จ่ายประจำ</legend>
+          <legend className="field-label">ค่าใช้จ่ายเพิ่มเติม</legend>
           <p className="text-xs text-fog">
             รายการที่เก็บทุกเดือนของห้องนี้ ระบบจะเติมให้อัตโนมัติตอนสร้างบิล และแก้ไขเฉพาะเดือนนั้นได้
           </p>
@@ -775,7 +793,7 @@ function RoomDrawer({
             เพิ่มรายการ
           </Button>
           {touched.charges === true && chargeInvalid && (
-            <p className="text-xs text-danger">ค่าใช้จ่ายประจำต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ</p>
+            <p className="text-xs text-danger">ค่าใช้จ่ายเพิ่มเติมต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ</p>
           )}
           {fieldError("charges") !== undefined && <p className="text-xs text-danger">{fieldError("charges")}</p>}
         </fieldset>
@@ -786,6 +804,10 @@ function RoomDrawer({
   );
 }
 
+const rosterTableName = "ตารางห้องพัก แต่ละแถวคือหนึ่งห้อง พร้อมค่าเช่า ค่าไฟ ค่าใช้จ่ายเพิ่มเติม และสถานะบิลของรอบบิล";
+
+const primaryFillClass = "bg-[#000000] hover:bg-graphite";
+
 export function RoomsPage() {
   const { query, setQuery } = useSearch();
   const [roomList, setRoomList] = useState<Room[]>([]);
@@ -795,20 +817,24 @@ export function RoomsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [view, setView] = useState<RoomView>(() =>
-    typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches ? "table" : "cards",
-  );
   const [wideViewport, setWideViewport] = useState(
     () => typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches,
   );
+  const [view, setView] = useState<RoomView>(() =>
+    typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches ? "table" : "cards",
+  );
+  const chosenView = useRef<RoomView>("table");
   const [period, setPeriod] = useState<string | null>(null);
   const [roomStatById, setRoomStatById] = useState<Map<string, DashboardRoom>>(() => new Map());
+  const [periodKpis, setPeriodKpis] = useState<DashboardKpis | null>(null);
   const [statsPeriod, setStatsPeriod] = useState<string | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState(false);
+  const [statsReload, setStatsReload] = useState(0);
   const [menu, setMenu] = useState<RoomMenuState | null>(null);
   const menuTrigger = useRef<HTMLElement | null>(null);
-  const [form, setForm] = useState<RoomForm>(() => emptyRoomForm({ waterRate: 0, electricRate: 0 }, dormChargeFallback));
+  const rosterRef = useRef<HTMLDivElement>(null);
+  const [form, setForm] = useState<RoomForm>(() => emptyRoomForm(null, dormChargeFallback));
   const [base, setBase] = useState<Room | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formError, setFormError] = useState<{ message: string; field?: string } | null>(null);
@@ -861,6 +887,7 @@ export function RoomsPage() {
         }
 
         setRoomStatById(next);
+        setPeriodKpis(data.kpis);
         setStatsPeriod(period);
       })
       .catch(() => {
@@ -869,6 +896,7 @@ export function RoomsPage() {
         }
 
         setRoomStatById(new Map());
+        setPeriodKpis(null);
         setStatsPeriod(null);
         setStatsError(true);
       })
@@ -881,7 +909,7 @@ export function RoomsPage() {
     return () => {
       active = false;
     };
-  }, [period]);
+  }, [period, statsReload]);
 
   useEffect(() => {
     void load();
@@ -902,9 +930,7 @@ export function RoomsPage() {
   }, []);
 
   useEffect(() => {
-    if (!wideViewport) {
-      setView("cards");
-    }
+    setView(wideViewport ? chosenView.current : "cards");
   }, [wideViewport]);
 
   useEffect(() => {
@@ -924,6 +950,7 @@ export function RoomsPage() {
   const total = roomList.length;
   const occupiedCount = roomList.filter((room) => room.status === "occupied").length;
   const vacantCount = total - occupiedCount;
+  const statsReady = period !== null && statsPeriod === period && !statsLoading && !statsError;
 
   const needle = query.trim().toLowerCase();
   const needleDigits = needle.replace(/\D/g, "");
@@ -942,29 +969,42 @@ export function RoomsPage() {
       room.roomNumber.toLowerCase().includes(needle) ||
       (room.occupiedBy !== null && room.occupiedBy.toLowerCase().includes(needle)) ||
       (phone !== "" && (phone.includes(needle) || (needleDigits !== "" && phone.replace(/\D/g, "").includes(needleDigits))));
-    const matchesStatus = statusFilter === "all" ? true : statusFilter === "occupied" ? room.status === "occupied" : room.status === "vacant";
+    const statStatus = statsReady ? roomStatById.get(room.id)?.status ?? null : null;
+    const matchesStatus =
+      statusFilter === "all"
+        ? true
+        : statusFilter === "occupied"
+          ? room.status === "occupied"
+          : statusFilter === "vacant"
+            ? room.status === "vacant"
+            : statusFilter === "unpaid"
+              ? statStatus === "unpaid"
+              : statStatus === "unbilled";
     return matchesQuery && matchesStatus;
   });
 
+  useEffect(() => {
+    rosterRef.current?.querySelector("table")?.setAttribute("aria-label", rosterTableName);
+  }, [view, wideViewport, filtered.length]);
+
   const duplicateId = roomList.some((room) => room.roomNumber === form.id.trim().toUpperCase() && room.id !== base?.id);
-  const defaults = rateDefaults ?? { waterRate: 0, electricRate: 0 };
+  const dormCharges = commonCharges(roomList);
 
   const billedPeriods = roomList
     .map((room) => room.lastElectricPeriod)
     .filter((value): value is string => value !== null);
-  const periodOptions = Array.from(new Set([...recentPeriods(6), ...billedPeriods])).sort().reverse();
-  const statsReady = period !== null && statsPeriod === period && !statsLoading && !statsError;
+  const periodList = periodOptions(billedPeriods);
 
-  const renderBillState = (room: Room, align: "left" | "right"): ReactNode => {
+  const renderBillState = (room: Room): ReactNode => {
     if (statsError) {
-      return <span className="text-xs text-fog">โหลดสถานะบิลไม่สำเร็จ</span>;
+      return <span className="text-fog">—</span>;
     }
 
     if (!statsReady) {
       return <span className="skeleton inline-block h-5 w-24 rounded-full" />;
     }
 
-    return <RoomBillState stat={roomStatById.get(room.id) ?? null} align={align} />;
+    return <RoomBillState stat={roomStatById.get(room.id) ?? null} />;
   };
 
   const filtering = needle !== "" || statusFilter !== "all";
@@ -977,21 +1017,16 @@ export function RoomsPage() {
         ? `แสดง ${filtered.length} จาก ${total} ห้อง · ทั้งหอมีผู้เช่า ${occupiedCount} · ว่าง ${vacantCount}`
         : `${total} ห้อง · มีผู้เช่า ${occupiedCount} · ว่าง ${vacantCount}`;
   const visibleAnnouncement = loaded && filtering ? `แสดง ${filtered.length} จาก ${total} ห้อง` : "";
-  const rateOverrideCount = roomList.filter(
-    (room) => room.waterRate !== null || (room.electricMode === "meter" && room.electricRate !== null),
-  ).length;
-  const rosterParts: string[] = [];
-
-  if (period !== null) {
-    rosterParts.push(`บิลรอบนี้คือ ${periodLabel(period)}`);
-    rosterParts.push("ค้างคือห้องที่บิลล่าสุดเก่ากว่ารอบล่าสุดของหอ");
-  }
-
-  if (rateOverrideCount > 0) {
-    rosterParts.push("ห้องที่ตั้งราคาเองมีป้าย อัตราพิเศษ · ห้องที่ไม่มีป้ายใช้อัตราทั้งหอ");
-  }
-
-  const rosterNote = rosterParts.join(" · ");
+  const behindRooms = Array.from(roomStatById.values()).filter((stat) => stat.behindPeriods > 0).length;
+  const roundShape =
+    statsReady && periodKpis !== null
+      ? `${periodKpis.bills}/${periodKpis.totalRooms} มีบิล · เก็บแล้ว ${moneyText(periodKpis.collectedAmount)} · ค้าง ${behindRooms} ห้อง`
+      : null;
+  const summaryShown = loaded && total > 0 && period !== null;
+  const summaryLine = summaryShown ? [periodLabel(period), roundShape].filter((part) => part !== null).join(" · ") : "";
+  const recurringLine = summaryShown
+    ? `ค่าใช้จ่ายเพิ่มเติมต่อห้อง ${moneyText(chargesTotal(dormCharges))} · ${chargeBreakdownText(dormCharges)}`
+    : "";
 
   const closeMenu = useCallback((restoreFocus: boolean) => {
     if (restoreFocus) {
@@ -1014,16 +1049,25 @@ export function RoomsPage() {
 
   const openAdd = () => {
     setBase(null);
-    setForm(emptyRoomForm(defaults, commonCharges(roomList)));
+    setForm(emptyRoomForm(rateDefaults, dormCharges));
     setFormError(null);
     setFormOpen(true);
   };
 
   const openEdit = (room: Room) => {
     setBase(room);
-    setForm(roomFormOf(room, defaults));
+    setForm(roomFormOf(room, rateDefaults));
     setFormError(null);
     setFormOpen(true);
+  };
+
+  const retryStats = () => {
+    setStatsReload((value) => value + 1);
+  };
+
+  const chooseView = (next: RoomView) => {
+    chosenView.current = next;
+    setView(next);
   };
 
   const saveRoom = async (input: RoomInput) => {
@@ -1060,79 +1104,43 @@ export function RoomsPage() {
       render: (room) => <span className="num font-medium text-charcoal">{room.roomNumber}</span>,
     },
     {
-      key: "status",
-      header: "สถานะ",
-      render: (room) => <RoomStatusBadge room={room} />,
-    },
-    {
       key: "tenant",
       header: "ผู้เช่า",
       render: (room) =>
-        room.occupiedBy === null ? <span className="text-fog">ยังไม่มีผู้เช่า</span> : <span className="text-charcoal">{room.occupiedBy}</span>,
-    },
-    {
-      key: "bill",
-      header: "บิลรอบนี้",
-      render: (room) => renderBillState(room, "left"),
+        room.occupiedBy === null ? <span className="text-fog">—</span> : <span className="text-charcoal">{room.occupiedBy}</span>,
     },
     {
       key: "rent",
       header: "ค่าเช่า",
       align: "right",
-      render: (room) => (
-        <RoomMoney room={room} label="ค่าเช่า">
-          <span className="whitespace-nowrap">{moneyText(room.rent)}</span>
-        </RoomMoney>
-      ),
-    },
-    {
-      key: "water",
-      header: "ค่าน้ำ",
-      align: "right",
-      render: (room) => (
-        <div className="flex items-center justify-end gap-2">
-          <RoomMoney room={room} label="ค่าน้ำ">
-            <span className={rateTextClass(waterInherited(room), true)}>{waterRateText(room, defaults)}</span>
-          </RoomMoney>
-          {room.waterRate !== null && <span className="chip">อัตราพิเศษ</span>}
-        </div>
-      ),
+      render: (room) => <span className="num text-charcoal">{moneyText(room.rent)}</span>,
     },
     {
       key: "electric",
       header: "ค่าไฟ",
       align: "right",
-      render: (room) => (
-        <div className="flex flex-col items-end gap-1">
-          <div className="flex items-center justify-end gap-2">
-            <RoomMoney room={room} label="ค่าไฟ">
-              <span className={rateTextClass(electricInherited(room), room.electricMode === "meter")}>{electricText(room, defaults)}</span>
-            </RoomMoney>
-            {room.electricMode === "flat" && <span className="chip">ไฟเหมา</span>}
-            {room.electricMode === "meter" && room.electricRate !== null && <span className="chip">อัตราพิเศษ</span>}
-          </div>
-          {room.electricMode === "flat" && <span className="text-[11px] text-fog">{flatElectricNote(room)}</span>}
-        </div>
-      ),
+      render: (room) => <ElectricFact room={room} defaults={rateDefaults} align="right" />,
     },
     {
       key: "recurring",
-      header: "ค่าประจำ",
+      header: "ค่าใช้จ่ายเพิ่มเติม",
       align: "right",
       render: (room) =>
-        room.charges.length === 0 ? null : (
-          <div className="flex justify-end">
-            <RecurringCharges room={room} align="right" />
-          </div>
-        ),
+        room.charges.length === 0 ? <span className="text-fog">—</span> : <span className="num text-charcoal">{moneyText(chargesTotal(room.charges))}</span>,
+    },
+    {
+      key: "bill",
+      header: "บิลรอบนี้",
+      render: (room) => renderBillState(room),
     },
     {
       key: "action",
-      header: "จัดการ",
+      header: "⋮",
       align: "right",
       render: (room) => (
         <div className="flex justify-end">
           <IconButton
+            className="h-6 w-6"
             icon="more_vert"
             label={`เปิดเมนูจัดการห้อง ${room.roomNumber}`}
             aria-haspopup="menu"
@@ -1152,7 +1160,7 @@ export function RoomsPage() {
         title="ห้องพัก"
         supporting={supporting}
         actions={
-          <Button variant="primary" icon="add" onClick={openAdd}>
+          <Button variant="primary" icon="add" className={primaryFillClass} onClick={openAdd}>
             เพิ่มห้อง
           </Button>
         }
@@ -1171,7 +1179,6 @@ export function RoomsPage() {
                 value={query}
                 onChange={setQuery}
                 placeholder="เช่น 108/7 หรือ นงลักษณ์"
-                helper="จับคู่เลขห้อง ชื่อผู้เช่า และเบอร์โทร"
               />
             </div>
             {period !== null && (
@@ -1182,7 +1189,7 @@ export function RoomsPage() {
                   onChange={(value) => {
                     setPeriod(value);
                   }}
-                  options={periodOptions.map((option) => ({ value: option, label: periodLabel(option) }))}
+                  options={periodList.map((option) => ({ value: option, label: periodLabel(option) }))}
                 />
               </div>
             )}
@@ -1191,7 +1198,7 @@ export function RoomsPage() {
                 label="สถานะ"
                 value={statusFilter}
                 onChange={(value) => {
-                  if (value === "all" || value === "occupied" || value === "vacant") {
+                  if (value === "all" || value === "occupied" || value === "vacant" || value === "unpaid" || value === "unbilled") {
                     setStatusFilter(value);
                   }
                 }}
@@ -1199,6 +1206,8 @@ export function RoomsPage() {
                   { value: "all", label: "ทั้งหมด" },
                   { value: "occupied", label: "มีผู้เช่า" },
                   { value: "vacant", label: "ว่าง" },
+                  { value: "unpaid", label: "ยังไม่จ่าย" },
+                  { value: "unbilled", label: "ยังไม่ออกบิล" },
                 ]}
               />
             </div>
@@ -1209,14 +1218,12 @@ export function RoomsPage() {
               <div className="flex gap-1 rounded-lg border border-ash p-1" role="group" aria-labelledby="rooms-view-label">
                 <button
                   type="button"
+                  disabled={!wideViewport}
                   aria-pressed={wideViewport && view === "table"}
-                  aria-disabled={!wideViewport}
                   aria-label={wideViewport ? undefined : "ตาราง ใช้ได้บนหน้าจอใหญ่เท่านั้น"}
-                  className={`btn ${!wideViewport ? "cursor-not-allowed text-silver" : view === "table" ? "bg-paper-mist text-charcoal" : "text-steel"}`}
+                  className={`btn ${!wideViewport ? "cursor-not-allowed" : view === "table" ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel"}`}
                   onClick={() => {
-                    if (wideViewport) {
-                      setView("table");
-                    }
+                    chooseView("table");
                   }}
                 >
                   <span className="ms text-[18px]" aria-hidden="true">
@@ -1227,9 +1234,9 @@ export function RoomsPage() {
                 <button
                   type="button"
                   aria-pressed={view === "cards"}
-                  className={`btn ${view === "cards" ? "bg-paper-mist text-charcoal" : "text-steel"}`}
+                  className={`btn ${view === "cards" ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel"}`}
                   onClick={() => {
-                    setView("cards");
+                    chooseView("cards");
                   }}
                 >
                   <span className="ms text-[18px]" aria-hidden="true">
@@ -1239,9 +1246,28 @@ export function RoomsPage() {
                 </button>
               </div>
             </div>
-            <p className="hidden text-xs text-fog md:block md:pb-3">ช่องค้นหาด้านบนของหน้านี้จับคู่เลขห้อง ชื่อผู้เช่า และเบอร์โทร</p>
           </div>
         </Card>
+      )}
+
+      {summaryShown && (
+        <div className="mb-3">
+          <p className="num text-sm text-charcoal">{summaryLine}</p>
+          <p className="num mt-1 text-xs text-fog">{recurringLine}</p>
+          <p className="mt-1 text-xs text-fog">ค้างคือห้องที่บิลล่าสุดเก่ากว่ารอบล่าสุดของหอ</p>
+        </div>
+      )}
+
+      {loaded && statsError && (
+        <div
+          className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger bg-danger-soft px-4 py-3"
+          role="alert"
+        >
+          <p className="text-sm text-danger">โหลดสถานะบิลของรอบนี้ไม่สำเร็จ จึงยังบอกไม่ได้ว่าห้องไหนจ่ายแล้ว</p>
+          <Button variant="secondary" size="sm" icon="refresh" onClick={retryStats}>
+            ลองใหม่
+          </Button>
+        </div>
       )}
 
       {loading ? (
@@ -1281,7 +1307,7 @@ export function RoomsPage() {
               title="ยังไม่มีห้องพัก"
               description="เพิ่มห้องแรกเพื่อตั้งค่าเช่า อัตราน้ำไฟ และติดตามสถานะผู้เช่าในที่เดียว"
               action={
-                <Button variant="primary" icon="add" onClick={openAdd}>
+                <Button variant="primary" icon="add" className={primaryFillClass} onClick={openAdd}>
                   เพิ่มห้องแรก
                 </Button>
               }
@@ -1309,91 +1335,81 @@ export function RoomsPage() {
           </Card>
         )
       ) : view === "table" && wideViewport ? (
-        <>
-          {rosterNote !== "" && <p className="mb-2 text-xs text-fog">{rosterNote}</p>}
-          <Card>
-            <figure>
-              <figcaption id="rooms-table-caption" className="sr-only">
-                ตารางห้องพัก แต่ละแถวคือหนึ่งห้อง พร้อมสถานะบิลของรอบบิล ค่าเช่า ค่าน้ำ ค่าไฟ และค่าใช้จ่ายประจำ
-              </figcaption>
-              <DataTable columns={columns} rows={filtered} getRowKey={(room) => room.id} minWidth={1040} />
-            </figure>
-          </Card>
-        </>
-      ) : (
-        <>
-          {rosterNote !== "" && <p className="mb-2 text-xs text-fog">{rosterNote}</p>}
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {filtered.map((room) => (
-              <Card key={room.id}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <span className="num block text-base font-medium text-charcoal">{room.roomNumber}</span>
-                    <span className="block text-xs text-fog">{room.occupiedBy ?? "ยังไม่มีผู้เช่า"}</span>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <RoomStatusBadge room={room} />
-                    <IconButton
-                      icon="more_vert"
-                      label={`เปิดเมนูจัดการห้อง ${room.roomNumber}`}
-                      aria-haspopup="menu"
-                      aria-expanded={menu?.room.id === room.id}
-                      onClick={(event) => {
-                        openMenu(room, event.currentTarget);
-                      }}
-                    />
-                  </div>
-                </div>
-                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-ash pt-3">
-                  <div className="col-span-2">
-                    <dt className="text-xs text-fog">บิลรอบนี้</dt>
-                    <dd className="mt-1">{renderBillState(room, "left")}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-fog">ค่าเช่า</dt>
-                    <dd className="num text-sm text-charcoal">{moneyText(room.rent)}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-fog">ค่าน้ำ</dt>
-                    <dd className={`${rateTextClass(waterInherited(room), true)} text-sm`}>{waterRateText(room, defaults)}</dd>
-                    {room.waterRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
-                  </div>
-                  <div>
-                    <dt className="text-xs text-fog">ค่าไฟ</dt>
-                    <dd className={`${rateTextClass(electricInherited(room), room.electricMode === "meter")} text-sm`}>
-                      {electricText(room, defaults)}
-                    </dd>
-                    {room.electricMode === "flat" && <span className="chip mt-1">ไฟเหมา</span>}
-                    {room.electricMode === "meter" && room.electricRate !== null && <span className="chip mt-1">อัตราพิเศษ</span>}
-                    {room.electricMode === "flat" && <p className="mt-1 text-[11px] text-fog">{flatElectricNote(room)}</p>}
-                  </div>
-                  {room.charges.length > 0 && (
-                    <div>
-                      <dt className="text-xs text-fog">ค่าประจำ</dt>
-                      <dd>
-                        <RecurringCharges room={room} align="left" />
-                      </dd>
-                    </div>
-                  )}
-                  <div>
-                    <dt className="text-xs text-fog">มิเตอร์เริ่มต้น</dt>
-                    <dd className="num text-sm text-charcoal">{meterText(room)}</dd>
-                  </div>
-                </dl>
-              </Card>
-            ))}
+        <Card>
+          <div ref={rosterRef}>
+            <DataTable
+              columns={columns}
+              rows={filtered}
+              getRowKey={(room) => room.id}
+              minWidth={860}
+              wrapClassName="max-h-[calc(100dvh-28rem)] [&_tbody_tr]:h-11 [&_td]:whitespace-nowrap [&_td]:py-2 [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-canvas-white [&_th]:py-2"
+            />
           </div>
-        </>
+        </Card>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {filtered.map((room) => (
+            <Card key={room.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="num block text-base font-medium text-charcoal">{room.roomNumber}</span>
+                  <span className="block truncate text-xs text-fog">{room.occupiedBy ?? "—"}</span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <IconButton
+                    icon="more_vert"
+                    label={`เปิดเมนูจัดการห้อง ${room.roomNumber}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menu?.room.id === room.id}
+                    onClick={(event) => {
+                      openMenu(room, event.currentTarget);
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-ash pt-3">
+                <span className="text-xs text-fog">บิลรอบนี้</span>
+                {renderBillState(room)}
+              </div>
+              <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+                <div>
+                  <dt className="text-xs text-fog">ค่าเช่า</dt>
+                  <dd className="num mt-0.5 text-sm text-charcoal">{moneyText(room.rent)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-fog">ค่าไฟ</dt>
+                  <dd className="mt-0.5 text-sm">
+                    <ElectricFact room={room} defaults={rateDefaults} align="left" />
+                  </dd>
+                </div>
+                {room.charges.length > 0 && (
+                  <div>
+                    <dt className="text-xs text-fog">ค่าใช้จ่ายเพิ่มเติม</dt>
+                    <dd className="num mt-0.5 text-sm text-charcoal">{moneyText(chargesTotal(room.charges))}</dd>
+                  </div>
+                )}
+              </dl>
+            </Card>
+          ))}
+        </div>
       )}
 
-      {menu !== null && <RoomMenu state={menu} period={period} onClose={closeMenu} onEdit={openEdit} />}
+      {menu !== null && (
+        <RoomMenu
+          state={menu}
+          period={period}
+          createBill={statsReady && roomStatById.get(menu.room.id)?.status === "unbilled"}
+          onClose={closeMenu}
+          onEdit={openEdit}
+        />
+      )}
 
       <RoomDrawer
         open={formOpen}
         seedKey={base === null ? "add" : base.id}
         base={base}
         form={form}
-        defaults={defaults}
+        defaults={rateDefaults}
         duplicateId={duplicateId}
         saving={saving}
         serverError={formError}
