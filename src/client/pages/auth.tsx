@@ -151,6 +151,7 @@ function LoginForm({
   const [error, setError] = useState<ApiError | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -237,14 +238,32 @@ function LoginForm({
         </Button>
       </form>
 
-      <div className="mt-4 border-t border-ash pt-3">
+      <div className="mt-4 flex flex-col items-start gap-2 border-t border-ash pt-3">
         <p className="text-xs text-fog">
           สมาชิกในครอบครัวเข้าได้ด้วยคำเชิญจากเจ้าของหอเท่านั้น
-          และลืมรหัสผ่านให้ใช้ปุ่ม Google ด้านบนได้ถ้าอีเมลตรงกัน
         </p>
+        <div>
+          <button
+            type="button"
+            aria-expanded={recoveryOpen}
+            className="text-xs text-electric-blue underline underline-offset-2"
+            onClick={() => {
+              setRecoveryOpen((previous) => !previous);
+            }}
+          >
+            ลืมรหัสผ่าน
+          </button>
+          {recoveryOpen && (
+            <p className="mt-1.5 text-xs text-steel">
+              ระบบนี้ไม่มีลิงก์รีเซ็ตทางอีเมล ใช้ปุ่ม “เข้าสู่ระบบด้วย Google”
+              ด้านบนด้วยอีเมลเดียวกันได้เลย เจ้าของหอเข้าได้เอง
+              ส่วนสมาชิกให้ขอคำเชิญใหม่จากเจ้าของหอ
+            </p>
+          )}
+        </div>
         <button
           type="button"
-          className="mt-1.5 text-xs text-electric-blue underline underline-offset-2"
+          className="text-xs text-electric-blue underline underline-offset-2"
           onClick={onFirstRun}
         >
           ตั้งเจ้าของหอครั้งแรก
