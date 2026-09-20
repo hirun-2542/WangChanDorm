@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, changePassword } from "./api";
 import { useAuth } from "./auth";
 import { Button, Dialog, PasswordField, RoleBadge } from "./ui";
@@ -16,8 +16,28 @@ function AccountDialog({
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * ปิดแล้วเปิดใหม่ต้องเริ่มจากศูนย์
+   *
+   * ทั้งข้อความ error เก่าและรหัสผ่านที่พิมพ์ค้างไว้ไม่ควรอยู่ต่อ เพราะเครื่องนี้
+   * อาจเป็นเครื่องใช้ร่วมกันในบ้าน และการเห็น error ค้างทำให้เข้าใจว่าเพิ่งล้มเหลวอีกครั้ง
+   */
+  useEffect(() => {
+    if (open) {
+      return;
+    }
+
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setError(null);
+    setNotice(null);
+    setConfirmingSignOut(false);
+  }, [open]);
 
   const change = (event: FormEvent) => {
     event.preventDefault();
@@ -49,8 +69,19 @@ function AccountDialog({
       });
   };
 
+  /**
+   * ออกจากระบบต้องกดสองครั้ง
+   *
+   * ปุ่มนี้เคยอยู่แถบล่างติดกับ "ปิด" ห่างกัน 8px ทั้งคู่สูงเท่ากัน พลาดคลิกครั้งเดียว
+   * คือหลุดจากเครื่องที่ใช้ทำบิลกลางเดือน แล้วต้องพิมพ์รหัสยาวใหม่
+   */
   const leave = () => {
     if (signingOut) {
+      return;
+    }
+
+    if (!confirmingSignOut) {
+      setConfirmingSignOut(true);
       return;
     }
 
@@ -78,19 +109,9 @@ function AccountDialog({
       onClose={onClose}
       title="บัญชีของฉัน"
       footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            ปิด
-          </Button>
-          <Button
-            variant="danger-soft"
-            icon="logout"
-            disabled={signingOut}
-            onClick={leave}
-          >
-            {signingOut ? "กำลังออกจากระบบ" : "ออกจากระบบ"}
-          </Button>
-        </>
+        <Button variant="ghost" onClick={onClose}>
+          ปิด
+        </Button>
       }
     >
       {user !== null && (
@@ -127,6 +148,8 @@ function AccountDialog({
               label="รหัสผ่านเดิม"
               value={currentPassword}
               onChange={setCurrentPassword}
+              autoComplete="current-password"
+              name="currentPassword"
               error={
                 error !== null && error.field === "currentPassword"
                   ? error.message
@@ -138,6 +161,8 @@ function AccountDialog({
               value={newPassword}
               onChange={setNewPassword}
               helper="อย่างน้อย 12 ตัวอักษร"
+              autoComplete="new-password"
+              name="newPassword"
               error={
                 error !== null && error.field === "newPassword"
                   ? error.message
@@ -149,7 +174,18 @@ function AccountDialog({
               value={confirmPassword}
               onChange={setConfirmPassword}
               matches={newPassword}
+              autoComplete="new-password"
+              name="confirmPassword"
             />
+            {/*
+              ข้อความใต้ช่องไม่ใช่ live region — โปรแกรมอ่านหน้าจอจึงไม่ได้ยินว่า
+              เปลี่ยนรหัสผ่านไม่สำเร็จ เพราะโฟกัสยังอยู่ที่ปุ่มส่ง ไม่ได้กลับไปที่ช่อง
+            */}
+            {error !== null && error.field !== undefined && (
+              <p className="sr-only" role="alert">
+                {error.message}
+              </p>
+            )}
             {formNotice !== null && (
               <p className="text-xs text-danger" role="alert">
                 {formNotice.message}
@@ -174,6 +210,26 @@ function AccountDialog({
               {busy ? "กำลังเปลี่ยนรหัสผ่าน" : "เปลี่ยนรหัสผ่าน"}
             </Button>
           </form>
+
+          <div className="border-t border-ash pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-fog">
+                ออกจากระบบแล้วต้องเข้าสู่ระบบใหม่ด้วยอีเมลและรหัสผ่านเดิม
+              </p>
+              <Button
+                variant="danger-soft"
+                icon="logout"
+                disabled={signingOut}
+                onClick={leave}
+              >
+                {signingOut
+                  ? "กำลังออกจากระบบ"
+                  : confirmingSignOut
+                    ? "กดอีกครั้งเพื่อออกจากระบบ"
+                    : "ออกจากระบบ"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </Dialog>

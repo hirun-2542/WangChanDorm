@@ -215,6 +215,11 @@ describe("setting up the first owner", () => {
     });
 
     expect(response.status).toBe(409);
+
+    // คำตอบต้องไม่ผูกกับช่องใด หน้าจอจึงจะแสดงข้อความช่วยเหลือ "ให้เข้าสู่ระบบ
+    // ด้วยบัญชีเดิม" ได้ ถ้าใส่ field กลับเข้ามา ข้อความนั้นจะหายไปเงียบ ๆ
+    const body = await response.json<{ error: { field?: string } }>();
+    expect(body.error.field).toBeUndefined();
   });
 });
 
@@ -440,6 +445,68 @@ async function createAccountWithPassword(
 
   return { cookie: cookieFrom(accepted), familyId: family };
 }
+
+describe("invite preview", () => {
+  it("tells the person opening the link which dorm invited them, and to which email", async () => {
+    const family = await createFamily("หอที่บอกชื่อตัวเอง");
+    const owner = await signIn("owner", family);
+
+    const invited = await post("/api/family/invites", { email: "invited@example.com", role: "member" }, owner.cookie);
+    const { invite } = await invited.json<{ invite: { token: string } }>();
+
+    const response = await SELF.fetch(`${base}/api/auth/invites/${encodeURIComponent(invite.token)}`);
+    expect(response.status).toBe(200);
+
+    const body = await response.json<{ ok: true; familyName: string; email: string; expiresAt: string }>();
+    expect(body.familyName).toBe("หอที่บอกชื่อตัวเอง");
+    expect(body.email).toBe("invited@example.com");
+    expect(body.expiresAt.length).toBeGreaterThan(0);
+
+    // เส้นนี้เปิดให้คนที่ยังไม่มีบัญชี จึงต้องตอบเท่าที่คนถือลิงก์ควรเห็น ไม่มากกว่านั้น
+    expect(Object.keys(body).sort()).toEqual(["email", "expiresAt", "familyName", "ok"]);
+  });
+
+  it("treats an unknown invite exactly like one that was already used", async () => {
+    const family = await createFamily("หอคำเชิญที่ใช้แล้ว");
+    const owner = await signIn("owner", family);
+
+    const invited = await post("/api/family/invites", { email: "used@example.com", role: "member" }, owner.cookie);
+    const { invite } = await invited.json<{ invite: { token: string } }>();
+
+    const accepted = await post("/api/auth/accept-invite", {
+      token: invite.token,
+      displayName: "ผู้ใช้คำเชิญ",
+      password: "another-long-password",
+    });
+    expect(accepted.status).toBe(201);
+
+    for (const token of ["no-such-token", invite.token]) {
+      const response = await SELF.fetch(`${base}/api/auth/invites/${encodeURIComponent(token)}`);
+      const body = await response.json<{ error: { message: string } }>();
+
+      expect([token, response.status]).toEqual([token, 400]);
+      expect(body.error.message).toBe("คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว");
+    }
+  });
+
+  it("does not spend the login rate limit when someone opens an old link", async () => {
+    // ตัวนับ "พยายามเข้าสู่ระบบ" แยกตาม IP และใช้ร่วมกันทั้งระบบ ถ้าเส้นนี้ไปนับ
+    // การเปิดลิงก์เก่าที่ค้างในแชท เจ้าของหอจะล็อกอินตัวเองไม่ได้เพราะลิงก์ของตัวเอง
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const response = await SELF.fetch(`${base}/api/auth/invites/expired-${attempt}`);
+      expect(response.status).toBe(400);
+    }
+
+    const login = await post("/api/auth/login", {
+      email: "ghost@example.com",
+      password: "guess-guess-guess",
+    });
+    expect(login.status).not.toBe(429);
+
+    // คืนสภาพเดิม: การล็อกอินที่ล้มเหลวข้างบนบันทึกไว้หนึ่งครั้ง
+    await env.DB.prepare("DELETE FROM login_attempts").run();
+  });
+});
 
 describe("family membership", () => {
   // ทุกเทสต์ใช้ครอบครัวของตัวเอง เพราะหนึ่งครอบครัวรับได้ 2 คน (เพดานของผลิตภัณฑ์)

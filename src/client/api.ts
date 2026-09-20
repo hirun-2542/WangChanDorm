@@ -835,6 +835,32 @@ export async function setupOwner(input: SetupOwnerInput): Promise<AuthUser> {
 /** ปลายทางเริ่มล็อกอินด้วย Google — พาเบราว์เซอร์ไปทั้งหน้า ไม่ใช่ fetch */
 export const googleSignInPath = "/api/auth/google/start";
 
+export interface InvitePreview {
+  /** ชื่อหอที่คำเชิญชวนไปร่วม */
+  familyName: string;
+  /** อีเมลที่คำเชิญผูกไว้ — เซิร์ฟเวอร์เป็นคนกำหนด ผู้ใช้แก้ไม่ได้ */
+  email: string;
+  expiresAt: string;
+}
+
+/**
+ * ดูข้อมูลคำเชิญจากโทเคน ก่อนให้ผู้รับตั้งชื่อและรหัสผ่าน
+ *
+ * ทำให้หน้าคำเชิญบอกได้ว่าใครเชิญไปหอไหน และรู้ทันทีถ้าลิงก์ใช้ไม่ได้
+ * เส้นทางนี้เปิดให้ไม่ต้องล็อกอิน เพราะคนที่เปิดลิงก์ยังไม่มีบัญชี
+ */
+export async function fetchInvitePreview(token: string): Promise<InvitePreview> {
+  const body = await apiGet<{ ok: true } & InvitePreview>(
+    `/api/auth/invites/${encodeURIComponent(token)}`,
+  );
+
+  return {
+    familyName: body.familyName,
+    email: body.email,
+    expiresAt: body.expiresAt,
+  };
+}
+
 export async function acceptInvite(input: {
   token: string;
   displayName: string;

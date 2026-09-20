@@ -116,6 +116,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (inviteToken !== null) {
     return (
       <InviteAcceptScreen
+        // คำเชิญคนละใบต้องเริ่มจากฟอร์มเปล่า ไม่ใช่ค้างชื่อที่พิมพ์ไว้ของใบก่อน
+        key={inviteToken}
         token={inviteToken}
         onSignedIn={(next) => {
           signIn(next);

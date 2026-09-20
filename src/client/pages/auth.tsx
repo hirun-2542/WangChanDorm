@@ -2,13 +2,16 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   ApiError,
   acceptInvite,
+  fetchInvitePreview,
   fetchMe,
   googleSignInPath,
   login,
   setupOwner,
   type AuthUser,
+  type InvitePreview,
 } from "../api";
 import { Button, Card, Field, Monogram, PasswordField, Skeleton } from "../ui";
+import { dateLabel } from "./bills-shared";
 
 function fieldErrorOf(
   error: ApiError | null,
@@ -43,15 +46,20 @@ function FormNotice({
   );
 }
 
-/** บอกสาเหตุตามสถานะที่เซิร์ฟเวอร์ตอบ เพราะผู้ใช้ต้องรู้ว่าต้องแก้ที่ใด */
+/**
+ * บอกสาเหตุตามสถานะที่เซิร์ฟเวอร์ตอบ เพราะผู้ใช้ต้องรู้ว่าต้องแก้ที่ใด
+ *
+ * ไม่พูดถึงตัวแปรสภาพแวดล้อมหรือคำว่า "เซิร์ฟเวอร์" — คนที่เห็นหน้านี้คือเจ้าของหอ
+ * ไม่ใช่คนดูแลระบบ และข้อความต้องบอกว่าให้ทำอะไรต่อ ไม่ใช่บอกว่าอะไรผิด
+ */
 function setupDetail(status: number): string | undefined {
   switch (status) {
     case 503:
-      return "เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า OWNER_EMAIL จึงตั้งเจ้าของระบบไม่ได้";
+      return "ระบบยังไม่ได้ตั้งค่าอีเมลเจ้าของหอ จึงตั้งเจ้าของหอตอนนี้ไม่ได้";
     case 409:
       return "หอนี้มีเจ้าของแล้ว ให้เข้าสู่ระบบด้วยบัญชีเดิม";
     case 403:
-      return "อีเมลนี้ไม่ตรงกับเจ้าของระบบที่ตั้งไว้บนเซิร์ฟเวอร์ (OWNER_EMAIL)";
+      return "อีเมลนี้ไม่ตรงกับเจ้าของหอที่ตั้งไว้สำหรับหอนี้";
     case 429:
       return "พยายามหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่";
     default:
@@ -205,6 +213,8 @@ function LoginForm({
           value={email}
           onChange={setEmail}
           placeholder="owner@example.com"
+          autoComplete="username"
+          name="email"
           error={
             fieldErrorOf(error, "email") ??
             (submitted && email.trim() === "" ? "กรอกอีเมล" : undefined)
@@ -214,6 +224,8 @@ function LoginForm({
           label="รหัสผ่าน"
           value={password}
           onChange={setPassword}
+          autoComplete="current-password"
+          name="password"
           error={
             fieldErrorOf(error, "password") ??
             (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
@@ -303,7 +315,7 @@ function SetupForm({
   return (
     <AuthLayout
       title="ตั้งเจ้าของหอ"
-      description="ใช้ครั้งแรกเมื่อหอนี้ยังไม่มีเจ้าของ ใช้อีเมลที่ตั้งไว้ใน OWNER_EMAIL บนเซิร์ฟเวอร์"
+      description="ใช้ครั้งแรกเมื่อหอนี้ยังไม่มีเจ้าของ กรอกอีเมลเจ้าของหอที่ตั้งไว้สำหรับหอนี้"
     >
       <form className="grid gap-4" onSubmit={submit} noValidate>
         <Field
@@ -311,6 +323,8 @@ function SetupForm({
           value={displayName}
           onChange={setDisplayName}
           placeholder="เช่น สมชาย"
+          autoComplete="name"
+          name="displayName"
           error={
             fieldErrorOf(error, "displayName") ??
             (submitted && displayName.trim() === ""
@@ -324,7 +338,9 @@ function SetupForm({
           value={email}
           onChange={setEmail}
           placeholder="owner@example.com"
-          helper="ต้องตรงกับเจ้าของหอที่ตั้งไว้บนเซิร์ฟเวอร์"
+          helper="ต้องเป็นอีเมลเจ้าของหอที่ตั้งไว้สำหรับหอนี้"
+          autoComplete="email"
+          name="email"
           error={
             fieldErrorOf(error, "email") ??
             (submitted && email.trim() === "" ? "กรอกอีเมล" : undefined)
@@ -335,6 +351,8 @@ function SetupForm({
           value={password}
           onChange={setPassword}
           helper="อย่างน้อย 12 ตัวอักษร"
+          autoComplete="new-password"
+          name="password"
           error={
             fieldErrorOf(error, "password") ??
             (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
@@ -345,6 +363,8 @@ function SetupForm({
           value={confirm}
           onChange={setConfirm}
           matches={password}
+          autoComplete="new-password"
+          name="confirmPassword"
           error={submitted && confirm === "" ? "กรอกรหัสผ่านอีกครั้ง" : undefined}
         />
         <Field
@@ -352,6 +372,8 @@ function SetupForm({
           value={familyName}
           onChange={setFamilyName}
           helper="ตั้งให้หอนี้ได้เลย เว้นว่างได้ถ้าไม่ต้องการเปลี่ยน"
+          autoComplete="organization"
+          name="familyName"
           error={fieldErrorOf(error, "familyName")}
         />
         {notice !== null && (
@@ -428,8 +450,50 @@ export function InviteAcceptScreen({
   const [error, setError] = useState<ApiError | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<InvitePreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
 
   const mismatch = confirm !== "" && confirm !== password;
+
+  /**
+   * ถามข้อมูลคำเชิญก่อนให้ตั้งรหัสผ่าน
+   *
+   * คนที่เปิดลิงก์จาก LINE ต้องรู้ว่าใครเชิญให้ไปหอไหน และควรรู้ทันทีถ้าลิงก์ใช้ไม่ได้
+   * แทนที่จะกรอกครบทุกช่องแล้วเพิ่งเจอข้อความปฏิเสธตอนกดส่ง
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    // ล้างของเดิมก่อนยิงใหม่ เพราะเบราว์เซอร์เปลี่ยนแค่ hash ได้ (แก้ลิงก์เอง)
+    // ถ้าไม่ล้าง หน้าจะค้างอีเมลของคำเชิญอันก่อนไว้ทั้งที่โทเคนเปลี่ยนแล้ว
+    setPreview(null);
+    setPreviewError(null);
+    setChecking(true);
+
+    void fetchInvitePreview(token)
+      .then((data) => {
+        if (!cancelled) {
+          setPreview(data);
+        }
+      })
+      .catch((failure: unknown) => {
+        if (!cancelled) {
+          setPreviewError(
+            failure instanceof ApiError ? failure.message : "เปิดคำเชิญไม่สำเร็จ",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setChecking(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -471,10 +535,41 @@ export function InviteAcceptScreen({
       ? error
       : null;
 
+  if (checking) {
+    return (
+      <AuthLayout title="รับคำเชิญ" description="กำลังตรวจสอบคำเชิญ">
+        <div className="grid justify-items-center gap-3" aria-busy="true">
+          <Skeleton className="h-2 w-40" />
+        </div>
+      </AuthLayout>
+    );
+  }
+
+  // ลิงก์ใช้ไม่ได้ — บอกสาเหตุและทางออก ไม่ปล่อยให้กรอกฟอร์มที่ไม่มีทางสำเร็จ
+  if (preview === null) {
+    return (
+      <AuthLayout title="รับคำเชิญ" description="ลิงก์นี้ใช้ไม่ได้แล้ว">
+        <FormNotice
+          message={previewError ?? "เปิดคำเชิญไม่สำเร็จ"}
+          detail="ขอคำเชิญใหม่จากเจ้าของหอ แล้วเปิดลิงก์นั้นอีกครั้ง"
+        />
+        <div className="mt-4 border-t border-ash pt-3">
+          <button
+            type="button"
+            className="text-xs text-electric-blue underline underline-offset-2"
+            onClick={onLeave}
+          >
+            ไปหน้าเข้าสู่ระบบ
+          </button>
+        </div>
+      </AuthLayout>
+    );
+  }
+
   return (
     <AuthLayout
       title="รับคำเชิญ"
-      description="ตั้งชื่อที่แสดงและรหัสผ่านเพื่อเข้าใช้งานหอที่เชิญคุณ"
+      description={`ตั้งชื่อที่แสดงและรหัสผ่านเพื่อเข้าใช้งาน${preview.familyName}`}
     >
       <form className="grid gap-4" onSubmit={submit} noValidate>
         <Field
@@ -482,6 +577,8 @@ export function InviteAcceptScreen({
           value={displayName}
           onChange={setDisplayName}
           placeholder="เช่น สมชาย"
+          autoComplete="name"
+          name="displayName"
           error={
             fieldErrorOf(error, "displayName") ??
             (submitted && displayName.trim() === ""
@@ -489,11 +586,22 @@ export function InviteAcceptScreen({
               : undefined)
           }
         />
+        <Field
+          label="อีเมลที่ถูกเชิญ"
+          type="email"
+          value={preview.email}
+          autoComplete="username"
+          name="email"
+          readOnly
+          helper={`คำเชิญนี้ใช้ได้ครั้งเดียว หมดอายุ ${dateLabel(preview.expiresAt)}`}
+        />
         <PasswordField
           label="รหัสผ่าน"
           value={password}
           onChange={setPassword}
           helper="อย่างน้อย 12 ตัวอักษร · ถ้ามีบัญชีอยู่แล้วให้ใช้รหัสผ่านเดิมของบัญชีนั้น"
+          autoComplete="new-password"
+          name="password"
           error={
             fieldErrorOf(error, "password") ??
             (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
@@ -504,6 +612,8 @@ export function InviteAcceptScreen({
           value={confirm}
           onChange={setConfirm}
           matches={password}
+          autoComplete="new-password"
+          name="confirmPassword"
           error={submitted && confirm === "" ? "กรอกรหัสผ่านอีกครั้ง" : undefined}
         />
         {notice !== null && (

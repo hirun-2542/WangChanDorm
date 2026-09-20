@@ -235,10 +235,13 @@ auth.post("/setup", async (c) => {
     return c.json(errorBody("VALIDATION", passwordMessage, "password"), 400);
   }
 
+  // สามคำตอบข้างล่างนี้จงใจไม่ผูกกับช่องใด (ไม่ส่ง field) เพราะหน้าจอต้องบอก
+  // "ให้ทำอะไรต่อ" ไม่ใช่ชี้ว่าอีเมลผิด — ถ้าผูก field ไว้ ฝั่งเว็บจะแสดงข้อความ
+  // ใต้ช่องอีเมลแทน และข้อความช่วยเหลือใน setupDetail() จะไม่ถูกเรียกเลย
   if (!sameEmail(email, ownerEmail)) {
     await recordAttempt(c.env.DB, scope);
     return c.json(
-      errorBody("VALIDATION", "อีเมลนี้ไม่ใช่เจ้าของระบบที่ตั้งค่าไว้", "email"),
+      errorBody("VALIDATION", "อีเมลนี้ไม่ใช่เจ้าของระบบที่ตั้งค่าไว้"),
       403,
     );
   }
@@ -254,7 +257,7 @@ auth.post("/setup", async (c) => {
     .first<{ id: string }>();
 
   if (existing !== null) {
-    return c.json(errorBody("DUPLICATE", "อีเมลนี้มีบัญชีอยู่แล้ว", "email"), 409);
+    return c.json(errorBody("DUPLICATE", "อีเมลนี้มีบัญชีอยู่แล้ว"), 409);
   }
 
   const claimed = await claimLegacyFamily(
@@ -266,7 +269,7 @@ auth.post("/setup", async (c) => {
   );
 
   if (claimed === "taken") {
-    return c.json(errorBody("CONFLICT", "หอนี้มีเจ้าของแล้ว กรุณาเข้าสู่ระบบ", "email"), 409);
+    return c.json(errorBody("CONFLICT", "หอนี้มีเจ้าของแล้ว กรุณาเข้าสู่ระบบ"), 409);
   }
 
   const token = await createSession(c.env.DB, claimed.userId, claimed.familyId);
@@ -498,6 +501,48 @@ auth.post("/login", async (c) => {
   c.header("set-cookie", sessionCookie(token, isSecureRequest(c)));
 
   return c.json({ ok: true });
+});
+
+/**
+ * ข้อมูลคำเชิญสำหรับหน้าตั้งบัญชีของผู้รับ
+ *
+ * คนที่เปิดลิงก์คือคนที่ยังไม่มีบัญชี เส้นทางนี้จึงอยู่ใต้ /api/auth/ ที่ไม่ต้องล็อกอิน
+ * และตอบเฉพาะสิ่งที่ผู้ถือลิงก์ควรเห็นอยู่แล้ว — ชื่อหอ · อีเมลที่ถูกเชิญ · วันหมดอายุ
+ * ไม่ตอบว่าใครเชิญหรือมีใครอยู่ในครอบครัวแล้วบ้าง
+ *
+ * ไม่บันทึกความพยายามที่ล้มเหลวเหมือนเส้นทางอื่น เพราะตัวนับแยกตาม IP ร่วมกับ
+ * การล็อกอิน การเปิดลิงก์เก่าซ้ำ ๆ จึงต้องไม่ทำให้เจ้าของหอล็อกอินตัวเองไม่ได้
+ */
+auth.get("/invites/:token", async (c) => {
+  const rawToken = c.req.param("token").trim();
+
+  if (rawToken === "" || rawToken.length > 200) {
+    return c.json(errorBody("VALIDATION", "คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว", "token"), 400);
+  }
+
+  if (await tooManyAttempts(c.env.DB, clientScope(c))) {
+    return c.json(errorBody("VALIDATION", "พยายามหลายครั้งเกินไป กรุณารอสักครู่"), 429);
+  }
+
+  const invite = await c.env.DB.prepare(
+    `SELECT i.email, i.expires_at, f.name AS family_name
+     FROM family_invites i
+     JOIN families f ON f.id = i.family_id
+     WHERE i.token_hash = ? AND i.accepted_at IS NULL AND i.expires_at > datetime('now')`,
+  )
+    .bind(await hashToken(rawToken))
+    .first<{ email: string; expires_at: string; family_name: string }>();
+
+  if (invite === null) {
+    return c.json(errorBody("VALIDATION", "คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว", "token"), 400);
+  }
+
+  return c.json({
+    ok: true,
+    familyName: invite.family_name,
+    email: invite.email,
+    expiresAt: invite.expires_at,
+  });
 });
 
 /** สร้างบัญชีจากคำเชิญเท่านั้น ไม่เปิดสมัครอิสระ */
