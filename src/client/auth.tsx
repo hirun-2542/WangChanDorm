@@ -15,8 +15,6 @@ export interface AuthValue {
   user: AuthUser | null;
   /** กำลังตรวจเซสชันครั้งแรกก่อนตัดสินใจว่าจะแสดงหน้าใด */
   checking: boolean;
-  /** ตั้งผู้ใช้หลังเข้าสู่ระบบหรือรับคำเชิญสำเร็จ */
-  signIn: (user: AuthUser) => void;
   /** ออกจากระบบที่เซิร์ฟเวอร์แล้วพากลับหน้าเข้าสู่ระบบ */
   signOut: () => Promise<void>;
 }
@@ -27,12 +25,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checking, setChecking] = useState(true);
 
+  /**
+   * ตรวจเซสชันจากคุกกี้
+   *
+   * ไม่มี "ตั้งผู้ใช้หลังเข้าสู่ระบบ" ให้เรียกแล้ว เพราะการเข้าสู่ระบบด้วย Google
+   * ออกจากหน้าไปที่ Google แล้วกลับมาที่ / ทั้งหน้า โหลดครั้งถัดไปจึงเรียกตัวนี้
+   * เองและได้เซสชันที่เซิร์ฟเวอร์เพิ่งสร้างให้
+   */
   const load = useCallback(async () => {
     try {
       setUser(await fetchMe());
     } catch {
       // 401 คือยังไม่เข้าสู่ระบบ ส่วนเน็ตหรือเซิร์ฟเวอร์ล่มก็ให้หน้าเข้าสู่ระบบไว้ก่อน
-      // แล้วแจ้งข้อผิดพลาดจริงตอนผู้ใช้กดเข้าสู่ระบบ
       setUser(null);
     } finally {
       setChecking(false);
@@ -55,9 +59,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       checking,
-      signIn: (next: AuthUser) => {
-        setUser(next);
-      },
       signOut,
     }),
     [user, checking, signOut],
@@ -110,19 +111,15 @@ function useInviteToken(): string | null {
 
 /** ด่านเดียวที่ตัดสินว่าใครเห็นอะไร: คำเชิญ · กำลังตรวจเซสชัน · เข้าสู่ระบบ · ตัวแอป */
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { user, checking, signIn } = useAuth();
+  const { user, checking } = useAuth();
   const inviteToken = useInviteToken();
 
   if (inviteToken !== null) {
     return (
       <InviteAcceptScreen
-        // คำเชิญคนละใบต้องเริ่มจากฟอร์มเปล่า ไม่ใช่ค้างชื่อที่พิมพ์ไว้ของใบก่อน
+        // คำเชิญคนละใบต้องเริ่มจากสถานะของตัวเอง ไม่ค้างข้อมูลใบก่อนไว้
         key={inviteToken}
         token={inviteToken}
-        onSignedIn={(next) => {
-          signIn(next);
-          window.location.hash = "#dashboard";
-        }}
         onLeave={() => {
           window.location.hash = user === null ? "" : "#dashboard";
         }}
@@ -135,7 +132,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (user === null) {
-    return <AuthScreen onSignedIn={signIn} />;
+    return <AuthScreen />;
   }
 
   return <>{children}</>;

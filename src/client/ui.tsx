@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { FamilyRole } from "./api";
 
 export interface PageProps {
@@ -151,8 +151,7 @@ export function IconButton({ icon, label, className, type = "button", children, 
 export interface FieldProps {
   label: string;
   value: string;
-  /** ไม่ต้องส่งมาก็ได้เมื่อช่องเป็น readOnly เพราะไม่มีอะไรให้เปลี่ยน */
-  onChange?: (value: string) => void;
+  onChange: (value: string) => void;
   id?: string;
   type?: string;
   placeholder?: string;
@@ -160,37 +159,14 @@ export interface FieldProps {
   error?: string;
   inputMode?: "text" | "numeric" | "tel";
   disabled?: boolean;
-  /**
-   * คำใบ้ให้เบราว์เซอร์และโปรแกรมจัดการรหัสผ่าน เช่น "username" · "current-password" · "new-password"
-   *
-   * จำเป็นกับระบบนี้เป็นพิเศษ เพราะรหัสผ่านต้องยาวอย่างน้อย 12 ตัวและไม่มีทางรีเซ็ตเอง
-   * ถ้าไม่บอก เบราว์เซอร์จะเดาเอง แล้วเติมผิดช่องหรือไม่ยอมจำรหัสให้
-   */
-  autoComplete?: string;
-  /** ชื่อช่องตามมาตรฐาน HTML — โปรแกรมจัดการรหัสผ่านใช้คู่กับ autoComplete */
-  name?: string;
-  /**
-   * อ่านอย่างเดียว — ใช้กับค่าที่ระบบรู้อยู่แล้วและผู้ใช้ไม่ควรแก้ เช่นอีเมลที่ถูกเชิญ
-   *
-   * ใช้ readOnly ไม่ใช่ disabled เพราะช่องที่ disabled จะถูกข้ามทั้งตอนโฟกัส
-   * และตอนโปรแกรมจัดการรหัสผ่านจะจำรหัสให้
-   */
-  readOnly?: boolean;
-  /** ปุ่มหรือไอคอนท้ายช่อง เช่น ปุ่มส่องรหัสผ่าน */
+  /** ปุ่มหรือไอคอนท้ายช่อง */
   trailing?: ReactNode;
 }
 
-export function Field({ label, value, onChange, id, type = "text", placeholder, helper, error, inputMode, disabled, autoComplete, name, readOnly = false, trailing }: FieldProps) {
+export function Field({ label, value, onChange, id, type = "text", placeholder, helper, error, inputMode, disabled, trailing }: FieldProps) {
   const generatedId = useId();
   const fieldId = id ?? generatedId;
   const describedBy = error !== undefined ? `${fieldId}-error` : helper !== undefined ? `${fieldId}-help` : undefined;
-  const inputClass = [
-    "input",
-    trailing === undefined ? "" : "pr-12",
-    readOnly ? "bg-paper-mist text-steel" : "",
-  ]
-    .filter((value) => value !== "")
-    .join(" ");
 
   return (
     <div>
@@ -200,18 +176,15 @@ export function Field({ label, value, onChange, id, type = "text", placeholder, 
       <div className={trailing === undefined ? "" : "relative"}>
         <input
           id={fieldId}
-          className={inputClass}
+          className={trailing === undefined ? "input" : "input pr-12"}
           type={type}
           value={value}
           placeholder={placeholder}
           inputMode={inputMode}
-          autoComplete={autoComplete}
-          name={name}
-          readOnly={readOnly}
           disabled={disabled}
           aria-invalid={error !== undefined}
           aria-describedby={describedBy}
-          onChange={(event) => onChange?.(event.target.value)}
+          onChange={(event) => onChange(event.target.value)}
         />
         {trailing}
       </div>
@@ -225,49 +198,6 @@ export function Field({ label, value, onChange, id, type = "text", placeholder, 
         </p>
       ) : null}
     </div>
-  );
-}
-
-export interface PasswordFieldProps extends Omit<FieldProps, "type" | "trailing"> {
-  /** ช่องยืนยันรหัสผ่าน: เทียบกับอีกช่องหนึ่งแล้วขึ้นข้อความเมื่อไม่ตรง */
-  matches?: string;
-}
-
-/**
- * ช่องรหัสผ่านพร้อมปุ่มรูปตาสำหรับส่องดูรหัสที่พิมพ์
- *
- * เผยให้เห็นได้เพราะคนส่วนใหญ่พิมพ์รหัสยาว ๆ ในมือถือแล้วไม่เห็นว่าพิมพ์ผิด
- * ตรงไหน การซ่อนตลอดเวลาไม่ได้เพิ่มความปลอดภัยให้คนที่ยืนดูจออยู่แล้ว
- */
-export function PasswordField({ matches, error, ...rest }: PasswordFieldProps) {
-  const [shown, setShown] = useState(false);
-
-  const mismatch =
-    matches !== undefined && rest.value !== "" && rest.value !== matches
-      ? "รหัสผ่านทั้งสองช่องไม่ตรงกัน"
-      : undefined;
-
-  return (
-    <Field
-      {...rest}
-      type={shown ? "text" : "password"}
-      error={error ?? mismatch}
-      trailing={
-        <button
-          type="button"
-          className="absolute inset-y-0 right-3 flex items-center text-slate transition-colors hover:text-charcoal"
-          aria-label={shown ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"}
-          aria-pressed={shown}
-          onClick={() => {
-            setShown((previous) => !previous);
-          }}
-        >
-          <span className="ms text-[20px]" aria-hidden="true">
-            {shown ? "visibility_off" : "visibility"}
-          </span>
-        </button>
-      }
-    />
   );
 }
 

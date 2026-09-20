@@ -15,9 +15,11 @@ export interface TestSession {
 /**
  * สร้างผู้ใช้ + เซสชันจริงลงฐานข้อมูลแล้วคืนค่า Cookie ที่ใช้ยิง API ได้
  *
- * เขียนตรงลงตารางแทนการเรียก /api/auth/login เพราะการแฮชรหัสผ่านด้วย
- * Argon2id ใช้เวลาราว 290ms ต่อครั้ง ถ้าทุกเทสต์ล็อกอินจริงชุดเทสต์จะช้าขึ้นมาก
- * เส้นทางล็อกอินจริงมีเทสต์ของตัวเองใน test/auth.test.ts
+ * เขียนตรงลงตารางแทนการเข้าสู่ระบบจริง เพราะทั้งระบบเข้าด้วย Google ทางเดียว
+ * การจะได้เซสชันจริงในเทสต์ต้องผ่าน OAuth ซึ่งไม่ใช่สิ่งที่เทสต์เหล่านี้วัด
+ * ส่วนเส้นทาง Google มีเทสต์ของตัวเองใน test/auth.test.ts
+ *
+ * password_hash เก็บเป็นค่าว่างเพราะไม่มีรหัสผ่านในระบบแล้ว คอลัมน์ยัง NOT NULL
  */
 export async function signIn(
   role: "owner" | "member" = "owner",
@@ -30,11 +32,10 @@ export async function signIn(
   const expiresAt = new Date(Date.now() + 86_400_000).toISOString().replace("T", " ").slice(0, 19);
 
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO users (id, email, display_name, password_hash) VALUES (?, ?, ?, ?)").bind(
+    env.DB.prepare("INSERT INTO users (id, email, display_name, password_hash) VALUES (?, ?, ?, '')").bind(
       userId,
       `test-${counter}-${userId.slice(0, 8)}@example.com`,
       `ผู้ทดสอบ ${counter}`,
-      "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHNhbHR0ZXN0c2E=$dGVzdGhhc2h0ZXN0aGFzaHRlc3RoYXNodGVzdGg=",
     ),
     env.DB.prepare("INSERT INTO family_members (family_id, user_id, role) VALUES (?, ?, ?)").bind(
       familyId,

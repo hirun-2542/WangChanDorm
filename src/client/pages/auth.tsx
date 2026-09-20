@@ -1,26 +1,14 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ApiError,
-  acceptInvite,
   fetchInvitePreview,
-  fetchMe,
   googleSignInPath,
-  login,
-  setupOwner,
-  type AuthUser,
   type InvitePreview,
 } from "../api";
-import { Button, Card, Field, Monogram, PasswordField, Skeleton } from "../ui";
+import { Button, Card, Monogram, Skeleton } from "../ui";
 import { dateLabel } from "./bills-shared";
 
-function fieldErrorOf(
-  error: ApiError | null,
-  field: string,
-): string | undefined {
-  return error !== null && error.field === field ? error.message : undefined;
-}
-
-/** กล่องข้อผิดพลาดระดับฟอร์ม — ทุกหน้าของการเข้าสู่ระบบใช้ร่วมกัน */
+/** กล่องข้อผิดพลาดระดับหน้า — ทุกหน้าของการเข้าสู่ระบบใช้ร่วมกัน */
 function FormNotice({
   message,
   detail,
@@ -46,30 +34,9 @@ function FormNotice({
   );
 }
 
-/**
- * บอกสาเหตุตามสถานะที่เซิร์ฟเวอร์ตอบ เพราะผู้ใช้ต้องรู้ว่าต้องแก้ที่ใด
- *
- * ไม่พูดถึงตัวแปรสภาพแวดล้อมหรือคำว่า "เซิร์ฟเวอร์" — คนที่เห็นหน้านี้คือเจ้าของหอ
- * ไม่ใช่คนดูแลระบบ และข้อความต้องบอกว่าให้ทำอะไรต่อ ไม่ใช่บอกว่าอะไรผิด
- */
-function setupDetail(status: number): string | undefined {
-  switch (status) {
-    case 503:
-      return "ระบบยังไม่ได้ตั้งค่าอีเมลเจ้าของหอ จึงตั้งเจ้าของหอตอนนี้ไม่ได้";
-    case 409:
-      return "หอนี้มีเจ้าของแล้ว ให้เข้าสู่ระบบด้วยบัญชีเดิม";
-    case 403:
-      return "อีเมลนี้ไม่ตรงกับเจ้าของหอที่ตั้งไว้สำหรับหอนี้";
-    case 429:
-      return "พยายามหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่";
-    default:
-      return undefined;
-  }
-}
-
-/** รหัสสาเหตุที่เซิร์ฟเวอร์ส่งกลับมาทาง query เมื่อล็อกอินด้วย Google ไม่สำเร็จ */
+/** รหัสสาเหตุที่เซิร์ฟเวอร์ส่งกลับมาทาง query เมื่อเข้าสู่ระบบด้วย Google ไม่สำเร็จ */
 const googleReasonMessages: Record<string, string> = {
-  google_disabled: "เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า Google จึงยังใช้ปุ่มนี้ไม่ได้",
+  google_disabled: "เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า Google จึงเข้าใช้งานไม่ได้",
   denied: "ยกเลิกการเข้าสู่ระบบด้วย Google",
   state: "การยืนยันตัวตนไม่สมบูรณ์ กรุณาเริ่มใหม่จากหน้านี้",
   google_failed: "ยืนยันกับ Google ไม่สำเร็จ กรุณาลองใหม่",
@@ -137,349 +104,65 @@ function AuthLayout({
   );
 }
 
-function LoginForm({
-  onSignedIn,
-  onFirstRun,
-  googleNotice,
-}: {
-  onSignedIn: (user: AuthUser) => void;
-  onFirstRun: () => void;
-  googleNotice: string | null;
-}) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<ApiError | null>(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [recoveryOpen, setRecoveryOpen] = useState(false);
+/**
+ * ทางเข้าเดียวของทั้งระบบ
+ *
+ * เป็นปุ่มทึบสีเข้ม ไม่ใช่ปุ่มขอบจางแบบเดิม เพราะเมื่อไม่มีช่องกรอกอีเมลกับ
+ * รหัสผ่านอีกแล้ว มันคือการกระทำเดียวที่หน้านี้มี (DESIGN.md: หนึ่งการกระทำ
+ * หลักต่อหนึ่งหน้าจอ)
+ */
+function GoogleButton({ label }: { label: string }) {
+  return (
+    <Button
+      variant="primary"
+      className="w-full justify-center"
+      icon="account_circle"
+      onClick={() => {
+        window.location.href = googleSignInPath;
+      }}
+    >
+      {label}
+    </Button>
+  );
+}
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setSubmitted(true);
-
-    if (busy || email.trim() === "" || password === "") {
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-
-    void login(email.trim(), password)
-      .then(() => fetchMe())
-      .then(onSignedIn)
-      .catch((failure: unknown) => {
-        setError(
-          failure instanceof ApiError
-            ? failure
-            : new ApiError("เข้าสู่ระบบไม่สำเร็จ", "UNKNOWN"),
-        );
-      })
-      .finally(() => {
-        setBusy(false);
-      });
-  };
-
-  const notice = error !== null && error.field === undefined ? error : null;
+export function AuthScreen() {
+  const googleNotice = useGoogleFailureNotice();
 
   return (
     <AuthLayout
       title="เข้าสู่ระบบ"
-      description="ใช้อีเมลและรหัสผ่านของบัญชีที่ตั้งไว้แล้ว หรือใช้บัญชี Google"
+      description="ใช้บัญชี Google ที่ผูกกับหอนี้"
     >
       {googleNotice !== null && <FormNotice message={googleNotice} />}
 
       <div className={googleNotice === null ? "" : "mt-4"}>
-        <Button
-          variant="secondary"
-          className="w-full justify-center"
-          icon="account_circle"
-          onClick={() => {
-            window.location.href = googleSignInPath;
-          }}
-        >
-          เข้าสู่ระบบด้วย Google
-        </Button>
+        <GoogleButton label="เข้าสู่ระบบด้วย Google" />
       </div>
 
-      <div className="my-4 flex items-center gap-3">
-        <span className="h-px flex-1 bg-ash" aria-hidden="true" />
-        <span className="text-[11px] text-fog">หรือ</span>
-        <span className="h-px flex-1 bg-ash" aria-hidden="true" />
-      </div>
-
-      <form className="grid gap-4" onSubmit={submit} noValidate>
-        <Field
-          label="อีเมล"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          placeholder="owner@example.com"
-          autoComplete="username"
-          name="email"
-          error={
-            fieldErrorOf(error, "email") ??
-            (submitted && email.trim() === "" ? "กรอกอีเมล" : undefined)
-          }
-        />
-        <PasswordField
-          label="รหัสผ่าน"
-          value={password}
-          onChange={setPassword}
-          autoComplete="current-password"
-          name="password"
-          error={
-            fieldErrorOf(error, "password") ??
-            (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
-          }
-        />
-        {notice !== null && <FormNotice message={notice.message} />}
-        <Button variant="primary" type="submit" icon="login" disabled={busy}>
-          {busy ? "กำลังเข้าสู่ระบบ" : "เข้าสู่ระบบ"}
-        </Button>
-      </form>
-
-      <div className="mt-4 flex flex-col items-start gap-2 border-t border-ash pt-3">
-        <p className="text-xs text-fog">
-          สมาชิกในครอบครัวเข้าได้ด้วยคำเชิญจากเจ้าของหอเท่านั้น
-        </p>
-        <div>
-          <button
-            type="button"
-            aria-expanded={recoveryOpen}
-            className="text-xs text-electric-blue underline underline-offset-2"
-            onClick={() => {
-              setRecoveryOpen((previous) => !previous);
-            }}
-          >
-            ลืมรหัสผ่าน
-          </button>
-          {recoveryOpen && (
-            <p className="mt-1.5 text-xs text-steel">
-              ระบบนี้ไม่มีลิงก์รีเซ็ตทางอีเมล ใช้ปุ่ม “เข้าสู่ระบบด้วย Google”
-              ด้านบนด้วยอีเมลเดียวกันได้เลย เจ้าของหอเข้าได้เอง
-              ส่วนสมาชิกให้ขอคำเชิญใหม่จากเจ้าของหอ
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          className="text-xs text-electric-blue underline underline-offset-2"
-          onClick={onFirstRun}
-        >
-          ตั้งเจ้าของหอครั้งแรก
-        </button>
-      </div>
+      <p className="mt-4 border-t border-ash pt-3 text-xs text-fog">
+        สมาชิกในครอบครัวเข้าได้ด้วยคำเชิญจากเจ้าของหอเท่านั้น
+      </p>
     </AuthLayout>
-  );
-}
-
-function SetupForm({
-  onSignedIn,
-  onBackToLogin,
-}: {
-  onSignedIn: (user: AuthUser) => void;
-  onBackToLogin: () => void;
-}) {
-  const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [familyName, setFamilyName] = useState("");
-  const [error, setError] = useState<ApiError | null>(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const mismatch = confirm !== "" && confirm !== password;
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setSubmitted(true);
-
-    if (
-      busy ||
-      displayName.trim() === "" ||
-      email.trim() === "" ||
-      password === "" ||
-      password !== confirm
-    ) {
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-
-    const trimmedFamilyName = familyName.trim();
-
-    void setupOwner({
-      email: email.trim(),
-      displayName: displayName.trim(),
-      password,
-      ...(trimmedFamilyName === "" ? {} : { familyName: trimmedFamilyName }),
-    })
-      .then(onSignedIn)
-      .catch((failure: unknown) => {
-        setError(
-          failure instanceof ApiError
-            ? failure
-            : new ApiError("ตั้งเจ้าของหอไม่สำเร็จ", "UNKNOWN"),
-        );
-      })
-      .finally(() => {
-        setBusy(false);
-      });
-  };
-
-  const notice = error !== null && error.field === undefined ? error : null;
-
-  return (
-    <AuthLayout
-      title="ตั้งเจ้าของหอ"
-      description="ใช้ครั้งแรกเมื่อหอนี้ยังไม่มีเจ้าของ กรอกอีเมลเจ้าของหอที่ตั้งไว้สำหรับหอนี้"
-    >
-      <form className="grid gap-4" onSubmit={submit} noValidate>
-        <Field
-          label="ชื่อที่แสดง"
-          value={displayName}
-          onChange={setDisplayName}
-          placeholder="เช่น สมชาย"
-          autoComplete="name"
-          name="displayName"
-          error={
-            fieldErrorOf(error, "displayName") ??
-            (submitted && displayName.trim() === ""
-              ? "กรอกชื่อที่แสดง"
-              : undefined)
-          }
-        />
-        <Field
-          label="อีเมล"
-          type="email"
-          value={email}
-          onChange={setEmail}
-          placeholder="owner@example.com"
-          helper="ต้องเป็นอีเมลเจ้าของหอที่ตั้งไว้สำหรับหอนี้"
-          autoComplete="email"
-          name="email"
-          error={
-            fieldErrorOf(error, "email") ??
-            (submitted && email.trim() === "" ? "กรอกอีเมล" : undefined)
-          }
-        />
-        <PasswordField
-          label="รหัสผ่าน"
-          value={password}
-          onChange={setPassword}
-          helper="อย่างน้อย 12 ตัวอักษร"
-          autoComplete="new-password"
-          name="password"
-          error={
-            fieldErrorOf(error, "password") ??
-            (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
-          }
-        />
-        <PasswordField
-          label="ยืนยันรหัสผ่าน"
-          value={confirm}
-          onChange={setConfirm}
-          matches={password}
-          autoComplete="new-password"
-          name="confirmPassword"
-          error={submitted && confirm === "" ? "กรอกรหัสผ่านอีกครั้ง" : undefined}
-        />
-        <Field
-          label="ชื่อหอ"
-          value={familyName}
-          onChange={setFamilyName}
-          helper="ตั้งให้หอนี้ได้เลย เว้นว่างได้ถ้าไม่ต้องการเปลี่ยน"
-          autoComplete="organization"
-          name="familyName"
-          error={fieldErrorOf(error, "familyName")}
-        />
-        {notice !== null && (
-          <FormNotice
-            message={notice.message}
-            detail={setupDetail(notice.status)}
-          />
-        )}
-        <Button
-          variant="primary"
-          type="submit"
-          icon="shield_person"
-          disabled={busy || mismatch}
-        >
-          {busy ? "กำลังตั้งค่า" : "ตั้งเจ้าของหอ"}
-        </Button>
-      </form>
-
-      <div className="mt-4 border-t border-ash pt-3">
-        <button
-          type="button"
-          className="text-xs text-electric-blue underline underline-offset-2"
-          onClick={onBackToLogin}
-        >
-          กลับหน้าเข้าสู่ระบบ
-        </button>
-      </div>
-    </AuthLayout>
-  );
-}
-
-export function AuthScreen({
-  onSignedIn,
-}: {
-  onSignedIn: (user: AuthUser) => void;
-}) {
-  const [mode, setMode] = useState<"login" | "setup">("login");
-  const googleNotice = useGoogleFailureNotice();
-
-  if (mode === "setup") {
-    return (
-      <SetupForm
-        onSignedIn={onSignedIn}
-        onBackToLogin={() => {
-          setMode("login");
-        }}
-      />
-    );
-  }
-
-  return (
-    <LoginForm
-      onSignedIn={onSignedIn}
-      googleNotice={googleNotice}
-      onFirstRun={() => {
-        setMode("setup");
-      }}
-    />
   );
 }
 
 export function InviteAcceptScreen({
   token,
-  onSignedIn,
   onLeave,
 }: {
   token: string;
-  onSignedIn: (user: AuthUser) => void;
   onLeave: () => void;
 }) {
-  const [displayName, setDisplayName] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [error, setError] = useState<ApiError | null>(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
 
-  const mismatch = confirm !== "" && confirm !== password;
-
   /**
-   * ถามข้อมูลคำเชิญก่อนให้ตั้งรหัสผ่าน
+   * ถามข้อมูลคำเชิญก่อนให้กดปุ่ม
    *
-   * คนที่เปิดลิงก์จาก LINE ต้องรู้ว่าใครเชิญให้ไปหอไหน และควรรู้ทันทีถ้าลิงก์ใช้ไม่ได้
-   * แทนที่จะกรอกครบทุกช่องแล้วเพิ่งเจอข้อความปฏิเสธตอนกดส่ง
+   * คนที่เปิดลิงก์จาก LINE ต้องรู้ว่าใครเชิญให้ไปหอไหน และต้องรู้ทันทีถ้าลิงก์
+   * ใช้ไม่ได้ แทนที่จะเสียเวลากดเข้าสู่ระบบแล้วเพิ่งเจอว่าตัวเองไม่ได้รับเชิญ
    */
   useEffect(() => {
     let cancelled = false;
@@ -514,46 +197,6 @@ export function InviteAcceptScreen({
     };
   }, [token]);
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setSubmitted(true);
-
-    if (
-      busy ||
-      displayName.trim() === "" ||
-      password === "" ||
-      password !== confirm
-    ) {
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-
-    void acceptInvite({
-      token,
-      displayName: displayName.trim(),
-      password,
-    })
-      .then(() => fetchMe())
-      .then(onSignedIn)
-      .catch((failure: unknown) => {
-        setError(
-          failure instanceof ApiError
-            ? failure
-            : new ApiError("รับคำเชิญไม่สำเร็จ", "UNKNOWN"),
-        );
-      })
-      .finally(() => {
-        setBusy(false);
-      });
-  };
-
-  const notice =
-    error !== null && (error.field === undefined || error.field === "token")
-      ? error
-      : null;
-
   if (checking) {
     return (
       <AuthLayout title="รับคำเชิญ" description="กำลังตรวจสอบคำเชิญ">
@@ -564,7 +207,7 @@ export function InviteAcceptScreen({
     );
   }
 
-  // ลิงก์ใช้ไม่ได้ — บอกสาเหตุและทางออก ไม่ปล่อยให้กรอกฟอร์มที่ไม่มีทางสำเร็จ
+  // ลิงก์ใช้ไม่ได้ — บอกสาเหตุและทางออก ไม่ปล่อยให้กดปุ่มที่ไม่มีทางสำเร็จ
   if (preview === null) {
     return (
       <AuthLayout title="รับคำเชิญ" description="ลิงก์นี้ใช้ไม่ได้แล้ว">
@@ -588,72 +231,27 @@ export function InviteAcceptScreen({
   return (
     <AuthLayout
       title="รับคำเชิญ"
-      description={`ตั้งชื่อที่แสดงและรหัสผ่านเพื่อเข้าใช้งาน${preview.familyName}`}
+      description={`เข้าร่วม${preview.familyName}ด้วยบัญชี Google`}
     >
-      <form className="grid gap-4" onSubmit={submit} noValidate>
-        <Field
-          label="ชื่อที่แสดง"
-          value={displayName}
-          onChange={setDisplayName}
-          placeholder="เช่น สมชาย"
-          autoComplete="name"
-          name="displayName"
-          error={
-            fieldErrorOf(error, "displayName") ??
-            (submitted && displayName.trim() === ""
-              ? "กรอกชื่อที่แสดง"
-              : undefined)
-          }
-        />
-        <Field
-          label="อีเมลที่ถูกเชิญ"
-          type="email"
-          value={preview.email}
-          autoComplete="username"
-          name="email"
-          readOnly
-          helper={`คำเชิญนี้ใช้ได้ครั้งเดียว หมดอายุ ${dateLabel(preview.expiresAt)}`}
-        />
-        <PasswordField
-          label="รหัสผ่าน"
-          value={password}
-          onChange={setPassword}
-          helper="อย่างน้อย 12 ตัวอักษร · ถ้ามีบัญชีอยู่แล้วให้ใช้รหัสผ่านเดิมของบัญชีนั้น"
-          autoComplete="new-password"
-          name="password"
-          error={
-            fieldErrorOf(error, "password") ??
-            (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
-          }
-        />
-        <PasswordField
-          label="ยืนยันรหัสผ่าน"
-          value={confirm}
-          onChange={setConfirm}
-          matches={password}
-          autoComplete="new-password"
-          name="confirmPassword"
-          error={submitted && confirm === "" ? "กรอกรหัสผ่านอีกครั้ง" : undefined}
-        />
-        {notice !== null && (
-          <FormNotice
-            message={notice.message}
-            detail={
-              notice.status === 400
-                ? "ขอคำเชิญใหม่จากเจ้าของหอ แล้วเปิดลิงก์นั้นอีกครั้ง"
-                : undefined
-            }
-          />
-        )}
-        <Button
-          variant="primary"
-          type="submit"
-          icon="group_add"
-          disabled={busy || mismatch}
-        >
-          {busy ? "กำลังรับคำเชิญ" : "รับคำเชิญและเข้าใช้งาน"}
-        </Button>
-      </form>
+      <dl className="grid gap-1.5 rounded-lg border border-ash bg-paper-mist px-3 py-2.5 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-steel">อีเมลที่ถูกเชิญ</dt>
+          <dd className="num truncate text-charcoal">{preview.email}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-steel">ใช้ได้ถึง</dt>
+          <dd className="num text-charcoal">{dateLabel(preview.expiresAt)}</dd>
+        </div>
+      </dl>
+
+      <div className="mt-4">
+        <GoogleButton label="เข้าสู่ระบบด้วย Google" />
+      </div>
+
+      <p className="mt-3 text-xs text-fog">
+        เลือกบัญชี Google ที่ใช้อีเมล {preview.email} เท่านั้น
+        แล้วระบบจะพาเข้าครอบครัวให้เอง
+      </p>
 
       <div className="mt-4 border-t border-ash pt-3">
         <button

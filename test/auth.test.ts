@@ -1,7 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { hashPassword, verifyPassword } from "../src/worker/lib/password";
-import { createFamily, signIn } from "./auth-helper";
+import { createFamily, signIn, type TestSession } from "./auth-helper";
 
 const base = "https://example.com";
 const ownerEmail = env.OWNER_EMAIL;
@@ -57,16 +56,24 @@ async function googleStart(): Promise<{ state: string; cookie: string; location:
   return { state, cookie: setCookie.split(";")[0] ?? "", location };
 }
 
+/** เข้าสู่ระบบด้วย Google ครบวงจรในเทสต์ แล้วคืนคุกกี้เซสชัน (ว่างถ้าไม่สำเร็จ) */
+async function googleSignIn(email: string, name: string): Promise<string> {
+  const { state, cookie } = await googleStart();
+  stubGoogle({ email, name });
+
+  const response = await SELF.fetch(
+    `${base}/api/auth/google/callback?code=abc&state=${encodeURIComponent(state)}`,
+    { headers: { cookie }, redirect: "manual" },
+  );
+
+  return (response.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+}
+
 // fetch ขาออกถูกแทนที่ในเทสต์ Google ต้องคืนของจริงทุกครั้ง ไม่งั้นเทสต์ถัดไป
 // ที่ต้องเรียกออกไปข้างนอกจะได้คำตอบปลอมค้างอยู่
 afterEach(() => {
   vi.restoreAllMocks();
 });
-
-function cookieFrom(response: Response): string {
-  const header = response.headers.get("set-cookie") ?? "";
-  return header.split(";")[0] ?? "";
-}
 
 async function post(path: string, body: unknown, cookie?: string): Promise<Response> {
   return SELF.fetch(`${base}${path}`, {
@@ -76,24 +83,7 @@ async function post(path: string, body: unknown, cookie?: string): Promise<Respo
   });
 }
 
-describe("password hashing", () => {
-  it("round-trips a password and rejects a wrong one", () => {
-    const stored = hashPassword("correct horse battery staple");
 
-    expect(stored.startsWith("$argon2id$v=19$m=19456,t=2,p=1$")).toBe(true);
-    expect(verifyPassword("correct horse battery staple", stored)).toBe(true);
-    expect(verifyPassword("Correct horse battery staple", stored)).toBe(false);
-  });
-
-  it("produces a different hash for the same password", () => {
-    expect(hashPassword("correct horse battery staple")).not.toBe(hashPassword("correct horse battery staple"));
-  });
-
-  it("rejects a malformed or tampered stored hash", () => {
-    expect(verifyPassword("whatever", "not-a-hash")).toBe(false);
-    expect(verifyPassword("whatever", "$argon2id$v=19$m=999999999,t=99,p=99$c2FsdA==$aGFzaA==")).toBe(false);
-  });
-});
 
 describe("owner API is closed without a session", () => {
   it("refuses every owner endpoint with 401", async () => {
@@ -135,95 +125,26 @@ describe("json error envelope", () => {
   });
 });
 
-describe("setting up the first owner", () => {
-  it("refuses an email that is not the configured owner", async () => {
-    const response = await post("/api/auth/setup", {
-      email: "intruder@example.com",
-      displayName: "ผู้บุกรุก",
-      password: "a-long-enough-password",
-    });
 
-    expect(response.status).toBe(403);
 
-    const users = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE email = ?")
-      .bind("intruder@example.com")
-      .first<{ n: number }>();
-    expect(users?.n).toBe(0);
-  });
+describe("Google sign-in", () => {
+  it("claims the legacy family for the configured owner email when nobody owns it yet", async () => {
+    // ในไฟล์นี้ครอบครัวเดิมยังไม่มีเจ้าของ เพราะการยึดเกิดขึ้นได้ทาง Google เท่านั้น
+    const sessionCookie = await googleSignIn(ownerEmail, "เจ้าของหอ");
+    expect(sessionCookie).toContain("wangchan_session=");
 
-  it("refuses a short password", async () => {
-    const response = await post("/api/auth/setup", {
-      email: ownerEmail,
-      displayName: "รหัสสั้น",
-      password: "sh0rt",
-    });
+    const me = await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie: sessionCookie } });
+    const body = await me.json<{ user: { email: string; role: string; familyId: string } }>();
 
-    expect(response.status).toBe(400);
-    expect((await response.json<{ error: { field?: string } }>()).error.field).toBe("password");
-  });
-
-  it("claims the family holding the existing data, and only once even under a race", async () => {
-    const setup = () =>
-      post("/api/auth/setup", {
-        email: ` ${ownerEmail.toUpperCase()} `,
-        displayName: "เจ้าของหอ",
-        password: "a-long-enough-password",
-        familyName: "หอพักวังจันทร์",
-      });
-
-    // สองคำขอที่อีเมลถูกต้องมาพร้อมกัน: เงื่อนไข "ยังไม่มีเจ้าของ" ต้องอยู่ใน
-    // คำสั่ง SQL เดียวกัน ไม่งั้นทั้งคู่จะผ่านและกลายเป็นสองเจ้าของคนละบัญชี
-    const [first, second] = await Promise.all([setup(), setup()]);
-    const statuses = [first.status, second.status];
-
-    expect(statuses.filter((status) => status === 201)).toHaveLength(1);
-    expect(statuses.filter((status) => status === 409)).toHaveLength(1);
-
-    const winner = first.status === 201 ? first : second;
-    const body = await winner.json<{ user: { familyId: string; email: string; role: string } }>();
-
-    expect(body.user.familyId).toBe(legacyFamilyId);
-    expect(body.user.email).toBe(ownerEmail);
     expect(body.user.role).toBe("owner");
+    expect(body.user.familyId).toBe(legacyFamilyId);
 
     const members = await env.DB.prepare("SELECT COUNT(*) AS n FROM family_members WHERE family_id = ?")
       .bind(legacyFamilyId)
       .first<{ n: number }>();
     expect(members?.n).toBe(1);
-
-    const family = await env.DB.prepare("SELECT name FROM families WHERE id = ?")
-      .bind(legacyFamilyId)
-      .first<{ name: string }>();
-    expect(family?.name).toBe("หอพักวังจันทร์");
-
-    const cookie = winner.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain("HttpOnly");
-    expect(cookie).toContain("SameSite=Lax");
-
-    // เซสชันที่ได้มาใช้ได้จริง
-    const me = await SELF.fetch(`${base}/api/auth/me`, {
-      headers: { cookie: cookie.split(";")[0] ?? "" },
-    });
-    expect(me.status).toBe(200);
   });
 
-  it("refuses a second setup once the family has an owner", async () => {
-    const response = await post("/api/auth/setup", {
-      email: ownerEmail,
-      displayName: "คนที่สอง",
-      password: "a-long-enough-password",
-    });
-
-    expect(response.status).toBe(409);
-
-    // คำตอบต้องไม่ผูกกับช่องใด หน้าจอจึงจะแสดงข้อความช่วยเหลือ "ให้เข้าสู่ระบบ
-    // ด้วยบัญชีเดิม" ได้ ถ้าใส่ field กลับเข้ามา ข้อความนั้นจะหายไปเงียบ ๆ
-    const body = await response.json<{ error: { field?: string } }>();
-    expect(body.error.field).toBeUndefined();
-  });
-});
-
-describe("Google sign-in", () => {
   it("sends the browser to Google with our redirect URI and a state cookie", async () => {
     const { state, cookie, location } = await googleStart();
     const url = new URL(location);
@@ -331,43 +252,95 @@ describe("Google sign-in", () => {
     expect(body.user.role).toBe("member");
     expect(body.user.familyId).toBe(family);
   });
-});
 
-describe("login and session", () => {
-  let cookie = "";
+  it("refuses to add a third member to a family that is already full", async () => {
+    const family = await createFamily("หอกูเกิลเต็ม");
+    const owner = await signIn("owner", family);
 
-  beforeAll(async () => {
-    const response = await post("/api/auth/login", { email: "owner@example.com", password: "a-long-enough-password" });
-    cookie = cookieFrom(response);
+    // ออกคำเชิญสองใบตั้งแต่ยังมีสมาชิกคนเดียว ทั้งสองใบยังไม่ถูกใช้
+    for (const email of ["first@example.com", "second@example.com"]) {
+      const invited = await post("/api/family/invites", { email, role: "member" }, owner.cookie);
+      expect(invited.status).toBe(201);
+    }
+
+    // คนแรกเข้าครอบครัวได้ ครอบครัวจึงเต็มเพดาน 2 คน
+    const firstSession = await googleSignIn("first@example.com", "คนแรก");
+    expect((await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie: firstSession } })).status).toBe(200);
+
+    // คนที่สองยังมีคำเชิญค้างอยู่ แต่เข้าครอบครัวไม่ได้เพราะเพดาน
+    const { state, cookie } = await googleStart();
+    stubGoogle({ email: "second@example.com", name: "คนที่สอง" });
+
+    const response = await SELF.fetch(
+      `${base}/api/auth/google/callback?code=abc&state=${encodeURIComponent(state)}`,
+      { headers: { cookie }, redirect: "manual" },
+    );
+
+    expect(response.headers.get("location")).toContain("reason=family_full");
+
+    const members = await env.DB.prepare("SELECT COUNT(*) AS n FROM family_members WHERE family_id = ?")
+      .bind(family)
+      .first<{ n: number }>();
+    expect(members?.n).toBe(2);
   });
 
-  it("rejects a wrong password with the same wording as an unknown email", async () => {
-    const wrongPassword = await post("/api/auth/login", { email: "owner@example.com", password: "not-the-password" });
-    const unknownEmail = await post("/api/auth/login", { email: "ghost@example.com", password: "not-the-password" });
+  it("never moves an account that already belongs to another family", async () => {
+    // บัญชีที่เข้าอยู่ครอบครัวแรกแล้ว
+    const firstFamily = await createFamily("หอแรกที่เข้าอยู่");
+    const firstOwner = await signIn("owner", firstFamily);
+    await post("/api/family/invites", { email: "mover@example.com", role: "member" }, firstOwner.cookie);
 
-    expect(wrongPassword.status).toBe(401);
-    expect(unknownEmail.status).toBe(401);
-    expect((await wrongPassword.json<{ error: { message: string } }>()).error.message).toBe(
-      (await unknownEmail.json<{ error: { message: string } }>()).error.message,
-    );
+    const joined = await googleSignIn("mover@example.com", "ผู้ย้าย");
+    const joinedMe = await (
+      await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie: joined } })
+    ).json<{ user: { familyId: string } }>();
+    expect(joinedMe.user.familyId).toBe(firstFamily);
+
+    // หอที่สองออกคำเชิญให้อีเมลเดิม แม้เป็นสิทธิ์เจ้าของก็ยังย้ายครอบครัวไม่ได้
+    const secondFamily = await createFamily("หอที่สองที่อยากได้คนนี้");
+    const secondOwner = await signIn("owner", secondFamily);
+    await post("/api/family/invites", { email: "mover@example.com", role: "owner" }, secondOwner.cookie);
+
+    const again = await googleSignIn("mover@example.com", "ผู้ย้าย");
+    const againMe = await (
+      await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie: again } })
+    ).json<{ user: { familyId: string; role: string } }>();
+
+    expect(againMe.user.familyId).toBe(firstFamily);
+    expect(againMe.user.role).toBe("member");
+
+    const moved = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM family_members WHERE family_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)",
+    )
+      .bind(secondFamily, "mover@example.com")
+      .first<{ n: number }>();
+    expect(moved?.n).toBe(0);
+  });
+});
+
+describe("session", () => {
+  let session: TestSession;
+
+  beforeAll(async () => {
+    const family = await createFamily("หอทดสอบเซสชัน");
+    session = await signIn("owner", family);
   });
 
   it("opens the owner API once signed in", async () => {
-    const response = await SELF.fetch(`${base}/api/rooms`, { headers: { cookie } });
+    const response = await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: session.cookie } });
     expect(response.status).toBe(200);
   });
 
   it("reports the signed-in user", async () => {
-    const response = await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie } });
+    const response = await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie: session.cookie } });
     const body = await response.json<{ user: { email: string; role: string; familyId: string } }>();
 
-    expect(body.user.email).toBe("owner@example.com");
     expect(body.user.role).toBe("owner");
-    expect(body.user.familyId).toBe(legacyFamilyId);
+    expect(body.user.familyId).toBe(session.familyId);
   });
 
   it("stores only a hash of the session token", async () => {
-    const token = cookie.split("=")[1] ?? "";
+    const token = session.cookie.split("=")[1] ?? "";
     const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE token_hash = ?")
       .bind(token)
       .first<{ n: number }>();
@@ -377,23 +350,20 @@ describe("login and session", () => {
   });
 
   it("revokes the session on logout", async () => {
-    const loginResponse = await post("/api/auth/login", {
-      email: "owner@example.com",
-      password: "a-long-enough-password",
-    });
-    const throwaway = cookieFrom(loginResponse);
+    const family = await createFamily("หอทดสอบออกจากระบบ");
+    const throwaway = await signIn("owner", family);
 
-    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: throwaway } })).status).toBe(200);
+    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: throwaway.cookie } })).status).toBe(200);
 
-    await post("/api/auth/logout", {}, throwaway);
+    await post("/api/auth/logout", {}, throwaway.cookie);
 
-    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: throwaway } })).status).toBe(401);
+    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: throwaway.cookie } })).status).toBe(401);
   });
 
   it("refuses a cross-origin state change", async () => {
     const response = await SELF.fetch(`${base}/api/rooms`, {
       method: "POST",
-      headers: { "content-type": "application/json", cookie, origin: "https://evil.example" },
+      headers: { "content-type": "application/json", cookie: session.cookie, origin: "https://evil.example" },
       body: JSON.stringify({ roomNumber: "999", rent: 1000 }),
     });
 
@@ -401,50 +371,7 @@ describe("login and session", () => {
   });
 });
 
-describe("login rate limiting", () => {
-  it("stops answering after repeated failures for the same email", async () => {
-    let sawTooMany = false;
 
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      const response = await post("/api/auth/login", { email: "target@example.com", password: "guess-guess-guess" });
-
-      if (response.status === 429) {
-        sawTooMany = true;
-        break;
-      }
-    }
-
-    expect(sawTooMany).toBe(true);
-
-    // ทดสอบนี้ยิงจน IP scope (ไม่มี cf-connecting-ip ในสภาพทดสอบ จึงใช้ "unknown"
-    // ร่วมกันทุกคำขอ) ถูกล็อก ต้องล้างก่อนเทสต์ถัดไปเพื่อไม่ให้ล็อกอินจริงถัดไปโดนบล็อกไปด้วย
-    await env.DB.prepare("DELETE FROM login_attempts").run();
-  });
-});
-
-/**
- * สร้างบัญชีที่มีรหัสผ่านจริงผ่านเส้นทางการเชิญ (ทางเดียวที่สร้างบัญชีได้แล้ว)
- * คืน cookie ของสมาชิกคนนั้นพร้อม id ครอบครัวที่เขาเข้าร่วม
- */
-async function createAccountWithPassword(
-  email: string,
-  password: string,
-  displayName = "ผู้ทดสอบ",
-): Promise<{ cookie: string; familyId: string }> {
-  const family = await createFamily("หอทดสอบบัญชี");
-  const owner = await signIn("owner", family);
-
-  const invited = await post("/api/family/invites", { email, role: "member" }, owner.cookie);
-  const { invite } = await invited.json<{ invite: { token: string } }>();
-
-  const accepted = await post("/api/auth/accept-invite", {
-    token: invite.token,
-    displayName,
-    password,
-  });
-
-  return { cookie: cookieFrom(accepted), familyId: family };
-}
 
 describe("invite preview", () => {
   it("tells the person opening the link which dorm invited them, and to which email", async () => {
@@ -473,12 +400,11 @@ describe("invite preview", () => {
     const invited = await post("/api/family/invites", { email: "used@example.com", role: "member" }, owner.cookie);
     const { invite } = await invited.json<{ invite: { token: string } }>();
 
-    const accepted = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "ผู้ใช้คำเชิญ",
-      password: "another-long-password",
-    });
-    expect(accepted.status).toBe(201);
+    // ทำเครื่องหมายว่าถูกใช้ไปแล้วด้วยการเขียนตรงลงตาราง เพราะการเข้าครอบครัวจริง
+    // ต้องผ่าน Google ซึ่งมีเทสต์ของตัวเองอยู่ด้านบน
+    await env.DB.prepare("UPDATE family_invites SET accepted_at = datetime('now') WHERE email = ?")
+      .bind("used@example.com")
+      .run();
 
     for (const token of ["no-such-token", invite.token]) {
       const response = await SELF.fetch(`${base}/api/auth/invites/${encodeURIComponent(token)}`);
@@ -488,31 +414,13 @@ describe("invite preview", () => {
       expect(body.error.message).toBe("คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว");
     }
   });
-
-  it("does not spend the login rate limit when someone opens an old link", async () => {
-    // ตัวนับ "พยายามเข้าสู่ระบบ" แยกตาม IP และใช้ร่วมกันทั้งระบบ ถ้าเส้นนี้ไปนับ
-    // การเปิดลิงก์เก่าที่ค้างในแชท เจ้าของหอจะล็อกอินตัวเองไม่ได้เพราะลิงก์ของตัวเอง
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      const response = await SELF.fetch(`${base}/api/auth/invites/expired-${attempt}`);
-      expect(response.status).toBe(400);
-    }
-
-    const login = await post("/api/auth/login", {
-      email: "ghost@example.com",
-      password: "guess-guess-guess",
-    });
-    expect(login.status).not.toBe(429);
-
-    // คืนสภาพเดิม: การล็อกอินที่ล้มเหลวข้างบนบันทึกไว้หนึ่งครั้ง
-    await env.DB.prepare("DELETE FROM login_attempts").run();
-  });
 });
 
 describe("family membership", () => {
   // ทุกเทสต์ใช้ครอบครัวของตัวเอง เพราะหนึ่งครอบครัวรับได้ 2 คน (เพดานของผลิตภัณฑ์)
   // การยืมครอบครัวเดิมจะทำให้เทสต์หลัง ๆ เจอ "ครอบครัวเต็ม" แทนที่จะทดสอบสิ่งที่ตั้งใจ
 
-  it("invites a new person and lets them join with their own credentials", async () => {
+  it("creates an invite link and stores only its hash", async () => {
     const family = await createFamily("หอเชิญสมาชิก");
     const owner = await signIn("owner", family);
 
@@ -526,158 +434,32 @@ describe("family membership", () => {
       .bind(invite.token)
       .first<{ n: number }>();
     expect(stored?.n).toBe(0);
-
-    const accepted = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "ผู้ช่วย",
-      password: "another-long-password",
-    });
-    expect(accepted.status).toBe(201);
-
-    const memberCookie = cookieFrom(accepted);
-    const me = await (
-      await SELF.fetch(`${base}/api/auth/me`, { headers: { cookie: memberCookie } })
-    ).json<{ user: { role: string; familyId: string } }>();
-
-    expect(me.user.role).toBe("member");
-    expect(me.user.familyId).toBe(family);
-  });
-
-  it("refuses the same invite a second time", async () => {
-    const family = await createFamily("หอคำเชิญซ้ำ");
-    const owner = await signIn("owner", family);
-
-    const invited = await post("/api/family/invites", { email: "twice@example.com", role: "member" }, owner.cookie);
-    const { invite } = await invited.json<{ invite: { token: string } }>();
-
-    const first = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "ครั้งแรก",
-      password: "another-long-password",
-    });
-    const second = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "ครั้งที่สอง",
-      password: "another-long-password",
-    });
-
-    expect(first.status).toBe(201);
-    expect(second.status).toBe(400);
   });
 
   it("stops a family at its member limit", async () => {
     const family = await createFamily("หอเต็ม");
     const owner = await signIn("owner", family);
+    await signIn("member", family);
 
-    const invited = await post("/api/family/invites", { email: "second@example.com", role: "member" }, owner.cookie);
-    expect(invited.status).toBe(201);
-
-    const { invite } = await invited.json<{ invite: { token: string } }>();
-    const accepted = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "คนที่สอง",
-      password: "another-long-password",
-    });
-    expect(accepted.status).toBe(201);
-
-    // ตอนนี้ครบ 2 คนแล้ว: ออกคำเชิญเพิ่มไม่ได้
+    // ครบ 2 คนแล้ว: ออกคำเชิญเพิ่มไม่ได้
     const extra = await post("/api/family/invites", { email: "third@example.com", role: "member" }, owner.cookie);
     expect(extra.status).toBe(409);
-  });
-
-  it("refuses to let an invite that was issued earlier push a family past its limit", async () => {
-    const family = await createFamily("หอเต็มระหว่างทาง");
-    const owner = await signIn("owner", family);
-
-    // ออกคำเชิญสองใบตั้งแต่ยังมีสมาชิกคนเดียว ใบไหนถึงก่อนก็ได้ ไม่มีใบไหนพาเกินเพดาน
-    const firstInvite = await post("/api/family/invites", { email: "one@example.com", role: "member" }, owner.cookie);
-    const secondInvite = await post("/api/family/invites", { email: "two@example.com", role: "member" }, owner.cookie);
-
-    const firstToken = (await firstInvite.json<{ invite: { token: string } }>()).invite.token;
-    const secondToken = (await secondInvite.json<{ invite: { token: string } }>()).invite.token;
-
-    const accepted = await post("/api/auth/accept-invite", {
-      token: firstToken,
-      displayName: "คนแรก",
-      password: "another-long-password",
-    });
-    const rejected = await post("/api/auth/accept-invite", {
-      token: secondToken,
-      displayName: "คนที่สอง",
-      password: "another-long-password",
-    });
-
-    expect(accepted.status).toBe(201);
-    expect(rejected.status).toBe(409);
-
-    const members = await env.DB.prepare("SELECT COUNT(*) AS n FROM family_members WHERE family_id = ?")
-      .bind(family)
-      .first<{ n: number }>();
-    expect(members?.n).toBe(2);
-  });
-
-  it("does not let an invite hand over an account that already exists", async () => {
-    const outsider = await createAccountWithPassword("outsider@example.com", "outsider-long-password", "คนนอก");
-
-    const family = await createFamily("หอที่อยากได้คนนอก");
-    const owner = await signIn("owner", family);
-
-    const crossInvite = await post("/api/family/invites", { email: "outsider@example.com", role: "owner" }, owner.cookie);
-    expect(crossInvite.status).toBe(201);
-
-    const { invite } = await crossInvite.json<{ invite: { token: string } }>();
-
-    // ถือคำเชิญอย่างเดียวต้องไม่พอ ต้องรู้รหัสผ่านของบัญชีนั้นด้วย
-    const guessed = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "ขโมย",
-      password: "wrong-password-guess",
-    });
-    expect(guessed.status).toBe(401);
-
-    // แม้รหัสผ่านถูก ก็ยังย้ายครอบครัวไม่ได้เพราะอยู่ครอบครัวอื่นแล้ว
-    const correct = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "คนนอก",
-      password: "outsider-long-password",
-    });
-    expect(correct.status).toBe(409);
-
-    const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM family_members WHERE family_id = ?")
-      .bind(outsider.familyId)
-      .first<{ n: number }>();
-    expect(rows?.n).toBe(2);
   });
 
   it("keeps at least one owner and revokes sessions when a member is removed", async () => {
     const family = await createFamily("หอถอดสมาชิก");
     const owner = await signIn("owner", family);
+    const leaver = await signIn("member", family);
 
-    const invited = await post("/api/family/invites", { email: "leaver@example.com", role: "member" }, owner.cookie);
-    const { invite } = await invited.json<{ invite: { token: string } }>();
+    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: leaver.cookie } })).status).toBe(200);
 
-    const accepted = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "ผู้จะถูกถอด",
-      password: "another-long-password",
-    });
-    const leaverCookie = cookieFrom(accepted);
-
-    const overview = await (
-      await SELF.fetch(`${base}/api/family`, { headers: { cookie: owner.cookie } })
-    ).json<{ members: { userId: string; email: string }[] }>();
-    const leaver = overview.members.find((member) => member.email === "leaver@example.com");
-    expect(leaver).toBeDefined();
-
-    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: leaverCookie } })).status).toBe(200);
-
-    const removed = await SELF.fetch(`${base}/api/family/members/${leaver?.userId ?? ""}`, {
+    const removed = await SELF.fetch(`${base}/api/family/members/${leaver.userId}`, {
       method: "DELETE",
       headers: { cookie: owner.cookie },
     });
     expect(removed.status).toBe(200);
 
-    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: leaverCookie } })).status).toBe(401);
+    expect((await SELF.fetch(`${base}/api/rooms`, { headers: { cookie: leaver.cookie } })).status).toBe(401);
   });
 
   it("refuses to demote the last owner", async () => {
@@ -736,30 +518,22 @@ describe("family membership", () => {
   it("does not let a member manage the family or see pending invites", async () => {
     const family = await createFamily("หอสมาชิกอ่านอย่างเดียว");
     const owner = await signIn("owner", family);
+    const member = await signIn("member", family);
 
-    const invited = await post("/api/family/invites", { email: "reader@example.com", role: "member" }, owner.cookie);
-    const { invite } = await invited.json<{ invite: { token: string } }>();
-
-    const accepted = await post("/api/auth/accept-invite", {
-      token: invite.token,
-      displayName: "สมาชิกอ่านอย่างเดียว",
-      password: "another-long-password",
-    });
-    const memberCookie = cookieFrom(accepted);
-
-    // ออกคำเชิญเพิ่มไม่ได้ (คนละใบกับที่ตัวเองใช้ไปแล้ว)
+    // เจ้าของยังออกคำเชิญได้ตามกติกาปกติ (แต่ครอบครัวเต็มแล้วจึงได้ 409)
     const secondInvite = await post("/api/family/invites", { email: "nobody@example.com", role: "member" }, owner.cookie);
     expect(secondInvite.status).toBe(409);
 
-    const forbidden = await post("/api/family/invites", { email: "nope@example.com", role: "member" }, memberCookie);
+    // สมาชิกถูกกันด้วยสิทธิ์ ไม่ใช่เพราะครอบครัวเต็ม — คนละเหตุผลกับเจ้าของ
+    const forbidden = await post("/api/family/invites", { email: "nope@example.com", role: "member" }, member.cookie);
     expect(forbidden.status).toBe(403);
 
     // ดูรายชื่อคนในครอบครัวได้ แต่ไม่เห็นรายการคำเชิญของเจ้าของ
     const overview = await (
-      await SELF.fetch(`${base}/api/family`, { headers: { cookie: memberCookie } })
+      await SELF.fetch(`${base}/api/family`, { headers: { cookie: member.cookie } })
     ).json<{ members: { email: string }[]; invites: unknown[]; maxMembers: number }>();
 
-    expect(overview.members.map((member) => member.email)).toContain("reader@example.com");
+    expect(overview.members).toHaveLength(2);
     expect(overview.invites).toEqual([]);
     expect(overview.maxMembers).toBe(2);
   });

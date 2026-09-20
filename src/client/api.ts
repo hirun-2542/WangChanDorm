@@ -241,15 +241,10 @@ function errorPayloadOf(body: unknown): ErrorPayload | null {
 const requestTimeoutMs = 20_000;
 
 /**
- * 401 จากเส้นทางเหล่านี้เป็นเรื่องปกติของหน้าเข้าสู่ระบบ (ยังไม่ล็อกอิน หรือรหัสผ่านผิด)
+ * 401 จากเส้นทางนี้เป็นเรื่องปกติของหน้าเข้าสู่ระบบ (ยังไม่ล็อกอิน)
  * หน้าจอที่เรียกจึงจัดการเอง ไม่ต้องพาผู้ใช้ออกจากสิ่งที่กำลังทำอยู่
  */
-const selfHandledAuthPaths = [
-  "/api/auth/me",
-  "/api/auth/login",
-  "/api/auth/setup",
-  "/api/auth/accept-invite",
-];
+const selfHandledAuthPaths = ["/api/auth/me"];
 
 let unauthorizedHandler: (() => void) | null = null;
 
@@ -797,29 +792,8 @@ export async function fetchMe(): Promise<AuthUser> {
   return body.user;
 }
 
-export async function login(email: string, password: string): Promise<void> {
-  await apiPost<{ ok: true }>("/api/auth/login", { email, password });
-}
-
 export async function logout(): Promise<void> {
   await apiPost<{ ok: true }>("/api/auth/logout", {});
-}
-
-export interface SetupOwnerInput {
-  email: string;
-  displayName: string;
-  password: string;
-  /** ชื่อหอที่ตั้งให้ครอบครัวเดิม เว้นว่างได้ถ้าไม่ต้องการเปลี่ยน */
-  familyName?: string;
-}
-
-/**
- * ตั้งเจ้าของคนแรกให้หอเดิม — ใช้ได้เฉพาะอีเมลที่ตั้งไว้ใน OWNER_EMAIL บนเซิร์ฟเวอร์
- * และเฉพาะตอนที่หอยังไม่มีเจ้าของ จึงไม่มีรหัสลับให้ต้องไปหาจากที่ไหน
- */
-export async function setupOwner(input: SetupOwnerInput): Promise<AuthUser> {
-  const body = await apiPost<{ ok: true; user: AuthUser }>("/api/auth/setup", input);
-  return body.user;
 }
 
 /** ปลายทางเริ่มล็อกอินด้วย Google — พาเบราว์เซอร์ไปทั้งหน้า ไม่ใช่ fetch */
@@ -834,7 +808,7 @@ export interface InvitePreview {
 }
 
 /**
- * ดูข้อมูลคำเชิญจากโทเคน ก่อนให้ผู้รับตั้งชื่อและรหัสผ่าน
+ * ดูข้อมูลคำเชิญจากโทเคน ก่อนให้ผู้รับกดเข้าสู่ระบบด้วย Google
  *
  * ทำให้หน้าคำเชิญบอกได้ว่าใครเชิญไปหอไหน และรู้ทันทีถ้าลิงก์ใช้ไม่ได้
  * เส้นทางนี้เปิดให้ไม่ต้องล็อกอิน เพราะคนที่เปิดลิงก์ยังไม่มีบัญชี
@@ -849,14 +823,6 @@ export async function fetchInvitePreview(token: string): Promise<InvitePreview> 
     email: body.email,
     expiresAt: body.expiresAt,
   };
-}
-
-export async function acceptInvite(input: {
-  token: string;
-  displayName: string;
-  password: string;
-}): Promise<void> {
-  await apiPost<{ ok: true }>("/api/auth/accept-invite", input);
 }
 
 export interface FamilyInfo {
