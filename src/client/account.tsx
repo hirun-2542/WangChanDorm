@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { ApiError, changePassword } from "./api";
 import { useAuth } from "./auth";
-import { Button, Dialog, Field, RoleBadge } from "./ui";
+import { Button, Dialog, PasswordField, RoleBadge } from "./ui";
 
 function AccountDialog({
   open,
@@ -13,6 +13,7 @@ function AccountDialog({
   const { user, signOut } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -21,7 +22,7 @@ function AccountDialog({
   const change = (event: FormEvent) => {
     event.preventDefault();
 
-    if (busy) {
+    if (busy || newPassword !== confirmPassword) {
       return;
     }
 
@@ -33,6 +34,7 @@ function AccountDialog({
       .then(() => {
         setCurrentPassword("");
         setNewPassword("");
+        setConfirmPassword("");
         setNotice("เปลี่ยนรหัสผ่านแล้ว อุปกรณ์อื่นถูกออกจากระบบทั้งหมด");
       })
       .catch((failure: unknown) => {
@@ -121,9 +123,8 @@ function AccountDialog({
                 เปลี่ยนแล้วอุปกรณ์อื่นที่ค้างอยู่จะถูกออกจากระบบทันที
               </p>
             </div>
-            <Field
+            <PasswordField
               label="รหัสผ่านเดิม"
-              type="password"
               value={currentPassword}
               onChange={setCurrentPassword}
               error={
@@ -132,9 +133,8 @@ function AccountDialog({
                   : undefined
               }
             />
-            <Field
+            <PasswordField
               label="รหัสผ่านใหม่"
-              type="password"
               value={newPassword}
               onChange={setNewPassword}
               helper="อย่างน้อย 12 ตัวอักษร"
@@ -143,6 +143,12 @@ function AccountDialog({
                   ? error.message
                   : undefined
               }
+            />
+            <PasswordField
+              label="ยืนยันรหัสผ่านใหม่"
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              matches={newPassword}
             />
             {formNotice !== null && (
               <p className="text-xs text-danger" role="alert">
@@ -158,7 +164,12 @@ function AccountDialog({
               variant="secondary"
               type="submit"
               icon="password"
-              disabled={busy || currentPassword === "" || newPassword === ""}
+              disabled={
+                busy ||
+                currentPassword === "" ||
+                newPassword === "" ||
+                newPassword !== confirmPassword
+              }
             >
               {busy ? "กำลังเปลี่ยนรหัสผ่าน" : "เปลี่ยนรหัสผ่าน"}
             </Button>

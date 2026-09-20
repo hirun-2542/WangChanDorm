@@ -14,16 +14,17 @@ SLIPOK_BRANCH_ID=
 # แล้วใส่ค่าที่นี่ ปล่อยว่างได้จนกว่าจะสร้างแอป — หน้าลงทะเบียนจะแจ้งให้เปิดจากในแอป LINE จนกว่าจะตั้งค่า
 LIFF_ID=
 
-# รหัสลับสำหรับตั้งเจ้าของระบบคนแรกผ่าน POST /api/auth/bootstrap
+# รหัสลับของ Google OAuth client (ชนิด Web application) สำหรับปุ่ม "เข้าสู่ระบบด้วย Google"
 #
-# ไม่มีใครออกให้ — คิดขึ้นเองเป็นข้อความสุ่มยาว ๆ และ **ไม่ต้องเหมือนกับที่อื่น**
-# production ก็ตั้งค่าของตัวเองแยกกันด้วย `wrangler secret put BOOTSTRAP_SECRET`
-# (ใส่ใน wrangler.jsonc ไม่ได้ เพราะเป็น secret ไม่ใช่ var)
+# สร้างใน Google Cloud Console → APIs & Services → Credentials → OAuth client ID
+# แล้วเพิ่ม Authorized redirect URI ให้ครบทั้งสองแบบ:
+#   http://localhost:5173/api/auth/google/callback          (ตอน dev)
+#   https://wangchan-dorm.nodhk2545.workers.dev/api/auth/google/callback   (ตอน production)
 #
-# สร้างค่าสุ่มด้วยคำสั่งนี้แล้วคัดลอกผลลัพธ์มาใส่:
-#   openssl rand -base64 32
+# ถ้าเว้นว่าง ปุ่ม Google จะขึ้นว่า "ยังไม่ได้เปิดใช้ Google" ส่วนการล็อกอิน
+# ด้วยอีเมลและรหัสผ่านยังใช้ได้ตามปกติ
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
 #
-# ถ้าเว้นว่าง ปลายทาง /api/auth/bootstrap จะตอบ 503 และจะตั้งเจ้าของระบบคนแรก
-# ไม่ได้เลย (หน้าล็อกอินจะขึ้นว่าเซิร์ฟเวอร์ยังไม่ได้ตั้งค่า BOOTSTRAP_SECRET)
-# หลังตั้งเจ้าของคนแรกแล้ว ค่านี้ยังใช้สร้าง "ครอบครัวใหม่" ได้อยู่ จึงควรเก็บให้มิดชิด
-BOOTSTRAP_SECRET=
+# หมายเหตุ: OWNER_EMAIL ไม่ใช่ secret จึงตั้งใน `vars` ของ wrangler.jsonc
+# ไม่ต้องใส่ในไฟล์นี้

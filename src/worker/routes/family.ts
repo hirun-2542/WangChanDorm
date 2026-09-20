@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../lib/auth";
-import { familyId, requireAuth, requireRole, sameOriginOnly } from "../lib/auth";
+import { familyId, maxFamilyMembers, requireAuth, requireRole, sameOriginOnly } from "../lib/auth";
 import { hashToken, newSessionToken, revokeUserSessions } from "../lib/session";
 import { errorBody, readJsonObject } from "./shared";
 
@@ -48,8 +48,9 @@ function parseRole(value: unknown): "owner" | "member" | null {
 
 family.get("/", async (c) => {
   const id = familyId(c);
+  const isOwner = c.get("session").role === "owner";
 
-  const [info, members, invites] = await Promise.all([
+  const [info, members] = await Promise.all([
     c.env.DB.prepare("SELECT id, name FROM families WHERE id = ?").bind(id).first<{ id: string; name: string }>(),
     c.env.DB.prepare(
       `SELECT m.user_id, u.email, u.display_name, m.role, m.created_at
@@ -59,22 +60,29 @@ family.get("/", async (c) => {
     )
       .bind(id)
       .all<MemberRow>(),
-    c.env.DB.prepare(
-      `SELECT token_hash, email, role, created_at, expires_at FROM family_invites
-       WHERE family_id = ? AND accepted_at IS NULL AND expires_at > datetime('now')
-       ORDER BY created_at ASC`,
-    )
-      .bind(id)
-      .all<InviteRow>(),
   ]);
 
   if (info === null) {
     return c.json(errorBody("NOT_FOUND", "ไม่พบครอบครัวนี้"), 404);
   }
 
+  // รายการคำเชิญค้างเป็นเรื่องของเจ้าของเท่านั้น สมาชิกเห็นได้แค่รายชื่อคนในครอบครัว
+  const invites = isOwner
+    ? (
+        await c.env.DB.prepare(
+          `SELECT token_hash, email, role, created_at, expires_at FROM family_invites
+           WHERE family_id = ? AND accepted_at IS NULL AND expires_at > datetime('now')
+           ORDER BY created_at ASC`,
+        )
+          .bind(id)
+          .all<InviteRow>()
+      ).results
+    : [];
+
   return c.json({
     ok: true,
     family: { id: info.id, name: info.name },
+    maxMembers: maxFamilyMembers,
     members: members.results.map((row) => ({
       userId: row.user_id,
       email: row.email,
@@ -82,7 +90,7 @@ family.get("/", async (c) => {
       role: row.role,
       joinedAt: row.created_at,
     })),
-    invites: invites.results.map((row) => ({
+    invites: invites.map((row) => ({
       id: row.token_hash,
       email: row.email,
       role: row.role,
@@ -142,6 +150,22 @@ family.post("/invites", requireRole("owner"), async (c) => {
 
   if (already !== null) {
     return c.json(errorBody("DUPLICATE", "อีเมลนี้อยู่ในครอบครัวแล้ว", "email"), 409);
+  }
+
+  // เพดานจริงบังคับตอนเข้าครอบครัว (ซึ่งกันการแข่งกันแบบอะตอมิก) ที่นี่แค่เตือน
+  // ตั้งแต่ต้นไม่ให้ออกคำเชิญที่จะไม่มีวันถูกใช้ — คำเชิญที่ออกไปก่อนครอบครัวเต็ม
+  // ยังคงใช้ไม่ได้เมื่อถึงเวลาจริง
+  const memberCount = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM family_members WHERE family_id = ?",
+  )
+    .bind(id)
+    .first<{ n: number }>();
+
+  if ((memberCount?.n ?? 0) >= maxFamilyMembers) {
+    return c.json(
+      errorBody("CONFLICT", `ครอบครัวนี้มีสมาชิกครบ ${maxFamilyMembers} คนแล้ว`),
+      409,
+    );
   }
 
   const open = await c.env.DB.prepare(

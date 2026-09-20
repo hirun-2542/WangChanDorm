@@ -312,6 +312,8 @@ export function FamilyPage() {
 
   const members = overview?.members ?? [];
   const invites = overview?.invites ?? [];
+  const maxMembers = overview?.maxMembers ?? 0;
+  const familyFull = maxMembers > 0 && members.length >= maxMembers;
   const nameChanged =
     overview !== null &&
     name.trim() !== "" &&
@@ -456,88 +458,88 @@ export function FamilyPage() {
             </ul>
           </Card>
 
-          <Card>
-            <CardHeader
-              title="คำเชิญ"
-              description={
-                isOwner
-                  ? "คำเชิญอายุ 7 วัน และใช้ได้ครั้งเดียว"
-                  : "ดูรายการได้ แต่ต้องเป็นเจ้าของหอจึงจะออกคำเชิญได้"
-              }
-            />
-
-            {isOwner && (
-              <form
-                className="flex flex-wrap items-end gap-2"
-                onSubmit={submitInvite}
-                noValidate
-              >
-                <div className="min-w-[220px] flex-1">
-                  <Field
-                    label="อีเมลผู้รับคำเชิญ"
-                    type="email"
-                    value={inviteEmail}
-                    onChange={setInviteEmail}
-                    placeholder="member@example.com"
-                    error={
-                      inviteError !== null && inviteError.field === "email"
-                        ? inviteError.message
-                        : undefined
-                    }
-                  />
-                </div>
-                <div className="w-[132px]">
-                  <Select
-                    label="สิทธิ์"
-                    value={inviteRole}
-                    options={roleOptions}
-                    onChange={(value) => {
-                      setInviteRole(roleOf(value));
-                    }}
-                  />
-                </div>
-                <Button
-                  variant="secondary"
-                  type="submit"
-                  icon="person_add"
-                  disabled={inviting || inviteEmail.trim() === ""}
-                >
-                  {inviting ? "กำลังออกคำเชิญ" : "ออกคำเชิญ"}
-                </Button>
-              </form>
-            )}
-
-            {inviteError !== null && inviteError.field === undefined && (
-              <p className="mt-2 text-xs text-danger" role="alert">
-                {inviteError.message}
-              </p>
-            )}
-
-            {createdInvite !== null && (
-              <InviteLinkPanel
-                invite={createdInvite}
-                onDismiss={() => {
-                  setCreatedInvite(null);
-                }}
+          {isOwner && (
+            <Card>
+              <CardHeader
+                title="คำเชิญ"
+                description={
+                  familyFull
+                    ? `ครอบครัวนี้มีสมาชิกครบ ${maxMembers} คนแล้ว ต้องนำคนเดิมออกก่อนจึงจะเชิญคนใหม่ได้`
+                    : "คำเชิญอายุ 7 วัน และใช้ได้ครั้งเดียว"
+                }
               />
-            )}
 
-            {invites.length === 0 ? (
-              <p className="mt-3 text-sm text-fog">ยังไม่มีคำเชิญที่ค้างอยู่</p>
-            ) : (
-              <ul className="mt-3 grid gap-2">
-                {invites.map((invite) => (
-                  <li
-                    key={invite.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5"
+              {!familyFull && (
+                <form
+                  className="flex flex-wrap items-end gap-2"
+                  onSubmit={submitInvite}
+                  noValidate
+                >
+                  <div className="min-w-[220px] flex-1">
+                    <Field
+                      label="อีเมลผู้รับคำเชิญ"
+                      type="email"
+                      value={inviteEmail}
+                      onChange={setInviteEmail}
+                      placeholder="member@example.com"
+                      error={
+                        inviteError !== null && inviteError.field === "email"
+                          ? inviteError.message
+                          : undefined
+                      }
+                    />
+                  </div>
+                  <div className="w-[132px]">
+                    <Select
+                      label="สิทธิ์"
+                      value={inviteRole}
+                      options={roleOptions}
+                      onChange={(value) => {
+                        setInviteRole(roleOf(value));
+                      }}
+                    />
+                  </div>
+                  <Button
+                    variant="secondary"
+                    type="submit"
+                    icon="person_add"
+                    disabled={inviting || inviteEmail.trim() === ""}
                   >
-                    <div className="min-w-0">
-                      <span className="num block truncate text-sm text-charcoal">
-                        {invite.email}
-                      </span>
-                      <span className="block text-xs text-fog">{`${roleOptions.find((option) => option.value === invite.role)?.label ?? "สมาชิก"} · หมดอายุ ${dateLabel(invite.expiresAt)}`}</span>
-                    </div>
-                    {isOwner ? (
+                    {inviting ? "กำลังออกคำเชิญ" : "ออกคำเชิญ"}
+                  </Button>
+                </form>
+              )}
+
+              {inviteError !== null && inviteError.field === undefined && (
+                <p className="mt-2 text-xs text-danger" role="alert">
+                  {inviteError.message}
+                </p>
+              )}
+
+              {createdInvite !== null && (
+                <InviteLinkPanel
+                  invite={createdInvite}
+                  onDismiss={() => {
+                    setCreatedInvite(null);
+                  }}
+                />
+              )}
+
+              {invites.length === 0 ? (
+                <p className="mt-3 text-sm text-fog">ยังไม่มีคำเชิญที่ค้างอยู่</p>
+              ) : (
+                <ul className="mt-3 grid gap-2">
+                  {invites.map((invite) => (
+                    <li
+                      key={invite.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5"
+                    >
+                      <div className="min-w-0">
+                        <span className="num block truncate text-sm text-charcoal">
+                          {invite.email}
+                        </span>
+                        <span className="block text-xs text-fog">{`${roleOptions.find((option) => option.value === invite.role)?.label ?? "สมาชิก"} · หมดอายุ ${dateLabel(invite.expiresAt)}`}</span>
+                      </div>
                       <Button
                         variant="danger-soft"
                         size="sm"
@@ -549,14 +551,12 @@ export function FamilyPage() {
                       >
                         {busyInviteId === invite.id ? "กำลังยกเลิก" : "ยกเลิกคำเชิญ"}
                       </Button>
-                    ) : (
-                      <RoleBadge role={invite.role} />
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
         </div>
       )}
 

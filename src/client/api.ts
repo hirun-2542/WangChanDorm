@@ -247,7 +247,7 @@ const requestTimeoutMs = 20_000;
 const selfHandledAuthPaths = [
   "/api/auth/me",
   "/api/auth/login",
-  "/api/auth/bootstrap",
+  "/api/auth/setup",
   "/api/auth/accept-invite",
 ];
 
@@ -815,30 +815,25 @@ export async function changePassword(
   });
 }
 
-export interface BootstrapInput {
-  secret: string;
+export interface SetupOwnerInput {
   email: string;
   displayName: string;
   password: string;
-  /** เว้นว่างได้เมื่อระบบยังไม่มีเจ้าของ และจะรับช่วงข้อมูลหอเดิม */
+  /** ชื่อหอที่ตั้งให้ครอบครัวเดิม เว้นว่างได้ถ้าไม่ต้องการเปลี่ยน */
   familyName?: string;
 }
 
-export interface BootstrapResult {
-  user: AuthUser;
-  /** true = รับช่วงข้อมูลหอเดิม false = สร้างครอบครัวใหม่ที่เริ่มจากข้อมูลว่าง */
-  claimedExistingData: boolean;
+/**
+ * ตั้งเจ้าของคนแรกให้หอเดิม — ใช้ได้เฉพาะอีเมลที่ตั้งไว้ใน OWNER_EMAIL บนเซิร์ฟเวอร์
+ * และเฉพาะตอนที่หอยังไม่มีเจ้าของ จึงไม่มีรหัสลับให้ต้องไปหาจากที่ไหน
+ */
+export async function setupOwner(input: SetupOwnerInput): Promise<AuthUser> {
+  const body = await apiPost<{ ok: true; user: AuthUser }>("/api/auth/setup", input);
+  return body.user;
 }
 
-export async function bootstrap(input: BootstrapInput): Promise<BootstrapResult> {
-  const body = await apiPost<{
-    ok: true;
-    claimedExistingData: boolean;
-    user: AuthUser;
-  }>("/api/auth/bootstrap", input);
-
-  return { user: body.user, claimedExistingData: body.claimedExistingData };
-}
+/** ปลายทางเริ่มล็อกอินด้วย Google — พาเบราว์เซอร์ไปทั้งหน้า ไม่ใช่ fetch */
+export const googleSignInPath = "/api/auth/google/start";
 
 export async function acceptInvite(input: {
   token: string;
@@ -873,6 +868,8 @@ export interface FamilyOverview {
   family: FamilyInfo;
   members: FamilyMember[];
   invites: FamilyInvite[];
+  /** เพดานสมาชิกต่อครอบครัว — เซิร์ฟเวอร์เป็นเจ้าของตัวเลขนี้ ฝั่งจอไม่ต้องจำเอง */
+  maxMembers: number;
 }
 
 export interface CreatedInvite {
@@ -891,6 +888,7 @@ export async function fetchFamily(): Promise<FamilyOverview> {
     family: body.family,
     members: body.members,
     invites: body.invites,
+    maxMembers: body.maxMembers,
   };
 }
 

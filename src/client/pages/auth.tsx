@@ -1,13 +1,14 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   ApiError,
   acceptInvite,
-  bootstrap,
   fetchMe,
+  googleSignInPath,
   login,
+  setupOwner,
   type AuthUser,
 } from "../api";
-import { Button, Card, Field, Monogram, Skeleton } from "../ui";
+import { Button, Card, Field, Monogram, PasswordField, Skeleton } from "../ui";
 
 function fieldErrorOf(
   error: ApiError | null,
@@ -43,19 +44,58 @@ function FormNotice({
 }
 
 /** บอกสาเหตุตามสถานะที่เซิร์ฟเวอร์ตอบ เพราะผู้ใช้ต้องรู้ว่าต้องแก้ที่ใด */
-function bootstrapDetail(status: number): string | undefined {
+function setupDetail(status: number): string | undefined {
   switch (status) {
     case 503:
-      return "เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า BOOTSTRAP_SECRET จึงตั้งเจ้าของระบบไม่ได้";
+      return "เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า OWNER_EMAIL จึงตั้งเจ้าของระบบไม่ได้";
     case 409:
-      return "ระบบมีเจ้าของอยู่แล้ว ให้เข้าสู่ระบบด้วยบัญชีเดิม";
+      return "หอนี้มีเจ้าของแล้ว ให้เข้าสู่ระบบด้วยบัญชีเดิม";
     case 403:
-      return "รหัสเริ่มต้นระบบไม่ตรงกับที่ตั้งไว้บนเซิร์ฟเวอร์";
+      return "อีเมลนี้ไม่ตรงกับเจ้าของระบบที่ตั้งไว้บนเซิร์ฟเวอร์ (OWNER_EMAIL)";
     case 429:
       return "พยายามหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่";
     default:
       return undefined;
   }
+}
+
+/** รหัสสาเหตุที่เซิร์ฟเวอร์ส่งกลับมาทาง query เมื่อล็อกอินด้วย Google ไม่สำเร็จ */
+const googleReasonMessages: Record<string, string> = {
+  google_disabled: "เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งค่า Google จึงยังใช้ปุ่มนี้ไม่ได้",
+  denied: "ยกเลิกการเข้าสู่ระบบด้วย Google",
+  state: "การยืนยันตัวตนไม่สมบูรณ์ กรุณาเริ่มใหม่จากหน้านี้",
+  google_failed: "ยืนยันกับ Google ไม่สำเร็จ กรุณาลองใหม่",
+  no_family: "บัญชีนี้ยังไม่ได้อยู่ในครอบครัวใด กรุณาให้เจ้าของหอออกคำเชิญ",
+  not_invited: "อีเมลนี้ยังไม่ได้รับคำเชิญจากเจ้าของหอ",
+  family_full: "ครอบครัวนี้มีสมาชิกครบแล้ว",
+};
+
+/** อ่านเหตุผลจาก query แล้วลบทิ้ง เพื่อไม่ให้ข้อความเดิมกลับมาอีกตอนกด refresh */
+function useGoogleFailureNotice(): string | null {
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get("auth") !== "error") {
+      return;
+    }
+
+    const reason = params.get("reason") ?? "";
+    setNotice(googleReasonMessages[reason] ?? "เข้าสู่ระบบด้วย Google ไม่สำเร็จ");
+
+    params.delete("auth");
+    params.delete("reason");
+
+    const rest = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${rest === "" ? "" : `?${rest}`}${window.location.hash}`,
+    );
+  }, []);
+
+  return notice;
 }
 
 function AuthLayout({
@@ -92,9 +132,11 @@ function AuthLayout({
 function LoginForm({
   onSignedIn,
   onFirstRun,
+  googleNotice,
 }: {
   onSignedIn: (user: AuthUser) => void;
   onFirstRun: () => void;
+  googleNotice: string | null;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -133,8 +175,29 @@ function LoginForm({
   return (
     <AuthLayout
       title="เข้าสู่ระบบ"
-      description="ใช้อีเมลและรหัสผ่านของบัญชีที่ตั้งไว้แล้ว"
+      description="ใช้อีเมลและรหัสผ่านของบัญชีที่ตั้งไว้แล้ว หรือใช้บัญชี Google"
     >
+      {googleNotice !== null && <FormNotice message={googleNotice} />}
+
+      <div className={googleNotice === null ? "" : "mt-4"}>
+        <Button
+          variant="secondary"
+          className="w-full justify-center"
+          icon="account_circle"
+          onClick={() => {
+            window.location.href = googleSignInPath;
+          }}
+        >
+          เข้าสู่ระบบด้วย Google
+        </Button>
+      </div>
+
+      <div className="my-4 flex items-center gap-3">
+        <span className="h-px flex-1 bg-ash" aria-hidden="true" />
+        <span className="text-[11px] text-fog">หรือ</span>
+        <span className="h-px flex-1 bg-ash" aria-hidden="true" />
+      </div>
+
       <form className="grid gap-4" onSubmit={submit} noValidate>
         <Field
           label="อีเมล"
@@ -147,9 +210,8 @@ function LoginForm({
             (submitted && email.trim() === "" ? "กรอกอีเมล" : undefined)
           }
         />
-        <Field
+        <PasswordField
           label="รหัสผ่าน"
-          type="password"
           value={password}
           onChange={setPassword}
           error={
@@ -165,35 +227,38 @@ function LoginForm({
 
       <div className="mt-4 border-t border-ash pt-3">
         <p className="text-xs text-fog">
-          ยังไม่มีบัญชี ระบบเปิดรับสมาชิกด้วยคำเชิญจากเจ้าของหอเท่านั้น
+          สมาชิกในครอบครัวเข้าได้ด้วยคำเชิญจากเจ้าของหอเท่านั้น
+          และลืมรหัสผ่านให้ใช้ปุ่ม Google ด้านบนได้ถ้าอีเมลตรงกัน
         </p>
         <button
           type="button"
           className="mt-1.5 text-xs text-electric-blue underline underline-offset-2"
           onClick={onFirstRun}
         >
-          ตั้งค่าเจ้าของระบบครั้งแรก
+          ตั้งเจ้าของหอครั้งแรก
         </button>
       </div>
     </AuthLayout>
   );
 }
 
-function BootstrapForm({
+function SetupForm({
   onSignedIn,
   onBackToLogin,
 }: {
   onSignedIn: (user: AuthUser) => void;
   onBackToLogin: () => void;
 }) {
-  const [secret, setSecret] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [familyName, setFamilyName] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const mismatch = confirm !== "" && confirm !== password;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -201,10 +266,10 @@ function BootstrapForm({
 
     if (
       busy ||
-      secret === "" ||
       displayName.trim() === "" ||
       email.trim() === "" ||
-      password === ""
+      password === "" ||
+      password !== confirm
     ) {
       return;
     }
@@ -214,21 +279,18 @@ function BootstrapForm({
 
     const trimmedFamilyName = familyName.trim();
 
-    void bootstrap({
-      secret,
+    void setupOwner({
       email: email.trim(),
       displayName: displayName.trim(),
       password,
       ...(trimmedFamilyName === "" ? {} : { familyName: trimmedFamilyName }),
     })
-      .then((result) => {
-        onSignedIn(result.user);
-      })
+      .then(onSignedIn)
       .catch((failure: unknown) => {
         setError(
           failure instanceof ApiError
             ? failure
-            : new ApiError("ตั้งค่าเจ้าของระบบไม่สำเร็จ", "UNKNOWN"),
+            : new ApiError("ตั้งเจ้าของหอไม่สำเร็จ", "UNKNOWN"),
         );
       })
       .finally(() => {
@@ -240,18 +302,10 @@ function BootstrapForm({
 
   return (
     <AuthLayout
-      title="ตั้งค่าเจ้าของระบบ"
-      description="ใช้ครั้งแรกเมื่อหอนี้ยังไม่มีเจ้าของ ต้องมีรหัสเริ่มต้นระบบจากเซิร์ฟเวอร์"
+      title="ตั้งเจ้าของหอ"
+      description="ใช้ครั้งแรกเมื่อหอนี้ยังไม่มีเจ้าของ ใช้อีเมลที่ตั้งไว้ใน OWNER_EMAIL บนเซิร์ฟเวอร์"
     >
       <form className="grid gap-4" onSubmit={submit} noValidate>
-        <Field
-          label="รหัสเริ่มต้นระบบ"
-          type="password"
-          value={secret}
-          onChange={setSecret}
-          helper="ค่าที่ตั้งไว้ใน BOOTSTRAP_SECRET บนเซิร์ฟเวอร์"
-          error={fieldErrorOf(error, "secret")}
-        />
         <Field
           label="ชื่อที่แสดง"
           value={displayName}
@@ -270,15 +324,14 @@ function BootstrapForm({
           value={email}
           onChange={setEmail}
           placeholder="owner@example.com"
-          helper="ใช้เข้าสู่ระบบครั้งต่อไป"
+          helper="ต้องตรงกับเจ้าของหอที่ตั้งไว้บนเซิร์ฟเวอร์"
           error={
             fieldErrorOf(error, "email") ??
             (submitted && email.trim() === "" ? "กรอกอีเมล" : undefined)
           }
         />
-        <Field
+        <PasswordField
           label="รหัสผ่าน"
-          type="password"
           value={password}
           onChange={setPassword}
           helper="อย่างน้อย 12 ตัวอักษร"
@@ -287,21 +340,33 @@ function BootstrapForm({
             (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
           }
         />
+        <PasswordField
+          label="ยืนยันรหัสผ่าน"
+          value={confirm}
+          onChange={setConfirm}
+          matches={password}
+          error={submitted && confirm === "" ? "กรอกรหัสผ่านอีกครั้ง" : undefined}
+        />
         <Field
-          label="ชื่อครอบครัว"
+          label="ชื่อหอ"
           value={familyName}
           onChange={setFamilyName}
-          helper="เว้นว่างได้ถ้าระบบมีข้อมูลหอเดิมอยู่แล้ว ระบบจะรับช่วงข้อมูลนั้นให้"
+          helper="ตั้งให้หอนี้ได้เลย เว้นว่างได้ถ้าไม่ต้องการเปลี่ยน"
           error={fieldErrorOf(error, "familyName")}
         />
         {notice !== null && (
           <FormNotice
             message={notice.message}
-            detail={bootstrapDetail(notice.status)}
+            detail={setupDetail(notice.status)}
           />
         )}
-        <Button variant="primary" type="submit" icon="shield_person" disabled={busy}>
-          {busy ? "กำลังตั้งค่า" : "ตั้งค่าเจ้าของระบบ"}
+        <Button
+          variant="primary"
+          type="submit"
+          icon="shield_person"
+          disabled={busy || mismatch}
+        >
+          {busy ? "กำลังตั้งค่า" : "ตั้งเจ้าของหอ"}
         </Button>
       </form>
 
@@ -323,11 +388,12 @@ export function AuthScreen({
 }: {
   onSignedIn: (user: AuthUser) => void;
 }) {
-  const [mode, setMode] = useState<"login" | "bootstrap">("login");
+  const [mode, setMode] = useState<"login" | "setup">("login");
+  const googleNotice = useGoogleFailureNotice();
 
-  if (mode === "bootstrap") {
+  if (mode === "setup") {
     return (
-      <BootstrapForm
+      <SetupForm
         onSignedIn={onSignedIn}
         onBackToLogin={() => {
           setMode("login");
@@ -339,8 +405,9 @@ export function AuthScreen({
   return (
     <LoginForm
       onSignedIn={onSignedIn}
+      googleNotice={googleNotice}
       onFirstRun={() => {
-        setMode("bootstrap");
+        setMode("setup");
       }}
     />
   );
@@ -357,15 +424,23 @@ export function InviteAcceptScreen({
 }) {
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const mismatch = confirm !== "" && confirm !== password;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setSubmitted(true);
 
-    if (busy || displayName.trim() === "" || password === "") {
+    if (
+      busy ||
+      displayName.trim() === "" ||
+      password === "" ||
+      password !== confirm
+    ) {
       return;
     }
 
@@ -414,9 +489,8 @@ export function InviteAcceptScreen({
               : undefined)
           }
         />
-        <Field
+        <PasswordField
           label="รหัสผ่าน"
-          type="password"
           value={password}
           onChange={setPassword}
           helper="อย่างน้อย 12 ตัวอักษร · ถ้ามีบัญชีอยู่แล้วให้ใช้รหัสผ่านเดิมของบัญชีนั้น"
@@ -424,6 +498,13 @@ export function InviteAcceptScreen({
             fieldErrorOf(error, "password") ??
             (submitted && password === "" ? "กรอกรหัสผ่าน" : undefined)
           }
+        />
+        <PasswordField
+          label="ยืนยันรหัสผ่าน"
+          value={confirm}
+          onChange={setConfirm}
+          matches={password}
+          error={submitted && confirm === "" ? "กรอกรหัสผ่านอีกครั้ง" : undefined}
         />
         {notice !== null && (
           <FormNotice
@@ -435,7 +516,12 @@ export function InviteAcceptScreen({
             }
           />
         )}
-        <Button variant="primary" type="submit" icon="group_add" disabled={busy}>
+        <Button
+          variant="primary"
+          type="submit"
+          icon="group_add"
+          disabled={busy || mismatch}
+        >
           {busy ? "กำลังรับคำเชิญ" : "รับคำเชิญและเข้าใช้งาน"}
         </Button>
       </form>

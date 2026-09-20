@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { FamilyRole } from "./api";
 
 export interface PageProps {
@@ -159,9 +159,11 @@ export interface FieldProps {
   error?: string;
   inputMode?: "text" | "numeric" | "tel";
   disabled?: boolean;
+  /** ปุ่มหรือไอคอนท้ายช่อง เช่น ปุ่มส่องรหัสผ่าน */
+  trailing?: ReactNode;
 }
 
-export function Field({ label, value, onChange, id, type = "text", placeholder, helper, error, inputMode, disabled }: FieldProps) {
+export function Field({ label, value, onChange, id, type = "text", placeholder, helper, error, inputMode, disabled, trailing }: FieldProps) {
   const generatedId = useId();
   const fieldId = id ?? generatedId;
   const describedBy = error !== undefined ? `${fieldId}-error` : helper !== undefined ? `${fieldId}-help` : undefined;
@@ -171,18 +173,21 @@ export function Field({ label, value, onChange, id, type = "text", placeholder, 
       <label className="field-label" htmlFor={fieldId}>
         {label}
       </label>
-      <input
-        id={fieldId}
-        className="input"
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        inputMode={inputMode}
-        disabled={disabled}
-        aria-invalid={error !== undefined}
-        aria-describedby={describedBy}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <div className={trailing === undefined ? "" : "relative"}>
+        <input
+          id={fieldId}
+          className={trailing === undefined ? "input" : "input pr-12"}
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          inputMode={inputMode}
+          disabled={disabled}
+          aria-invalid={error !== undefined}
+          aria-describedby={describedBy}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        {trailing}
+      </div>
       {error !== undefined ? (
         <p id={`${fieldId}-error`} className="mt-1.5 text-xs text-danger">
           {error}
@@ -193,6 +198,49 @@ export function Field({ label, value, onChange, id, type = "text", placeholder, 
         </p>
       ) : null}
     </div>
+  );
+}
+
+export interface PasswordFieldProps extends Omit<FieldProps, "type" | "trailing"> {
+  /** ช่องยืนยันรหัสผ่าน: เทียบกับอีกช่องหนึ่งแล้วขึ้นข้อความเมื่อไม่ตรง */
+  matches?: string;
+}
+
+/**
+ * ช่องรหัสผ่านพร้อมปุ่มรูปตาสำหรับส่องดูรหัสที่พิมพ์
+ *
+ * เผยให้เห็นได้เพราะคนส่วนใหญ่พิมพ์รหัสยาว ๆ ในมือถือแล้วไม่เห็นว่าพิมพ์ผิด
+ * ตรงไหน การซ่อนตลอดเวลาไม่ได้เพิ่มความปลอดภัยให้คนที่ยืนดูจออยู่แล้ว
+ */
+export function PasswordField({ matches, error, ...rest }: PasswordFieldProps) {
+  const [shown, setShown] = useState(false);
+
+  const mismatch =
+    matches !== undefined && rest.value !== "" && rest.value !== matches
+      ? "รหัสผ่านทั้งสองช่องไม่ตรงกัน"
+      : undefined;
+
+  return (
+    <Field
+      {...rest}
+      type={shown ? "text" : "password"}
+      error={error ?? mismatch}
+      trailing={
+        <button
+          type="button"
+          className="absolute inset-y-0 right-3 flex items-center text-slate transition-colors hover:text-charcoal"
+          aria-label={shown ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"}
+          aria-pressed={shown}
+          onClick={() => {
+            setShown((previous) => !previous);
+          }}
+        >
+          <span className="ms text-[20px]" aria-hidden="true">
+            {shown ? "visibility_off" : "visibility"}
+          </span>
+        </button>
+      }
+    />
   );
 }
 
