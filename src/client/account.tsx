@@ -1,16 +1,27 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { ApiError, changePassword } from "./api";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { ApiError, changePassword, type AuthUser } from "./api";
 import { useAuth } from "./auth";
-import { Button, Dialog, PasswordField, RoleBadge } from "./ui";
+import { Button, PasswordField, RoleBadge } from "./ui";
 
-function AccountDialog({
-  open,
-  onClose,
+/**
+ * แผงบัญชีที่เปิดจากชื่อผู้ใช้บนแถบบน
+ *
+ * เดิมเป็นโมดัลกลางจอ ทั้งที่คำถามที่คนกดเข้ามาหาคือ "ตอนนี้ฉันเข้าใช้ด้วยบัญชีอะไร"
+ * กับ "ออกจากระบบ" ส่วนฟอร์มเปลี่ยนรหัสผ่านเป็นของที่ต้องตั้งใจเข้ามาทำ
+ * จึงแยกเป็นสองหน้าจอในแผงเดียว — ข้อมูลบัญชีมาก่อน แล้วค่อยกดเข้าฟอร์ม
+ *
+ * แผงนี้ถูกสร้างใหม่ทุกครั้งที่เปิด (unmount ตอนปิด) ข้อความ error และรหัสผ่าน
+ * ที่พิมพ์ค้างไว้จึงไม่หลงเหลือข้ามการเปิด-ปิด โดยไม่ต้องมีโค้ดล้าง state
+ */
+function AccountMenu({
+  user,
+  panelId,
 }: {
-  open: boolean;
-  onClose: () => void;
+  user: AuthUser;
+  panelId: string;
 }) {
-  const { user, signOut } = useAuth();
+  const { signOut } = useAuth();
+  const [view, setView] = useState<"menu" | "password">("menu");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -19,25 +30,12 @@ function AccountDialog({
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
-  /**
-   * ปิดแล้วเปิดใหม่ต้องเริ่มจากศูนย์
-   *
-   * ทั้งข้อความ error เก่าและรหัสผ่านที่พิมพ์ค้างไว้ไม่ควรอยู่ต่อ เพราะเครื่องนี้
-   * อาจเป็นเครื่องใช้ร่วมกันในบ้าน และการเห็น error ค้างทำให้เข้าใจว่าเพิ่งล้มเหลวอีกครั้ง
-   */
+  // โฟกัสเข้าแผงก่อน เพื่อให้โปรแกรมอ่านหน้าจออ่านข้อมูลบัญชีแล้วค่อยให้ Tab ต่อ
   useEffect(() => {
-    if (open) {
-      return;
-    }
-
-    setCurrentPassword("");
-    setNewPassword("");
-    setConfirmPassword("");
-    setError(null);
-    setNotice(null);
-    setConfirmingSignOut(false);
-  }, [open]);
+    panelRef.current?.focus();
+  }, []);
 
   const change = (event: FormEvent) => {
     event.preventDefault();
@@ -72,8 +70,8 @@ function AccountDialog({
   /**
    * ออกจากระบบต้องกดสองครั้ง
    *
-   * ปุ่มนี้เคยอยู่แถบล่างติดกับ "ปิด" ห่างกัน 8px ทั้งคู่สูงเท่ากัน พลาดคลิกครั้งเดียว
-   * คือหลุดจากเครื่องที่ใช้ทำบิลกลางเดือน แล้วต้องพิมพ์รหัสยาวใหม่
+   * ปุ่มนี้อยู่ใกล้ปุ่มอื่นในเมนูที่ปิดได้ง่าย การกดพลาดครั้งเดียวคือหลุดจากเครื่อง
+   * ที่ใช้ทำบิลกลางเดือน แล้วต้องพิมพ์รหัสยาวอย่างน้อย 12 ตัวใหม่
    */
   const leave = () => {
     if (signingOut) {
@@ -95,8 +93,6 @@ function AccountDialog({
             ? failure
             : new ApiError("ออกจากระบบไม่สำเร็จ", "UNKNOWN"),
         );
-      })
-      .finally(() => {
         setSigningOut(false);
       });
   };
@@ -104,46 +100,89 @@ function AccountDialog({
   const formNotice = error !== null && error.field === undefined ? error : null;
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      title="บัญชีของฉัน"
-      footer={
-        <Button variant="ghost" onClick={onClose}>
-          ปิด
-        </Button>
-      }
+    <div
+      id={panelId}
+      ref={panelRef}
+      tabIndex={-1}
+      aria-label="บัญชีของฉัน"
+      className="absolute right-0 top-[calc(100%+6px)] z-40 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-ash bg-canvas-white shadow-sm outline-none"
     >
-      {user !== null && (
-        <div className="grid gap-4">
-          <dl className="grid gap-2 text-sm">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-steel">ชื่อที่แสดง</dt>
-              <dd className="text-charcoal">{user.displayName}</dd>
+      {view === "menu" ? (
+        <>
+          <div className="border-b border-ash px-4 py-3">
+            <p className="truncate text-[13px] font-semibold text-charcoal">
+              {user.displayName}
+            </p>
+            <p className="num mt-0.5 truncate text-[11px] text-fog">{user.email}</p>
+            <div className="mt-2">
+              <RoleBadge role={user.role} />
             </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-steel">อีเมล</dt>
-              <dd className="num text-charcoal">{user.email}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-steel">สิทธิ์ในครอบครัว</dt>
-              <dd>
-                <RoleBadge role={user.role} />
-              </dd>
-            </div>
-          </dl>
+          </div>
 
-          <form
-            className="grid gap-4 border-t border-ash pt-4"
-            onSubmit={change}
-            noValidate
-          >
-            <div>
-              <h3 className="text-[15px] text-charcoal">เปลี่ยนรหัสผ่าน</h3>
-              <p className="mt-0.5 text-xs text-fog">
-                เปลี่ยนแล้วอุปกรณ์อื่นที่ค้างอยู่จะถูกออกจากระบบทันที
-              </p>
-            </div>
+          <div className="p-1.5">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-charcoal transition-colors hover:bg-paper-mist"
+              onClick={() => {
+                setConfirmingSignOut(false);
+                setView("password");
+              }}
+            >
+              <span className="ms text-[18px] text-slate" aria-hidden="true">
+                password
+              </span>
+              เปลี่ยนรหัสผ่าน
+            </button>
+            <button
+              type="button"
+              disabled={signingOut}
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-danger transition-colors hover:bg-danger-soft disabled:opacity-60"
+              onClick={leave}
+            >
+              <span className="ms text-[18px]" aria-hidden="true">
+                logout
+              </span>
+              {signingOut
+                ? "กำลังออกจากระบบ"
+                : confirmingSignOut
+                  ? "กดอีกครั้งเพื่อออกจากระบบ"
+                  : "ออกจากระบบ"}
+            </button>
+          </div>
+
+          {formNotice !== null && (
+            <p className="border-t border-ash px-4 py-3 text-xs text-danger" role="alert">
+              {formNotice.message}
+            </p>
+          )}
+          {notice !== null && (
+            <p className="border-t border-ash px-4 py-3 text-xs text-status-paid-fg" role="status">
+              {notice}
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5 border-b border-ash py-1.5 pl-1.5 pr-3">
+            <button
+              type="button"
+              aria-label="ย้อนกลับ"
+              className="icon-btn h-9 w-9"
+              onClick={() => {
+                setView("menu");
+              }}
+            >
+              <span className="ms text-[20px]" aria-hidden="true">
+                arrow_back
+              </span>
+            </button>
+            <p className="text-[13px] font-semibold text-charcoal">เปลี่ยนรหัสผ่าน</p>
+          </div>
+
+          <form className="grid gap-3.5 p-4" onSubmit={change} noValidate>
+            <p className="text-xs text-fog">
+              เปลี่ยนแล้วอุปกรณ์อื่นที่ค้างอยู่จะถูกออกจากระบบทันที
+            </p>
             <PasswordField
               label="รหัสผ่านเดิม"
               value={currentPassword}
@@ -200,6 +239,7 @@ function AccountDialog({
               variant="secondary"
               type="submit"
               icon="password"
+              className="justify-center"
               disabled={
                 busy ||
                 currentPassword === "" ||
@@ -210,29 +250,9 @@ function AccountDialog({
               {busy ? "กำลังเปลี่ยนรหัสผ่าน" : "เปลี่ยนรหัสผ่าน"}
             </Button>
           </form>
-
-          <div className="border-t border-ash pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-fog">
-                ออกจากระบบแล้วต้องเข้าสู่ระบบใหม่ด้วยอีเมลและรหัสผ่านเดิม
-              </p>
-              <Button
-                variant="danger-soft"
-                icon="logout"
-                disabled={signingOut}
-                onClick={leave}
-              >
-                {signingOut
-                  ? "กำลังออกจากระบบ"
-                  : confirmingSignOut
-                    ? "กดอีกครั้งเพื่อออกจากระบบ"
-                    : "ออกจากระบบ"}
-              </Button>
-            </div>
-          </div>
-        </div>
+        </>
       )}
-    </Dialog>
+    </div>
   );
 }
 
@@ -244,6 +264,46 @@ export interface AccountButtonProps {
 export function AccountButton({ variant }: AccountButtonProps) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+
+  /**
+   * ปิดเมื่อคลิกที่อื่นหรือกด Esc
+   *
+   * เช็คจาก wrapper ไม่ใช่จากแผง เพราะปุ่มเปิดก็ต้องไม่นับเป็น "ที่อื่น"
+   * ไม่งั้น pointerdown จะปิดแผงก่อน แล้ว click ของปุ่มจะเปิดมันกลับมาทันที
+   */
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (wrapperRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setOpen(false);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
 
   if (user === null) {
     return null;
@@ -252,12 +312,31 @@ export function AccountButton({ variant }: AccountButtonProps) {
   const initial = user.displayName.slice(0, 1);
 
   return (
-    <>
+    <div
+      className="relative"
+      ref={wrapperRef}
+      /**
+       * ปิดเมื่อโฟกัสออกจากทั้งปุ่มและแผง
+       *
+       * ถ้าไม่ปิด การกด Tab ผ่านแผงไปจนสุดจะทิ้งแผงลอยค้างไว้กลางจอ
+       * โดยไม่มีอะไรบอกว่าตอนนี้โฟกัสอยู่ไหน
+       */
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) {
+          return;
+        }
+
+        setOpen(false);
+      }}
+    >
       {variant === "full" ? (
         <button
+          ref={triggerRef}
           type="button"
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
           onClick={() => {
-            setOpen(true);
+            setOpen((previous) => !previous);
           }}
           className="flex min-h-11 items-center gap-2.5 rounded-lg px-1.5 text-left transition-colors hover:bg-paper-mist"
         >
@@ -275,10 +354,13 @@ export function AccountButton({ variant }: AccountButtonProps) {
         </button>
       ) : (
         <button
+          ref={triggerRef}
           type="button"
           aria-label="บัญชีของฉัน"
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
           onClick={() => {
-            setOpen(true);
+            setOpen((previous) => !previous);
           }}
           className="icon-btn h-11 w-11"
         >
@@ -287,12 +369,7 @@ export function AccountButton({ variant }: AccountButtonProps) {
           </span>
         </button>
       )}
-      <AccountDialog
-        open={open}
-        onClose={() => {
-          setOpen(false);
-        }}
-      />
-    </>
+      {open && <AccountMenu user={user} panelId={panelId} />}
+    </div>
   );
 }
