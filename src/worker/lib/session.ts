@@ -104,7 +104,7 @@ export async function revokeSession(db: D1Database, token: string): Promise<void
     .run();
 }
 
-/** ใช้ตอนเปลี่ยนรหัสผ่านหรือถอดสมาชิก เพื่อเตะทุกอุปกรณ์ออก */
+/** ใช้ตอนถอดสมาชิกออกจากครอบครัว เพื่อเตะทุกอุปกรณ์ของคนนั้นออก */
 export async function revokeUserSessions(db: D1Database, userId: string): Promise<void> {
   await db
     .prepare("UPDATE sessions SET revoked_at = datetime('now') WHERE user_id = ? AND revoked_at IS NULL")

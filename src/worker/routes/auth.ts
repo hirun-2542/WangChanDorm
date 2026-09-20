@@ -17,7 +17,6 @@ import {
   newSessionToken,
   revokeSession,
   sessionCookie,
-  sessionExpiryIso,
 } from "../lib/session";
 import { errorBody, readJsonObject } from "./shared";
 
@@ -683,70 +682,6 @@ auth.get("/me", requireAuth, (c) => {
       familyId: session.familyId,
     },
   });
-});
-
-auth.post("/password", requireAuth, async (c) => {
-  const body = await readJsonObject(c.req.raw);
-
-  if (body === null) {
-    return c.json(errorBody("VALIDATION", "รูปแบบข้อมูลไม่ถูกต้อง"), 400);
-  }
-
-  const session = c.get("session");
-  const current = typeof body.currentPassword === "string" ? body.currentPassword : "";
-  const passwordMessage = passwordError(body.newPassword);
-
-  if (passwordMessage !== null) {
-    return c.json(errorBody("VALIDATION", passwordMessage, "newPassword"), 400);
-  }
-
-  const row = await c.env.DB.prepare("SELECT password_hash FROM users WHERE id = ?")
-    .bind(session.userId)
-    .first<{ password_hash: string }>();
-
-  if (row === null || !verifyPassword(current, row.password_hash)) {
-    return c.json(errorBody("VALIDATION", "รหัสผ่านเดิมไม่ถูกต้อง", "currentPassword"), 400);
-  }
-
-  const newHash = hashPassword(body.newPassword as string);
-  const token = newSessionToken();
-  const tokenHash = await hashToken(token);
-  const expiresAt = sessionExpiryIso();
-
-  // สามคำสั่งนี้ต้องเป็นธุรกรรมเดียว ไม่งั้นสองคำขอเปลี่ยนรหัสผ่านพร้อมกันด้วย
-  // รหัสผ่านเดิมเดียวกันจะแข่งกันชนะได้ทั้งคู่ — ฝ่ายแพ้ต้องไม่ได้เซสชันใหม่ที่ใช้ได้จริง
-  // แม้ batch ของฝ่ายแพ้จะยังรันครบ (D1 ไม่ยกเลิกคำสั่งถัดไปเมื่อคำสั่งก่อนหน้าไม่มีอะไรเปลี่ยน)
-  //
-  // คำสั่งแรกอัปเดตแบบมีเงื่อนไข (optimistic: password_hash ต้องตรงกับที่เพิ่งตรวจ)
-  // คำสั่งที่สองและสามอ้างอิง newHash ที่เพิ่งพยายามตั้งเป็นเงื่อนไขของตัวเอง จึงเดิน
-  // ต่อได้ก็ต่อเมื่อคำสั่งแรก "ของคำขอนี้เอง" เป็นฝ่ายชนะจริง ไม่ใช่แค่ตรวจสถานะเก่า
-  const results = await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?").bind(
-      newHash,
-      session.userId,
-      row.password_hash,
-    ),
-    c.env.DB.prepare(
-      `UPDATE sessions SET revoked_at = datetime('now')
-       WHERE user_id = ? AND revoked_at IS NULL
-         AND EXISTS (SELECT 1 FROM users WHERE id = ? AND password_hash = ?)`,
-    ).bind(session.userId, session.userId, newHash),
-    c.env.DB.prepare(
-      `INSERT INTO sessions (token_hash, user_id, family_id, expires_at)
-       SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ? AND password_hash = ?)`,
-    ).bind(tokenHash, session.userId, session.familyId, expiresAt, session.userId, newHash),
-  ]);
-
-  if ((results[0]?.meta.changes ?? 0) === 0) {
-    return c.json(
-      errorBody("CONFLICT", "รหัสผ่านถูกเปลี่ยนโดยคำขออื่นไปแล้ว กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง"),
-      409,
-    );
-  }
-
-  c.header("set-cookie", sessionCookie(token, isSecureRequest(c)));
-
-  return c.json({ ok: true });
 });
 
 export default auth;

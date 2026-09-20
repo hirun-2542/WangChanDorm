@@ -805,16 +805,6 @@ export async function logout(): Promise<void> {
   await apiPost<{ ok: true }>("/api/auth/logout", {});
 }
 
-export async function changePassword(
-  currentPassword: string,
-  newPassword: string,
-): Promise<void> {
-  await apiPost<{ ok: true }>("/api/auth/password", {
-    currentPassword,
-    newPassword,
-  });
-}
-
 export interface SetupOwnerInput {
   email: string;
   displayName: string;
