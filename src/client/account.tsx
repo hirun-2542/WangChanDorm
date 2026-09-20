@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type FocusEvent } from "react";
 import { ApiError, type AuthUser } from "./api";
 import { useAuth } from "./auth";
-import { RoleBadge } from "./ui";
+import { Button, Dialog, RoleBadge } from "./ui";
 
 /**
  * เมนูบัญชีที่เปิดจากชื่อผู้ใช้บนแถบบน
@@ -11,7 +11,7 @@ import { RoleBadge } from "./ui";
  *
  * ไม่มีที่เปลี่ยนรหัสผ่านแล้วโดยตั้งใจ: เจ้าของใช้ Google เป็นทั้งทางเข้าและทางกู้
  * การเปลี่ยนรหัสผ่านต้องกรอกรหัสเดิม ซึ่งเป็นสิ่งที่คนที่เข้าด้วย Google ไม่มี
- * และการมีปุ่มที่กดแล้วไปต่อไม่ได้ worse กว่าไม่มีปุ่ม
+ * การมีปุ่มที่กดแล้วไปต่อไม่ได้แย่กว่าการไม่มีปุ่ม
  *
  * แผงนี้ถูกสร้างใหม่ทุกครั้งที่เปิด (unmount ตอนปิด) ข้อความ error ที่ค้างอยู่
  * จึงไม่หลงเหลือข้ามการเปิด-ปิด โดยไม่ต้องมีโค้ดล้าง state
@@ -19,7 +19,7 @@ import { RoleBadge } from "./ui";
 function AccountMenu({ user, panelId }: { user: AuthUser; panelId: string }) {
   const { signOut } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
-  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -29,18 +29,13 @@ function AccountMenu({ user, panelId }: { user: AuthUser; panelId: string }) {
   }, []);
 
   /**
-   * ออกจากระบบต้องกดสองครั้ง
+   * ออกจากระบบต้องยืนยันก่อน
    *
-   * ปุ่มนี้อยู่ในเมนูที่กดพลาดได้ง่าย การกดพลาดครั้งเดียวคือหลุดจากเครื่องที่ใช้
-   * ทำบิลกลางเดือน แล้วต้องเข้าสู่ระบบใหม่กลางงาน
+   * โมดัลยืนยันถูกสร้างไว้ในแผงนี้ (ไม่ใช่ที่อื่น) เพื่อให้การย้ายโฟกัสเข้าโมดัล
+   * นับเป็น "อยู่ในแผง" แผงจึงไม่ปิดตัวลงเองระหว่างที่ผู้ใช้กำลังตัดสินใจอยู่
    */
   const leave = () => {
     if (signingOut) {
-      return;
-    }
-
-    if (!confirmingSignOut) {
-      setConfirmingSignOut(true);
       return;
     }
 
@@ -55,6 +50,7 @@ function AccountMenu({ user, panelId }: { user: AuthUser; panelId: string }) {
             : new ApiError("ออกจากระบบไม่สำเร็จ", "UNKNOWN"),
         );
         setSigningOut(false);
+        setConfirming(false);
       });
   };
 
@@ -79,18 +75,15 @@ function AccountMenu({ user, panelId }: { user: AuthUser; panelId: string }) {
       <div className="p-1.5">
         <button
           type="button"
-          disabled={signingOut}
-          className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-danger transition-colors hover:bg-danger-soft disabled:opacity-60"
-          onClick={leave}
+          className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-danger transition-colors hover:bg-danger-soft"
+          onClick={() => {
+            setConfirming(true);
+          }}
         >
           <span className="ms text-[18px]" aria-hidden="true">
             logout
           </span>
-          {signingOut
-            ? "กำลังออกจากระบบ"
-            : confirmingSignOut
-              ? "กดอีกครั้งเพื่อออกจากระบบ"
-              : "ออกจากระบบ"}
+          ออกจากระบบ
         </button>
       </div>
 
@@ -99,6 +92,38 @@ function AccountMenu({ user, panelId }: { user: AuthUser; panelId: string }) {
           {error.message}
         </p>
       )}
+
+      <Dialog
+        open={confirming}
+        onClose={() => {
+          setConfirming(false);
+        }}
+        title="ออกจากระบบ"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setConfirming(false);
+              }}
+            >
+              ยกเลิก
+            </Button>
+            <Button
+              variant="danger-soft"
+              icon="logout"
+              disabled={signingOut}
+              onClick={leave}
+            >
+              {signingOut ? "กำลังออกจากระบบ" : "ออกจากระบบ"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-steel">
+          ออกจากระบบแล้วต้องเข้าสู่ระบบใหม่อีกครั้ง
+        </p>
+      </Dialog>
     </div>
   );
 }
