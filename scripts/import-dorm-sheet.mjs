@@ -2,7 +2,12 @@
 // Reads the owner's public dorm Google Sheet over the network and emits SQL for the
 // wangchan-dorm D1 schema, plus a verification report on stdout.
 //
-//   node scripts/import-dorm-sheet.mjs [--out seed/live/import.sql]
+//   node scripts/import-dorm-sheet.mjs [--out seed/live/import.sql] [--family <family-id>]
+//
+// --family targets exactly one family: every DELETE/INSERT below is scoped to it,
+// so re-running this script never touches another family's rooms/bills/settings.
+// Defaults to the legacy family that migration 0010 created for data that existed
+// before multi-user auth (00000000-0000-4000-8000-000000000001).
 //
 // The output file contains real tenant data and must stay in the gitignored seed/live/.
 
@@ -11,6 +16,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 const OUT_DEFAULT = "seed/live/import.sql";
+const DEFAULT_FAMILY_ID = "00000000-0000-4000-8000-000000000001";
 
 const TAB_TENANTS = "ข้อมูลผู้เช่า";
 const TAB_CONFIG = "Config";
@@ -223,7 +229,111 @@ const chargeOrder = [
   { name: "ค่าไวไฟ", key: "wifi" },
 ];
 
-async function build() {
+/**
+ * ยกค่าใช้จ่ายที่ห้องซึ่งมีผู้เช่าถือเหมือนกันขึ้นเป็นค่าใช้จ่ายระดับหอ
+ * (dorm_charges) ห้องที่ไม่มีรายการนั้นเลย หรือมีคนละอัตรา จะถูกปิด
+ * (room_charge_excludes) แล้วมีรายการของตัวเอง (room_charges) เก็บอัตรา
+ * ที่ต่างออกไปแทน ตรงกับโมเดลเดียวกับที่แอปใช้จริงหลัง migration 0009
+ *
+ * อัตราที่มีห้องถือมากที่สุดถูกเลือกเป็นค่าเริ่มต้นของหอ เสมอกันเลือก
+ * อัตราต่ำกว่าเพื่อให้ผลลัพธ์คงที่ไม่ขึ้นกับลำดับการวนแมป
+ */
+function buildChargeModel(rooms, familyId) {
+  const occupied = [...rooms.values()].filter((room) => room.occupied);
+  const dormCharges = [];
+  const excludes = [];
+  const ownCharges = [];
+
+  chargeOrder.forEach((def, position) => {
+    const votes = new Map();
+
+    for (const room of occupied) {
+      const charge = room.charges.find((item) => item.name === def.name);
+      if (charge !== undefined) {
+        votes.set(charge.amount, (votes.get(charge.amount) ?? 0) + 1);
+      }
+    }
+
+    if (votes.size === 0) {
+      return;
+    }
+
+    let canonical = null;
+    for (const [amount, count] of votes) {
+      if (canonical === null || count > canonical.count || (count === canonical.count && amount < canonical.amount)) {
+        canonical = { amount, count };
+      }
+    }
+
+    const dormChargeId = deterministicUuid("wangchan-dorm-import", familyId, "dorm-charge", def.name);
+    dormCharges.push({ id: dormChargeId, name: def.name, amount: canonical.amount, position });
+
+    for (const room of occupied) {
+      const charge = room.charges.find((item) => item.name === def.name);
+
+      if (charge === undefined) {
+        excludes.push({ roomNumber: room.roomNumber, dormChargeId, dormChargeName: def.name });
+      } else if (charge.amount !== canonical.amount) {
+        excludes.push({ roomNumber: room.roomNumber, dormChargeId, dormChargeName: def.name });
+        ownCharges.push({ roomNumber: room.roomNumber, name: def.name, amount: charge.amount });
+      }
+    }
+  });
+
+  return { dormCharges, excludes, ownCharges };
+}
+
+/**
+ * พิสูจน์ว่า dorm_charges + room_charge_excludes + room_charges (own) ที่สร้างไว้
+ * รวมกันแล้วตรงกับชุดค่าใช้จ่ายที่อ่านจากใบแจ้งหนี้ของแต่ละห้องเป๊ะ (ชื่อ+จำนวนเงิน
+ * ไม่สนลำดับ) — กันไม่ให้การยกขึ้นเป็นระดับหอทำเงินในบิลถัดไปผิดไปจากที่ควรเป็น
+ */
+function verifyChargeModel(rooms, chargeModel) {
+  const mismatches = [];
+  const excludedNamesByRoom = new Map();
+
+  for (const exclude of chargeModel.excludes) {
+    const set = excludedNamesByRoom.get(exclude.roomNumber) ?? new Set();
+    set.add(exclude.dormChargeName);
+    excludedNamesByRoom.set(exclude.roomNumber, set);
+  }
+
+  const ownByRoom = new Map();
+
+  for (const own of chargeModel.ownCharges) {
+    const list = ownByRoom.get(own.roomNumber) ?? [];
+    list.push({ name: own.name, amount: own.amount });
+    ownByRoom.set(own.roomNumber, list);
+  }
+
+  const sortKey = (charge) => `${charge.name}\u0000${charge.amount}`;
+  const bySortKey = (a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0);
+
+  for (const room of rooms.values()) {
+    if (!room.occupied) {
+      continue;
+    }
+
+    const excludedNames = excludedNamesByRoom.get(room.roomNumber) ?? new Set();
+    const inherited = chargeModel.dormCharges
+      .filter((charge) => !excludedNames.has(charge.name))
+      .map((charge) => ({ name: charge.name, amount: charge.amount }));
+    const reconstructed = [...inherited, ...(ownByRoom.get(room.roomNumber) ?? [])];
+
+    const expected = [...room.charges].sort(bySortKey);
+    const actual = [...reconstructed].sort(bySortKey);
+
+    if (JSON.stringify(expected) !== JSON.stringify(actual)) {
+      mismatches.push(
+        `room ${room.roomNumber}: dorm+own charge model produced ${JSON.stringify(actual)} but the sheet's charges are ${JSON.stringify(expected)}`,
+      );
+    }
+  }
+
+  return mismatches;
+}
+
+async function build(familyId) {
   const [tenantRows, configRows, meterRows, formRows, invoiceRows] = await Promise.all([
     fetchTab(TAB_TENANTS),
     fetchTab(TAB_CONFIG),
@@ -640,9 +750,12 @@ async function build() {
     }
   }
 
+  const chargeModel = buildChargeModel(rooms, familyId);
+  problems.push(...verifyChargeModel(rooms, chargeModel));
+
   // ---------------------------------------------------- identifiers
   for (const room of rooms.values()) {
-    room.id = deterministicUuid("wangchan-dorm-import", "room", room.roomNumber);
+    room.id = deterministicUuid("wangchan-dorm-import", familyId, "room", room.roomNumber);
   }
 
   for (const room of rooms.values()) {
@@ -652,17 +765,17 @@ async function build() {
 
     const earliest = earliestByRoom.get(room.roomNumber);
     room.checkInDate = earliest !== undefined && earliest.timestamp !== null ? earliest.timestamp.date : null;
-    room.tenantId = deterministicUuid("wangchan-dorm-import", "tenant", room.roomNumber);
+    room.tenantId = deterministicUuid("wangchan-dorm-import", familyId, "tenant", room.roomNumber);
   }
 
   for (const invoice of invoices) {
-    invoice.id = deterministicUuid("wangchan-dorm-import", "bill", invoice.invoiceNo || `${invoice.roomNumber}|${invoice.period}`);
+    invoice.id = deterministicUuid("wangchan-dorm-import", familyId, "bill", invoice.invoiceNo || `${invoice.roomNumber}|${invoice.period}`);
     invoice.chargeRows = chargeOrder
       .map((def, index) => ({ name: def.name, amount: invoice[def.key], position: index }))
       .filter((charge) => typeof charge.amount === "number" && Number.isFinite(charge.amount) && charge.amount > 0)
       .map((charge) => ({
         ...charge,
-        id: deterministicUuid("wangchan-dorm-import", "bill-charge", invoice.invoiceNo || `${invoice.roomNumber}|${invoice.period}`, charge.name),
+        id: deterministicUuid("wangchan-dorm-import", familyId, "bill-charge", invoice.invoiceNo || `${invoice.roomNumber}|${invoice.period}`, charge.name),
       }));
   }
 
@@ -688,29 +801,46 @@ async function build() {
     startMeterIssues,
     roomChargeInconsistent,
     flatRooms,
+    chargeModel,
   };
 }
 
 // ------------------------------------------------------------ sql emission
 
-function buildSql(model) {
+function buildSql(model, familyId) {
   const lines = [];
 
   lines.push(`-- Dorm data imported from Google Sheet ${SHEET_ID}.`);
   lines.push(`-- Source tabs: ${TAB_TENANTS}, ${TAB_CONFIG}, ${TAB_METERS}, ${TAB_FORM}, ${TAB_INVOICES}.`);
+  lines.push(`-- Target family: ${familyId}. Every statement below is scoped to this family only.`);
 
-  // foreign-key-safe wipe
-  for (const table of ["bill_charges", "bills", "slips", "tenants", "room_charges", "rooms", "line_pending"]) {
-    lines.push(`DELETE FROM ${table};`);
+  // foreign-key-safe wipe, scoped to the one target family so another family's
+  // rooms/bills/settings are never touched by this script
+  const wipeOrder = [
+    "bill_charges",
+    "slips",
+    "bills",
+    "tenants",
+    "room_charge_excludes",
+    "room_charges",
+    "dorm_charges",
+    "rooms",
+    "line_pending",
+    "settings",
+  ];
+
+  for (const table of wipeOrder) {
+    lines.push(`DELETE FROM ${table} WHERE family_id = ${sqlText(familyId)};`);
   }
 
   const sortedRooms = [...model.rooms.values()].sort((a, b) => naturalCompare(a.roomNumber, b.roomNumber));
 
   for (const room of sortedRooms) {
     lines.push(
-      "INSERT INTO rooms (id, room_number, rent, water_rate, electric_mode, electric_rate, water_meter_init, electric_meter_init, status) VALUES (" +
+      "INSERT INTO rooms (id, family_id, room_number, rent, water_rate, electric_mode, electric_rate, water_meter_init, electric_meter_init, status) VALUES (" +
         [
           sqlText(room.id),
+          sqlText(familyId),
           sqlText(room.roomNumber),
           sqlNum(room.rent),
           "NULL",
@@ -730,9 +860,10 @@ function buildSql(model) {
     }
 
     lines.push(
-      "INSERT INTO tenants (id, full_name, phone, room_id, check_in_date, check_out_date, line_user_id, status) VALUES (" +
+      "INSERT INTO tenants (id, family_id, full_name, phone, room_id, check_in_date, check_out_date, line_user_id, status) VALUES (" +
         [
           sqlText(room.tenantId),
+          sqlText(familyId),
           sqlText(room.name),
           sqlText(room.phone),
           sqlText(room.id),
@@ -745,12 +876,41 @@ function buildSql(model) {
     );
   }
 
+  for (const charge of model.chargeModel.dormCharges) {
+    lines.push(
+      "INSERT INTO dorm_charges (id, family_id, name, amount, position) VALUES (" +
+        [sqlText(charge.id), sqlText(familyId), sqlText(charge.name), sqlNum(charge.amount), sqlNum(charge.position)].join(", ") +
+        ");",
+    );
+  }
+
+  for (const exclude of model.chargeModel.excludes) {
+    const room = model.rooms.get(exclude.roomNumber);
+    lines.push(
+      "INSERT INTO room_charge_excludes (family_id, room_id, dorm_charge_id) VALUES (" +
+        [sqlText(familyId), sqlText(room.id), sqlText(exclude.dormChargeId)].join(", ") +
+        ");",
+    );
+  }
+
+  const ownByRoom = new Map();
+
+  for (const own of model.chargeModel.ownCharges) {
+    const list = ownByRoom.get(own.roomNumber) ?? [];
+    list.push(own);
+    ownByRoom.set(own.roomNumber, list);
+  }
+
   for (const room of sortedRooms) {
-    room.charges.forEach((charge, position) => {
-      const id = deterministicUuid("wangchan-dorm-import", "room-charge", room.roomNumber, charge.name);
+    const owns = ownByRoom.get(room.roomNumber) ?? [];
+
+    owns.forEach((charge, position) => {
+      const id = deterministicUuid("wangchan-dorm-import", familyId, "room-charge", room.roomNumber, charge.name);
       lines.push(
-        "INSERT INTO room_charges (id, room_id, name, amount, position) VALUES (" +
-          [sqlText(id), sqlText(room.id), sqlText(charge.name), sqlNum(charge.amount), sqlNum(position)].join(", ") +
+        "INSERT INTO room_charges (id, family_id, room_id, name, amount, position) VALUES (" +
+          [sqlText(id), sqlText(familyId), sqlText(room.id), sqlText(charge.name), sqlNum(charge.amount), sqlNum(position)].join(
+            ", ",
+          ) +
           ");",
       );
     });
@@ -770,12 +930,15 @@ function buildSql(model) {
     const flat = room !== null && room.flat;
 
     lines.push(
-      "INSERT INTO bills (id, room_id, tenant_id, period, rent, water_previous, water_current, water_units, water_rate, water_amount, electric_mode, electric_previous, electric_current, electric_units, electric_rate, electric_amount, total, status, paid_at, paid_method, sent_at) VALUES (" +
+      "INSERT INTO bills (id, family_id, room_id, tenant_id, period, room_number, tenant_name, rent, water_previous, water_current, water_units, water_rate, water_amount, electric_mode, electric_previous, electric_current, electric_units, electric_rate, electric_amount, total, status, paid_at, paid_method, sent_at) VALUES (" +
         [
           sqlText(invoice.id),
+          sqlText(familyId),
           room === null ? "NULL" : sqlText(room.id),
           tenantId === null ? "NULL" : sqlText(tenantId),
           sqlText(invoice.period),
+          sqlText(invoice.roomNumber),
+          sqlText(room === null ? "" : room.name),
           sqlNum(invoice.rent),
           sqlNum(invoice.waterPrevious),
           sqlNum(invoice.waterCurrent),
@@ -799,8 +962,15 @@ function buildSql(model) {
 
     for (const charge of invoice.chargeRows) {
       lines.push(
-        "INSERT INTO bill_charges (id, bill_id, name, amount, position) VALUES (" +
-          [sqlText(charge.id), sqlText(invoice.id), sqlText(charge.name), sqlNum(charge.amount), sqlNum(charge.position)].join(", ") +
+        "INSERT INTO bill_charges (id, family_id, bill_id, name, amount, position) VALUES (" +
+          [
+            sqlText(charge.id),
+            sqlText(familyId),
+            sqlText(invoice.id),
+            sqlText(charge.name),
+            sqlNum(charge.amount),
+            sqlNum(charge.position),
+          ].join(", ") +
           ");",
       );
     }
@@ -811,7 +981,7 @@ function buildSql(model) {
     ["default_electric_rate", model.electricRate],
   ]) {
     lines.push(
-      `INSERT INTO settings (key, value, updated_at) VALUES (${sqlText(key)}, ${sqlText(String(value))}, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;`,
+      `INSERT INTO settings (family_id, key, value, updated_at) VALUES (${sqlText(familyId)}, ${sqlText(key)}, ${sqlText(String(value))}, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;`,
     );
   }
 
@@ -849,6 +1019,9 @@ function printReport(model, statementCount, outPath) {
   out.push(`  flat electric (derived from ค่าไฟจริง): ${flat.length} [${flat.map((room) => room.roomNumber).join(", ")}]`);
   out.push(`  metered electric: ${metered.length} [${metered.map((room) => room.roomNumber).join(", ")}]`);
   out.push(`  rooms with recurring charges derived from invoices: ${rooms.filter((room) => room.charges.length > 0).length}`);
+  out.push(
+    `  charge model: ${model.chargeModel.dormCharges.length} dorm-wide charge(s), ${model.chargeModel.excludes.length} room exclude(s), ${model.chargeModel.ownCharges.length} room-specific override(s)`,
+  );
   out.push("");
 
   out.push("Cross-checks");
@@ -1003,6 +1176,7 @@ function printReport(model, statementCount, outPath) {
 async function main() {
   const args = process.argv.slice(2);
   let outPath = OUT_DEFAULT;
+  let familyId = DEFAULT_FAMILY_ID;
 
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--out") {
@@ -1010,6 +1184,11 @@ async function main() {
       i += 1;
     } else if (args[i].startsWith("--out=")) {
       outPath = args[i].slice("--out=".length);
+    } else if (args[i] === "--family") {
+      familyId = args[i + 1];
+      i += 1;
+    } else if (args[i].startsWith("--family=")) {
+      familyId = args[i].slice("--family=".length);
     }
   }
 
@@ -1017,8 +1196,12 @@ async function main() {
     outPath = OUT_DEFAULT;
   }
 
-  const model = await build();
-  const statements = buildSql(model);
+  if (!familyId) {
+    familyId = DEFAULT_FAMILY_ID;
+  }
+
+  const model = await build(familyId);
+  const statements = buildSql(model, familyId);
   const absolute = resolve(process.cwd(), outPath);
 
   mkdirSync(dirname(absolute), { recursive: true });

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { failureDetail, logLineFailure, pushMessage } from "../line/api";
+import { failureDetail, lineFamilyId, lineOutboundTimeoutMs, logLineFailure, pushMessage } from "../line/api";
 import { errorBody, readJsonObject, roomNumberOrder } from "./shared";
 
 const registerApi = new Hono<{ Bindings: Env }>();
@@ -8,7 +8,11 @@ export const registerPage = new Hono<{ Bindings: Env }>();
 
 const lineProfileUrl = "https://api.line.me/v2/profile";
 
+const lineVerifyUrl = "https://api.line.me/oauth2/v2.1/verify";
+
 const invalidTokenMessage = "ลิงก์ยืนยันตัวตนไม่ถูกต้อง กรุณาเปิดฟอร์มจาก LINE อีกครั้ง";
+
+const missingFamilyMessage = "หอนี้ยังตั้งค่าไม่เสร็จ กรุณาติดต่อเจ้าของหอ";
 
 interface LineIdentity {
   userId: string;
@@ -28,11 +32,48 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * รหัสช่องของ LIFF อยู่ใน LIFF ID รูปแบบ <channelId>-<suffix>
+ *
+ * token ที่ออกโดย LIFF จะมี client_id เป็นรหัสช่องนี้ ถ้าถอดรหัสช่องไม่ได้
+ * ถือว่ายืนยันไม่ได้ และต้องไม่รับ token ใด ๆ
+ */
+function lineLoginChannelId(env: Env): string {
+  const liffId = liffIdFrom(env);
+  const separator = liffId.indexOf("-");
+  const channelId = (separator === -1 ? liffId : liffId.slice(0, separator)).trim();
+
+  return /^\d+$/.test(channelId) ? channelId : "";
+}
+
+async function fetchTokenChannelId(accessToken: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${lineVerifyUrl}?access_token=${encodeURIComponent(accessToken)}`, {
+      method: "GET",
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
+    });
+
+    if (!response.ok) {
+      console.error(JSON.stringify({ message: "register token verify failed", status: response.status }));
+      return null;
+    }
+
+    const body = await response.json<{ client_id?: unknown }>();
+    const clientId = typeof body.client_id === "string" ? body.client_id.trim() : "";
+
+    return clientId === "" ? null : clientId;
+  } catch (error) {
+    logLineFailure("register token verify failed", failureDetail(error));
+    return null;
+  }
+}
+
 async function fetchLineIdentity(accessToken: string): Promise<LineIdentity | null> {
   try {
     const response = await fetch(lineProfileUrl, {
       method: "GET",
       headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
     });
 
     if (!response.ok) {
@@ -65,9 +106,11 @@ function tenantRegisterMessage(roomNumber: string): string {
   return `ลงทะเบียนห้อง ${roomNumber} เรียบร้อยแล้ว เจ้าของหอจะตรวจสอบและติดต่อกลับ`;
 }
 
-async function alertRegistration(env: Env, name: string, roomNumber: string, phone: string, lineUserId: string): Promise<void> {
+async function alertRegistration(env: Env, family: string, name: string, roomNumber: string, phone: string, lineUserId: string): Promise<void> {
   try {
-    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'owner_line_user_id'").first<{ value: string }>();
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(family)
+      .first<{ value: string }>();
     const ownerId = (row?.value ?? "").trim();
 
     if (ownerId === "") {
@@ -89,11 +132,22 @@ async function alertRegistration(env: Env, name: string, roomNumber: string, pho
 }
 
 registerApi.get("/rooms", async (c) => {
+  const family = await lineFamilyId(c.env);
+
+  if (family === null) {
+    console.error(JSON.stringify({ message: "list register rooms failed", error: "meta.line_family_id is not configured" }));
+    return c.json(errorBody("INTERNAL", missingFamilyMessage), 500);
+  }
+
   try {
-    const result = await c.env.DB.prepare(`SELECT id, room_number FROM rooms WHERE status = 'vacant' ORDER BY ${roomNumberOrder("room_number")}`).all<{
-      id: string;
-      room_number: string;
-    }>();
+    const result = await c.env.DB.prepare(
+      `SELECT id, room_number FROM rooms WHERE family_id = ? AND status = 'vacant' ORDER BY ${roomNumberOrder("room_number")}`,
+    )
+      .bind(family)
+      .all<{
+        id: string;
+        room_number: string;
+      }>();
 
     return c.json({ ok: true, rooms: result.results.map((row) => ({ id: row.id, roomNumber: row.room_number })) }, 200);
   } catch (error) {
@@ -134,6 +188,26 @@ registerApi.post("/", async (c) => {
     return c.json(errorBody("VALIDATION", "ไม่พบข้อมูลยืนยันตัวตน กรุณาเปิดฟอร์มจาก LINE อีกครั้ง", "accessToken"), 400);
   }
 
+  const family = await lineFamilyId(c.env);
+
+  if (family === null) {
+    console.error(JSON.stringify({ message: "register failed", error: "meta.line_family_id is not configured" }));
+    return c.json(errorBody("INTERNAL", missingFamilyMessage), 500);
+  }
+
+  const expectedChannelId = lineLoginChannelId(c.env);
+  const tokenChannelId = expectedChannelId === "" ? null : await fetchTokenChannelId(accessToken);
+
+  if (tokenChannelId === null || tokenChannelId !== expectedChannelId) {
+    console.error(
+      JSON.stringify({
+        message: "register token rejected",
+        reason: expectedChannelId === "" ? "this app's LINE login channel is not configured" : "token belongs to another channel",
+      }),
+    );
+    return c.json(errorBody("VALIDATION", invalidTokenMessage), 401);
+  }
+
   const identity = await fetchLineIdentity(accessToken);
 
   if (identity === null) {
@@ -142,17 +216,17 @@ registerApi.post("/", async (c) => {
 
   try {
     const existing = await c.env.DB.prepare(
-      "SELECT r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.line_user_id = ?",
+      "SELECT r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.family_id = ? AND r.family_id = ? AND t.line_user_id = ?",
     )
-      .bind(identity.userId)
+      .bind(family, family, identity.userId)
       .first<{ room_number: string }>();
 
     if (existing !== null) {
       return c.json(errorBody("CONFLICT", `LINE นี้ลงทะเบียนห้อง ${existing.room_number} ไว้แล้ว กรุณาติดต่อเจ้าของหอ`), 409);
     }
 
-    const room = await c.env.DB.prepare("SELECT id, status, room_number FROM rooms WHERE id = ?")
-      .bind(roomId)
+    const room = await c.env.DB.prepare("SELECT id, status, room_number FROM rooms WHERE id = ? AND family_id = ?")
+      .bind(roomId, family)
       .first<{ id: string; status: string; room_number: string }>();
 
     if (room === null) {
@@ -167,15 +241,15 @@ registerApi.post("/", async (c) => {
 
     await c.env.DB.batch([
       c.env.DB.prepare(
-        "INSERT INTO tenants (id, full_name, phone, room_id, check_in_date, line_user_id, status) VALUES (?, ?, ?, ?, ?, ?, 'current')",
-      ).bind(id, name, phone, roomId, todayIso(), identity.userId),
-      c.env.DB.prepare("UPDATE rooms SET status = 'occupied' WHERE id = ?").bind(roomId),
-      c.env.DB.prepare("DELETE FROM line_pending WHERE line_user_id = ?").bind(identity.userId),
+        "INSERT INTO tenants (id, family_id, full_name, phone, room_id, check_in_date, line_user_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'current')",
+      ).bind(id, family, name, phone, roomId, todayIso(), identity.userId),
+      c.env.DB.prepare("UPDATE rooms SET status = 'occupied' WHERE id = ? AND family_id = ?").bind(roomId, family),
+      c.env.DB.prepare("DELETE FROM line_pending WHERE line_user_id = ? AND family_id = ?").bind(identity.userId, family),
     ]);
 
     console.log(JSON.stringify({ message: "tenant self-registered", tenantId: id, roomNumber: room.room_number }));
 
-    await alertRegistration(c.env, name, room.room_number, phone, identity.userId);
+    await alertRegistration(c.env, family, name, room.room_number, phone, identity.userId);
 
     return c.json({ ok: true, tenant: { name, roomNumber: room.room_number } }, 200);
   } catch (error) {

@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configurePayout, createFamily, signIn, withAuth, type TestSession } from "./auth-helper";
 
 const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
@@ -103,20 +104,28 @@ function pick<T>(items: T[], predicate: (item: T) => boolean): T {
   return found;
 }
 
+let session: TestSession;
+
 function post(url: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  return SELF.fetch(
+    url,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
 async function putRates(water: number, electric: number): Promise<void> {
-  const response = await SELF.fetch(settingsUrl, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ defaultWaterRate: water, defaultElectricRate: electric }),
-  });
+  const response = await SELF.fetch(
+    settingsUrl,
+    withAuth(session, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ defaultWaterRate: water, defaultElectricRate: electric }),
+    }),
+  );
 
   expect(response.status).toBe(200);
 }
@@ -165,10 +174,11 @@ async function linkTenant(tenantId: string, lineUserId: string): Promise<void> {
 
 async function insertPendingSlip(billId: string, lineUserId: string, imageKey: string): Promise<void> {
   await env.DB.prepare(
-    "INSERT INTO slips (id, bill_id, line_user_id, image_key, verify_result, amount, trans_ref, bill_total, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review')",
+    "INSERT INTO slips (id, family_id, bill_id, line_user_id, image_key, verify_result, amount, trans_ref, bill_total, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review')",
   )
     .bind(
       crypto.randomUUID(),
+      session.familyId,
       billId,
       lineUserId,
       imageKey,
@@ -180,8 +190,43 @@ async function insertPendingSlip(billId: string, lineUserId: string, imageKey: s
     .run();
 }
 
-async function dashboard(period: string): Promise<DashboardPayload> {
-  const response = await SELF.fetch(`${statsUrl}?period=${period}`);
+/**
+ * ใส่ห้อง ผู้เช่า และบิลตรงลงฐานข้อมูลของครอบครัวที่ระบุ
+ *
+ * ใช้พิสูจน์ว่าการกรองระดับ SQL ของแดชบอร์ดกันครอบครัวอื่นได้จริง
+ * โดยไม่ต้องพึ่ง route ของห้อง/ผู้เช่า/บิล
+ */
+async function seedFamilyBill(
+  familyId: string,
+  bill: { roomNumber: string; tenantName: string; period: string; total: number; status: "paid" | "unpaid" },
+): Promise<void> {
+  const roomId = crypto.randomUUID();
+
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO rooms (id, family_id, room_number, rent, status) VALUES (?, ?, ?, ?, 'occupied')",
+    ).bind(roomId, familyId, bill.roomNumber, bill.total),
+    env.DB.prepare(
+      "INSERT INTO tenants (id, family_id, full_name, phone, room_id, check_in_date, status) VALUES (?, ?, ?, '081-234-5678', ?, '2025-03-01', 'current')",
+    ).bind(crypto.randomUUID(), familyId, bill.tenantName, roomId),
+    env.DB.prepare(
+      "INSERT INTO bills (id, family_id, room_id, tenant_id, period, room_number, tenant_name, rent, water_previous, water_current, water_units, water_rate, water_amount, electric_mode, electric_previous, electric_current, electric_units, electric_rate, electric_amount, total, status) SELECT ?, ?, r.id, t.id, ?, ?, ?, ?, 0, 0, 0, 18, 0, 'meter', 0, 0, 0, 7, 0, ?, ? FROM rooms r JOIN tenants t ON t.room_id = r.id WHERE r.id = ?",
+    ).bind(
+      crypto.randomUUID(),
+      familyId,
+      bill.period,
+      bill.roomNumber,
+      bill.tenantName,
+      bill.total,
+      bill.total,
+      bill.status,
+      roomId,
+    ),
+  ]);
+}
+
+async function dashboard(period: string, as: TestSession = session): Promise<DashboardPayload> {
+  const response = await SELF.fetch(`${statsUrl}?period=${period}`, withAuth(as));
   expect(response.status).toBe(200);
   return await response.json<DashboardPayload>();
 }
@@ -199,8 +244,9 @@ async function resetData(): Promise<void> {
 }
 
 beforeEach(async () => {
+  session = await signIn();
   await resetData();
-
+  await configurePayout();
   vi.spyOn(globalThis, "fetch").mockImplementation(() =>
     Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } })),
   );
@@ -476,8 +522,62 @@ describe("GET /api/stats/dashboard", () => {
     expect(payload.kpis.bills).toBe(2);
   });
 
+  it("keeps each family's dashboard to itself", async () => {
+    const other = await signIn("owner", await createFamily("หอของอีกครอบครัว"));
+
+    await seedFamilyBill(session.familyId, {
+      roomNumber: "F101",
+      tenantName: "ผู้เช่าของเรา",
+      period: "2026-09",
+      total: 4000,
+      status: "unpaid",
+    });
+    await seedFamilyBill(other.familyId, {
+      roomNumber: "F101",
+      tenantName: "ผู้เช่าของอีกครอบครัว",
+      period: "2026-12",
+      total: 9000,
+      status: "paid",
+    });
+
+    const mine = await dashboard("2026-09");
+
+    expect(mine.latestBilledPeriod).toBe("2026-09");
+    expect(mine.kpis).toEqual({
+      bills: 1,
+      dueAmount: 4000,
+      collectedAmount: 0,
+      unpaidAmount: 4000,
+      unpaidRooms: 1,
+      unbilledRooms: 0,
+      vacantRooms: 0,
+      totalRooms: 1,
+      sentCount: 0,
+      paidCount: 0,
+    });
+    expect(mine.rooms.map((room) => room.roomNumber)).toEqual(["F101"]);
+    expect(mine.rooms.map((room) => room.status)).toEqual(["unpaid"]);
+    expect(mine.rooms.map((room) => room.lastBilledPeriod)).toEqual(["2026-09"]);
+    expect(mine.rooms.map((room) => room.behindPeriods)).toEqual([0]);
+    expect(mine.unpaidBills.map((bill) => bill.tenantName)).toEqual([
+      "ผู้เช่าของเรา",
+    ]);
+    expect(mine.revenue.map((point) => point.amount)).toEqual([0, 0, 0, 0, 0, 0]);
+
+    const theirs = await dashboard("2026-12", other);
+
+    expect(theirs.latestBilledPeriod).toBe("2026-12");
+    expect(theirs.kpis.bills).toBe(1);
+    expect(theirs.kpis.totalRooms).toBe(1);
+    expect(theirs.kpis.dueAmount).toBe(9000);
+    expect(theirs.kpis.collectedAmount).toBe(9000);
+    expect(theirs.unpaidBills).toEqual([]);
+    expect(theirs.rooms.map((room) => room.roomNumber)).toEqual(["F101"]);
+    expect(theirs.revenue.at(-1)).toEqual({ period: "2026-12", amount: 9000 });
+  });
+
   it("answers 400 with the period field for a missing or malformed period", async () => {
-    const missing = await SELF.fetch(statsUrl);
+    const missing = await SELF.fetch(statsUrl, withAuth(session));
     expect(missing.status).toBe(400);
 
     const missingBody = await missing.json<ErrorBody>();
@@ -486,7 +586,10 @@ describe("GET /api/stats/dashboard", () => {
     expect(missingBody.error.field).toBe("period");
 
     for (const bad of ["2026-13", "2026-9", "2026-00", "กันยายน-2569"]) {
-      const response = await SELF.fetch(`${statsUrl}?period=${encodeURIComponent(bad)}`);
+      const response = await SELF.fetch(
+        `${statsUrl}?period=${encodeURIComponent(bad)}`,
+        withAuth(session),
+      );
       expect(response.status).toBe(400);
 
       const body = await response.json<ErrorBody>();

@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { type AppEnv, familyId } from "../lib/auth";
 import {
   canonicalPaidAt,
   isUniqueViolation,
@@ -11,7 +12,7 @@ import { pushMessage } from "../line/api";
 import { slipMatchedMessage } from "../line/messages";
 import { errorBody, readJsonObject } from "./shared";
 
-const slipsAdmin = new Hono<{ Bindings: Env }>();
+const slipsAdmin = new Hono<AppEnv>();
 
 type SlipStatus = "pending_review" | "matched" | "rejected";
 
@@ -23,20 +24,28 @@ const slipColumns =
   "s.id, s.created_at, s.image_key, s.status, s.verify_result, s.amount, s.bill_id, s.bill_total, s.trans_ref, s.line_user_id, b.period AS bill_period, b.total AS bill_row_total, r.room_number AS bill_room_number, t.full_name AS bill_tenant_name";
 
 const slipFrom =
-  "FROM slips s LEFT JOIN bills b ON b.id = s.bill_id LEFT JOIN rooms r ON r.id = b.room_id LEFT JOIN tenants t ON t.id = b.tenant_id";
+  "FROM slips s LEFT JOIN bills b ON b.id = s.bill_id AND b.family_id = s.family_id LEFT JOIN rooms r ON r.id = b.room_id AND r.family_id = s.family_id LEFT JOIN tenants t ON t.id = b.tenant_id AND t.family_id = s.family_id";
 
 const targetBillSql =
-  "SELECT b.id, b.status, b.period, b.total, r.room_number, t.full_name AS tenant_name FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.id = ?";
+  "SELECT b.id, b.status, b.period, b.total, r.room_number, t.full_name AS tenant_name FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.id = ? AND b.family_id = ?";
 
-const matchedTransRefSql = "SELECT id FROM slips WHERE trans_ref = ? AND status = 'matched' LIMIT 1";
+const matchedTransRefSql = "SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status = 'matched' LIMIT 1";
 
-const closeBillSql = "UPDATE bills SET status = 'paid', paid_at = ?, paid_method = 'transfer' WHERE id = ? AND status = 'unpaid'";
+/**
+ * ผูกสลิปและปิดบิลใน transaction เดียว (DB.batch)
+ *
+ * คำสั่งแรกผูกสลิปได้เมื่อบิลยังไม่ถูกปิด คำสั่งที่สองปิดบิลได้เมื่อสลิปถูกผูก
+ * กับบิลใบนั้นแล้วเท่านั้น เงื่อนไขสองทางนี้ทำให้ไม่มีช่วงที่สลิปถูกทำเครื่องหมาย
+ * ว่าปิดบิลทั้งที่บิลยังเปิด และไม่ต้องมีคำสั่งชดเชยหลัง transaction อีก
+ */
+const matchSlipSql =
+  "UPDATE slips SET status = 'matched', bill_id = ?, bill_total = ? WHERE id = ? AND family_id = ? AND status = 'pending_review' AND EXISTS (SELECT 1 FROM bills WHERE id = ? AND family_id = ? AND status = 'unpaid')";
 
-const matchSlipSql = "UPDATE slips SET status = 'matched', bill_id = ?, bill_total = ? WHERE id = ? AND status = 'pending_review'";
+const closeBillSql =
+  "UPDATE bills SET status = 'paid', paid_at = ?, paid_method = 'transfer' WHERE id = ? AND family_id = ? AND status = 'unpaid' AND EXISTS (SELECT 1 FROM slips WHERE id = ? AND family_id = ? AND bill_id = bills.id AND status = 'matched')";
 
-const restoreSlipSql = "UPDATE slips SET status = 'pending_review', bill_id = ?, bill_total = ? WHERE id = ?";
-
-const rejectSlipSql = "UPDATE slips SET status = 'rejected', verify_result = ? WHERE id = ? AND status = 'pending_review'";
+const rejectSlipSql =
+  "UPDATE slips SET status = 'rejected', verify_result = ? WHERE id = ? AND family_id = ? AND status = 'pending_review'";
 
 interface SlipRow {
   id: string;
@@ -122,12 +131,14 @@ function toSlipPayload(row: SlipRow): SlipPayload {
   };
 }
 
-async function loadSlip(env: Env, id: string): Promise<SlipRow | null> {
-  return env.DB.prepare(`SELECT ${slipColumns} ${slipFrom} WHERE s.id = ?`).bind(id).first<SlipRow>();
+async function loadSlip(env: Env, family: string, id: string): Promise<SlipRow | null> {
+  return env.DB.prepare(`SELECT ${slipColumns} ${slipFrom} WHERE s.id = ? AND s.family_id = ?`)
+    .bind(id, family)
+    .first<SlipRow>();
 }
 
-async function resolvedSlipResponse(c: Context<{ Bindings: Env }>, id: string): Promise<Response> {
-  const refreshed = await loadSlip(c.env, id);
+async function resolvedSlipResponse(c: Context<AppEnv>, id: string): Promise<Response> {
+  const refreshed = await loadSlip(c.env, familyId(c), id);
 
   if (refreshed === null) {
     console.error(JSON.stringify({ message: "resolve slip readback failed", slipId: id }));
@@ -137,7 +148,8 @@ async function resolvedSlipResponse(c: Context<{ Bindings: Env }>, id: string): 
   return c.json({ ok: true, slip: toSlipPayload(refreshed) }, 200);
 }
 
-async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillId: unknown): Promise<Response> {
+async function settleSlip(c: Context<AppEnv>, slip: SlipRow, rawBillId: unknown): Promise<Response> {
+  const family = familyId(c);
   const override = typeof rawBillId === "string" ? rawBillId.trim() : "";
   const billId = override === "" ? slip.bill_id : override;
 
@@ -145,7 +157,7 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
     return c.json(errorBody("VALIDATION", "กรุณาเลือกบิลที่จะปิดด้วยสลิปนี้", "billId"), 400);
   }
 
-  const bill = await c.env.DB.prepare(targetBillSql).bind(billId).first<TargetBillRow>();
+  const bill = await c.env.DB.prepare(targetBillSql).bind(billId, family).first<TargetBillRow>();
 
   if (bill === null) {
     return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการปิด", "billId"), 404);
@@ -158,7 +170,7 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
   const transRef = slip.trans_ref;
 
   if (transRef !== null) {
-    const used = await c.env.DB.prepare(matchedTransRefSql).bind(transRef).first<{ id: string }>();
+    const used = await c.env.DB.prepare(matchedTransRefSql).bind(family, transRef).first<{ id: string }>();
 
     if (used !== null) {
       return c.json(errorBody("CONFLICT", "เลขอ้างอิงการโอนของสลิปนี้ปิดบิลไปแล้ว"), 409);
@@ -171,8 +183,8 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
 
   try {
     results = await c.env.DB.batch([
-      c.env.DB.prepare(closeBillSql).bind(paidAt, bill.id),
-      c.env.DB.prepare(matchSlipSql).bind(bill.id, bill.total, slip.id),
+      c.env.DB.prepare(matchSlipSql).bind(bill.id, bill.total, slip.id, family, bill.id, family),
+      c.env.DB.prepare(closeBillSql).bind(paidAt, bill.id, family, slip.id, family),
     ]);
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -182,8 +194,7 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
     throw error;
   }
 
-  if ((results[0]?.meta.changes ?? 0) === 0) {
-    await c.env.DB.prepare(restoreSlipSql).bind(slip.bill_id, slip.bill_total, slip.id).run();
+  if ((results[0]?.meta.changes ?? 0) === 0 || (results[1]?.meta.changes ?? 0) === 0) {
     console.log(JSON.stringify({ message: "slip settle conflicts with a bill closed by someone else", slipId: slip.id, billId: bill.id }));
     return c.json(errorBody("CONFLICT", "บิลนี้เพิ่งถูกปิดไป เลือกบิลอื่นหรือกดยอดอีกครั้ง", "billId"), 409);
   }
@@ -194,10 +205,10 @@ async function settleSlip(c: Context<{ Bindings: Env }>, slip: SlipRow, rawBillI
   return resolvedSlipResponse(c, slip.id);
 }
 
-async function rejectSlip(c: Context<{ Bindings: Env }>, slip: SlipRow): Promise<Response> {
+async function rejectSlip(c: Context<AppEnv>, slip: SlipRow): Promise<Response> {
   const decidedAt = new Date().toISOString();
   const updated = await c.env.DB.prepare(rejectSlipSql)
-    .bind(rejectedSlipResultJson(slip.verify_result, decidedAt), slip.id)
+    .bind(rejectedSlipResultJson(slip.verify_result, decidedAt), slip.id, familyId(c))
     .run();
 
   if ((updated.meta.changes ?? 0) === 0) {
@@ -210,10 +221,11 @@ async function rejectSlip(c: Context<{ Bindings: Env }>, slip: SlipRow): Promise
 }
 
 slipsAdmin.get("/", async (c) => {
+  const family = familyId(c);
   const rawStatus = c.req.query("status");
   const billId = (c.req.query("billId") ?? "").trim();
-  const filters: string[] = [];
-  const binds: string[] = [];
+  const filters: string[] = ["s.family_id = ?"];
+  const binds: string[] = [family];
 
   if (rawStatus !== undefined) {
     if (!isSlipStatus(rawStatus)) {
@@ -232,7 +244,7 @@ slipsAdmin.get("/", async (c) => {
     binds.push(billId);
   }
 
-  const where = filters.length === 0 ? "" : ` WHERE ${filters.join(" AND ")}`;
+  const where = ` WHERE ${filters.join(" AND ")}`;
 
   try {
     const result = await c.env.DB.prepare(`SELECT ${slipColumns} ${slipFrom}${where} ORDER BY s.created_at DESC, s.id DESC`)
@@ -262,7 +274,7 @@ slipsAdmin.post("/:id/resolve", async (c) => {
   }
 
   try {
-    const slip = await loadSlip(c.env, id);
+    const slip = await loadSlip(c.env, familyId(c), id);
 
     if (slip === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบสลิปที่ต้องการตัดสิน"), 404);

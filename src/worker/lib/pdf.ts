@@ -1,71 +1,405 @@
-import fontkit from "@pdf-lib/fontkit";
-import { PDFDocument, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import fontkit, { type Font as ParsedFont } from "@pdf-lib/fontkit";
+import {
+  PDFDocument,
+  rgb,
+  type PDFFont,
+  type PDFImage,
+  type PDFPage,
+  type RGB,
+} from "pdf-lib";
 import boldFontData from "../fonts/IBMPlexSansThai-Bold.ttf";
 import regularFontData from "../fonts/IBMPlexSansThai-Regular.ttf";
-import { formatBaht, type InvoiceDocument } from "./invoice";
+import { bahtWords } from "./baht-words";
+import {
+  formatBaht,
+  formatPrice,
+  formatUnits,
+  type InvoiceDocument,
+  type InvoiceRow,
+} from "./invoice";
 
 export interface InvoiceIssuer {
   dormName: string;
   ownerName: string;
   promptpayId: string;
   promptpayName: string;
+  /** ชื่อธนาคารภาษาไทยที่ resolve แล้ว ไม่ใช่รหัส — ว่างได้ถ้าไม่ได้ตั้งค่า */
+  bankName: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
 }
 
 const pageWidth = 595.28;
 const pageHeight = 841.89;
 const margin = 48;
-const footerY = 40;
 const contentRight = pageWidth - margin;
-const labelX = margin + 10;
-const detailX = margin + 170;
-const amountRight = contentRight - 10;
-const rowHeight = 22;
-const tableHeaderHeight = 24;
-const qrSize = 128;
-const qrBottom = 96;
-const qrRuleGap = 22;
+const contentWidth = contentRight - margin;
+const pad = 8;
 
-const ink = rgb(0.09, 0.09, 0.09);
-const muted = rgb(0.42, 0.45, 0.5);
-const rule = rgb(0.85, 0.87, 0.9);
-const headerFill = rgb(0.93, 0.95, 0.98);
-const totalInk = rgb(0.72, 0.11, 0.11);
+/* ── ฟอนต์ ───────────────────────────────────────────────────────────── */
+/** ส่งเข้าฟอนต์เป็น Uint8Array ก้อนเดิมทุกครั้ง แคชด้านล่างจึงจับคู่ด้วยตัวออบเจกต์ได้ */
+const regularFontBytes = new Uint8Array(regularFontData);
+const boldFontBytes = new Uint8Array(boldFontData);
 
-function clip(text: string, font: PDFFont, size: number, maxWidth: number): string {
-  if (font.widthOfTextAtSize(text, size) <= maxWidth) {
-    return text;
+/**
+ * fontkit.create แกะไฟล์ TTF ใหม่ทุกครั้งที่ embed (สองไฟล์รวม 232KB) ซึ่งแพงกว่า
+ * ตอน subset มาก จึงแกะครั้งเดียวต่อโปรเซสแล้วใช้ซ้ำทุกคำขอ
+ */
+const parsedFonts = new WeakMap<Uint8Array, ParsedFont>();
+
+const cachedFontkit = {
+  create(data: Uint8Array): ParsedFont {
+    const cached = parsedFonts.get(data);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const parsed = fontkit.create(data);
+    parsedFonts.set(data, parsed);
+
+    return parsed;
+  },
+};
+
+/* ── ตารางรายการ ─────────────────────────────────────────────────────── */
+const seqWidth = 32;
+const quantityWidth = 52;
+const unitPriceWidth = 88;
+const amountWidth = 96;
+const labelWidth =
+  contentWidth - seqWidth - quantityWidth - unitPriceWidth - amountWidth;
+const tableHeadHeight = 30;
+const rowHeight = 24;
+const groupHeight = 22;
+const totalHeight = 32;
+
+/* ── บล็อกที่ต่อจากแถวล่าสุดของตาราง ─────────────────────────────────── */
+const bahtWordsGap = 16;
+const paymentGap = 26;
+const paymentQrSize = 88;
+const paymentBlockHeight = 40 + paymentQrSize + 12;
+/**
+ * ระยะจริงที่ต้องกันไว้ใต้แถวล่าสุด ไม่งั้นแถวสุดท้ายจะดันกล่องชำระเงินลงไป
+ * ในขอบล่างและทับส่วนท้ายหน้า: 32 + 16 + 26 + 140 = 214
+ */
+const tailHeight = totalHeight + bahtWordsGap + paymentGap + paymentBlockHeight;
+
+/* ── หัวเอกสาร ───────────────────────────────────────────────────────── */
+/** ชื่อหอและชื่อผู้เช่าอยู่คนละฝั่งของบรรทัดเดียวกัน จึงแบ่งความกว้างครึ่งหนึ่ง */
+const headerGap = 16;
+const headerNameWidth = (contentWidth - headerGap) / 2;
+
+/* ── token ของระบบ (src/client/styles.css) ───────────────────────────── */
+const canvasWhite = rgb(1, 1, 1);
+const paperMist = rgb(0.961, 0.961, 0.961);
+const ash = rgb(0.898, 0.898, 0.898);
+const charcoal = rgb(0.09, 0.09, 0.09);
+const steel = rgb(0.322, 0.322, 0.322);
+const fog = rgb(0.42, 0.42, 0.42);
+const silver = rgb(0.639, 0.639, 0.639);
+const electricBlue = rgb(0.145, 0.388, 0.922);
+
+interface Ctx {
+  page: PDFPage;
+  regular: PDFFont;
+  bold: PDFFont;
+  qr?: PDFImage;
+}
+
+const ellipsis = "…";
+
+/**
+ * ตัดข้อความให้พอดีความกว้างที่กำหนดแล้วต่อท้ายด้วย …
+ * ใช้ไบเซกชันเพราะความกว้างของข้อความเพิ่มตามจำนวนตัวอักษร ส่วนการวนตัดทีละตัว
+ * เป็น O(n²) และค้างเมื่อชื่อรายการยาวมาก
+ */
+function truncateToWidth(
+  font: PDFFont,
+  value: string,
+  size: number,
+  max: number,
+): string {
+  if (font.widthOfTextAtSize(value, size) <= max) {
+    return value;
   }
 
-  let clipped = text;
+  let fits = 0;
+  let tooLong = value.length;
 
-  while (clipped.length > 1 && font.widthOfTextAtSize(`${clipped}…`, size) > maxWidth) {
-    clipped = clipped.slice(0, -1);
+  while (fits < tooLong) {
+    const middle = Math.ceil((fits + tooLong) / 2);
+    const candidate = `${value.slice(0, middle)}${ellipsis}`;
+
+    if (font.widthOfTextAtSize(candidate, size) <= max) {
+      fits = middle;
+    } else {
+      tooLong = middle - 1;
+    }
   }
 
-  return `${clipped}…`;
+  return `${value.slice(0, Math.max(fits, 1))}${ellipsis}`;
 }
 
-function rightAligned(page: PDFPage, text: string, font: PDFFont, size: number, y: number, color = ink): void {
-  page.drawText(text, { x: amountRight - font.widthOfTextAtSize(text, size), y, size, font, color });
+function text(
+  ctx: Ctx,
+  value: string,
+  x: number,
+  y: number,
+  size: number,
+  opts: {
+    bold?: boolean;
+    color?: RGB;
+    align?: "left" | "right" | "center";
+    max?: number;
+  } = {},
+): void {
+  const font = opts.bold === true ? ctx.bold : ctx.regular;
+  const out =
+    opts.max === undefined ? value : truncateToWidth(font, value, size, opts.max);
+  const width = font.widthOfTextAtSize(out, size);
+  const drawX =
+    opts.align === "right"
+      ? x - width
+      : opts.align === "center"
+        ? x - width / 2
+        : x;
+
+  ctx.page.drawText(out, {
+    x: drawX,
+    y,
+    size,
+    font,
+    color: opts.color ?? charcoal,
+  });
 }
 
-function ruleLine(page: PDFPage, y: number, thickness = 1, color = rule): void {
-  page.drawLine({ start: { x: margin, y }, end: { x: contentRight, y }, thickness, color });
+function hline(
+  ctx: Ctx,
+  y: number,
+  color: RGB = ash,
+  thickness = 1,
+  from = margin,
+  to = contentRight,
+): void {
+  ctx.page.drawLine({
+    start: { x: from, y },
+    end: { x: to, y },
+    thickness,
+    color,
+  });
 }
 
-function tableHeader(page: PDFPage, top: number, bold: PDFFont): void {
-  page.drawRectangle({ x: margin, y: top - tableHeaderHeight, width: contentRight - margin, height: tableHeaderHeight, color: headerFill });
-  page.drawText("รายการ", { x: labelX, y: top - 16, size: 10, font: bold, color: ink });
-  page.drawText("รายละเอียด", { x: detailX, y: top - 16, size: 10, font: bold, color: muted });
-  rightAligned(page, "จำนวนเงิน (บาท)", bold, 10, top - 16, muted);
-  ruleLine(page, top - tableHeaderHeight);
+function fillBox(
+  ctx: Ctx,
+  x: number,
+  top: number,
+  width: number,
+  height: number,
+  color: RGB,
+): void {
+  ctx.page.drawRectangle({ x, y: top - height, width, height, color });
 }
 
-function itemRow(page: PDFPage, label: string, detail: string, amount: number, y: number, regular: PDFFont): void {
-  page.drawText(clip(label, regular, 11, detailX - labelX - 12), { x: labelX, y: y - 15, size: 11, font: regular, color: ink });
-  page.drawText(clip(detail, regular, 9, amountRight - detailX - 90), { x: detailX, y: y - 15, size: 9, font: regular, color: muted });
-  rightAligned(page, formatBaht(amount), regular, 11, y - 15);
-  ruleLine(page, y - rowHeight + 1);
+function kicker(ctx: Ctx, value: string, x: number, y: number): void {
+  text(ctx, value, x, y, 8, { color: fog });
+}
+
+/** คอลัมน์ของตารางรายการ — ขอบซ้ายของแต่ละช่อง */
+const columns = (() => {
+  const seq = margin;
+  const label = seq + seqWidth;
+  const quantity = label + labelWidth;
+  const unitPrice = quantity + quantityWidth;
+  const amount = unitPrice + unitPriceWidth;
+
+  return { seq, label, quantity, unitPrice, amount, end: contentRight };
+})();
+
+function tableHead(ctx: Ctx, top: number): void {
+  fillBox(ctx, margin, top, contentWidth, tableHeadHeight, charcoal);
+
+  const baseline = top - 19;
+  text(ctx, "ลำดับ", columns.seq + seqWidth / 2, baseline, 8, {
+    color: canvasWhite,
+    align: "center",
+  });
+  text(ctx, "รายการ", columns.label + pad, baseline, 8, { color: canvasWhite });
+  text(ctx, "จำนวน", columns.quantity + quantityWidth - pad, baseline, 8, {
+    color: canvasWhite,
+    align: "right",
+  });
+  text(
+    ctx,
+    "ราคาต่อหน่วย",
+    columns.unitPrice + unitPriceWidth - pad,
+    baseline,
+    8,
+    {
+      color: canvasWhite,
+      align: "right",
+    },
+  );
+  text(ctx, "จำนวนเงิน (บาท)", columns.end - pad, baseline, 8, {
+    color: canvasWhite,
+    align: "right",
+  });
+}
+
+function groupRow(ctx: Ctx, top: number, label: string): void {
+  fillBox(ctx, margin, top, contentWidth, groupHeight, paperMist);
+  text(ctx, label, columns.label + pad, top - 15, 9, {
+    bold: true,
+    color: steel,
+  });
+  hline(ctx, top - groupHeight);
+}
+
+function itemRow(
+  ctx: Ctx,
+  top: number,
+  sequence: number,
+  row: InvoiceRow,
+): void {
+  const baseline = top - 16;
+
+  text(ctx, String(sequence), columns.seq + seqWidth / 2, baseline, 9, {
+    color: fog,
+    align: "center",
+  });
+  text(ctx, row.label, columns.label + pad, baseline, 10, {
+    max: labelWidth - pad * 2,
+  });
+  text(
+    ctx,
+    formatUnits(row.quantity),
+    columns.quantity + quantityWidth - pad,
+    baseline,
+    10,
+    {
+      align: "right",
+    },
+  );
+  text(
+    ctx,
+    formatPrice(row.unitPrice),
+    columns.unitPrice + unitPriceWidth - pad,
+    baseline,
+    10,
+    {
+      align: "right",
+    },
+  );
+  text(ctx, formatBaht(row.amount), columns.end - pad, baseline, 10, {
+    align: "right",
+  });
+  hline(ctx, top - rowHeight);
+}
+
+function totalRow(ctx: Ctx, top: number, total: number): void {
+  fillBox(ctx, margin, top, contentWidth, totalHeight, paperMist);
+  text(
+    ctx,
+    "รวมทั้งสิ้น",
+    columns.unitPrice + unitPriceWidth - pad,
+    top - 21,
+    10,
+    {
+      bold: true,
+      align: "right",
+    },
+  );
+  text(ctx, `${formatBaht(total)} บาท`, columns.end - pad, top - 21, 12, {
+    bold: true,
+    color: electricBlue,
+    align: "right",
+  });
+  hline(ctx, top - totalHeight);
+}
+
+/** กลุ่มที่มีรายการ — เรียงตามลำดับที่พบในเอกสาร */
+function groupsOf(rows: readonly InvoiceRow[]): string[] {
+  return [...new Set(rows.map((row) => row.group))];
+}
+
+function paymentBlock(ctx: Ctx, issuer: InvoiceIssuer, top: number): void {
+  fillBox(ctx, margin, top, contentWidth, paymentBlockHeight, paperMist);
+  kicker(ctx, "ช่องทางชำระเงิน / PAYMENT", margin + 12, top - 18);
+
+  const hasPromptPay = issuer.promptpayId !== "";
+  const hasBank = issuer.bankName !== "" && issuer.bankAccountNumber !== "";
+
+  if (ctx.qr !== undefined) {
+    ctx.page.drawImage(ctx.qr, {
+      x: margin + 12,
+      y: top - paymentBlockHeight + 12,
+      width: paymentQrSize,
+      height: paymentQrSize,
+    });
+  }
+
+  // ไม่มี QR แสดง (ไม่ได้ตั้งพร้อมเพย์) เอาข้อความมาชิดซ้ายแทนที่จะทิ้งพื้นที่ว่าง
+  const infoX = ctx.qr === undefined ? margin + 12 : margin + 114;
+  const infoWidth = contentRight - pad - infoX;
+
+  if (!hasPromptPay && !hasBank) {
+    text(ctx, "ยังไม่ได้ตั้งค่าช่องทางรับเงิน", infoX, top - 44, 12, {
+      bold: true,
+      max: infoWidth,
+    });
+    text(ctx, "ติดต่อเจ้าของหอเพื่อสอบถามวิธีชำระเงิน", infoX, top - 60, 9, {
+      color: steel,
+      max: infoWidth,
+    });
+    return;
+  }
+
+  let line = top - 44;
+
+  if (hasPromptPay) {
+    text(ctx, issuer.promptpayId, infoX, line, 12, { bold: true, max: infoWidth });
+    line -= 16;
+    text(
+      ctx,
+      `พร้อมเพย์${issuer.promptpayName === "" ? "" : ` · ${issuer.promptpayName}`}`,
+      infoX,
+      line,
+      9,
+      { color: fog, max: infoWidth },
+    );
+    line -= 22;
+    text(ctx, "สแกนจ่ายด้วยแอปธนาคาร แล้วส่งสลิปกลับในแชท LINE ของหอ", infoX, line, 9, {
+      color: steel,
+      max: infoWidth,
+    });
+    line -= 16;
+  }
+
+  if (hasBank) {
+    const bankLabel = issuer.bankName === "" ? "บัญชีธนาคาร" : issuer.bankName;
+
+    text(ctx, `${bankLabel} ${issuer.bankAccountNumber}`, infoX, line, hasPromptPay ? 9 : 12, {
+      bold: !hasPromptPay,
+      color: hasPromptPay ? steel : charcoal,
+      max: infoWidth,
+    });
+    line -= hasPromptPay ? 12 : 16;
+
+    if (issuer.bankAccountName !== "") {
+      text(ctx, `ชื่อบัญชี ${issuer.bankAccountName}`, infoX, line, 9, {
+        color: fog,
+        max: infoWidth,
+      });
+      line -= 12;
+    }
+
+    if (!hasPromptPay) {
+      text(ctx, "โอนเงินเข้าบัญชีนี้ แล้วส่งสลิปกลับในแชท LINE ของหอ", infoX, line, 9, {
+        color: steel,
+        max: infoWidth,
+      });
+    }
+  }
 }
 
 export async function renderInvoicePdf(
@@ -74,119 +408,155 @@ export async function renderInvoicePdf(
   qrPng?: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
   const pdf = await PDFDocument.create();
-  pdf.registerFontkit(fontkit);
+  pdf.registerFontkit(cachedFontkit);
 
-  const regular = await pdf.embedFont(regularFontData, { subset: true, features: { ccmp: false } });
-  const bold = await pdf.embedFont(boldFontData, { subset: true, features: { ccmp: false } });
-  let page = pdf.addPage([pageWidth, pageHeight]);
+  const regular = await pdf.embedFont(regularFontBytes, {
+    subset: true,
+    features: { ccmp: false },
+  });
+  const bold = await pdf.embedFont(boldFontBytes, {
+    subset: true,
+    features: { ccmp: false },
+  });
 
   pdf.setTitle(`ใบแจ้งหนี้ ${document.number}`);
   pdf.setCreator("Wang Chan Dorm");
   pdf.setProducer("Wang Chan Dorm");
 
-  let y = pageHeight - margin;
+  let page = pdf.addPage([pageWidth, pageHeight]);
+  const qr = qrPng === undefined ? undefined : await pdf.embedPng(qrPng);
+  let ctx: Ctx = { page, regular, bold, qr };
 
-  page.drawText("ใบแจ้งหนี้ / INVOICE", { x: margin, y: y - 20, size: 20, font: bold, color: ink });
-  rightAligned(page, `เลขที่ ${document.number}`, regular, 11, y - 8);
-  rightAligned(page, `วันที่ออก ${document.issueDate}`, regular, 10, y - 25, muted);
-  y -= 46;
-
-  if (issuer.dormName !== "") {
-    page.drawText(clip(issuer.dormName, bold, 13, 300), { x: margin, y, size: 13, font: bold, color: ink });
-    y -= 17;
-  }
-
-  if (issuer.ownerName !== "") {
-    page.drawText(clip(`เจ้าของหอ: ${issuer.ownerName}`, regular, 10, 340), { x: margin, y, size: 10, font: regular, color: muted });
-    y -= 15;
-  }
-
-  if (issuer.promptpayId !== "") {
-    const account = issuer.promptpayName === "" ? "" : ` (${issuer.promptpayName})`;
-    page.drawText(clip(`พร้อมเพย์: ${issuer.promptpayId}${account}`, regular, 10, 340), { x: margin, y, size: 10, font: regular, color: muted });
-    y -= 15;
-  }
-
-  y -= 4;
-  ruleLine(page, y);
-  y -= 20;
-
-  const boxTop = y;
-  const boxHeight = 62;
-
-  page.drawRectangle({
-    x: margin,
-    y: boxTop - boxHeight,
-    width: contentRight - margin,
-    height: boxHeight,
-    borderColor: rule,
-    borderWidth: 1,
-    color: rgb(1, 1, 1),
+  /* หัวเอกสาร */
+  text(ctx, "ใบแจ้งหนี้", margin, pageHeight - margin - 16, 16, { bold: true });
+  text(ctx, "INVOICE", margin + 78, pageHeight - margin - 16, 16, {
+    color: silver,
   });
-  page.drawText(clip(`ห้อง ${document.roomNumber} · ผู้เช่า ${document.tenantName}`, regular, 11, 300), {
-    x: margin + 12,
-    y: boxTop - 22,
-    size: 11,
-    font: regular,
-    color: ink,
+  text(
+    ctx,
+    `เลขที่ ${document.number}`,
+    contentRight,
+    pageHeight - margin - 12,
+    9,
+    {
+      color: steel,
+      align: "right",
+    },
+  );
+  text(
+    ctx,
+    `วันที่ออก ${document.issueDate}`,
+    contentRight,
+    pageHeight - margin - 26,
+    9,
+    { color: steel, align: "right" },
+  );
+  hline(ctx, pageHeight - margin - 38, charcoal, 1.5);
+
+  /* ผู้ออก · ผู้รับ · รอบบิล · มิเตอร์ */
+  let y = pageHeight - margin - 60;
+
+  text(ctx, issuer.dormName, margin, y, 11, {
+    bold: true,
+    max: headerNameWidth,
   });
-  page.drawText(clip(`มิเตอร์น้ำ ${document.waterMeter} · มิเตอร์ไฟ ${document.electricMeter}`, regular, 9, 320), {
-    x: margin + 12,
-    y: boxTop - 42,
-    size: 9,
-    font: regular,
-    color: muted,
+  text(ctx, `เจ้าของหอ ${issuer.ownerName}`, margin, y - 15, 9, {
+    color: fog,
+    max: headerNameWidth,
   });
-  const periodText = `ประจำเดือน ${document.periodLabel}`;
-  page.drawText(periodText, {
-    x: contentRight - 12 - bold.widthOfTextAtSize(periodText, 11),
-    y: boxTop - 22,
-    size: 11,
-    font: bold,
-    color: ink,
+  text(ctx, document.tenantName, contentRight, y, 11, {
+    bold: true,
+    align: "right",
+    max: headerNameWidth,
+  });
+  text(
+    ctx,
+    `ห้อง ${document.roomNumber} · ${document.periodLabel}`,
+    contentRight,
+    y - 15,
+    9,
+    { color: fog, align: "right", max: headerNameWidth },
+  );
+  text(ctx, document.meterSummary, contentRight, y - 29, 9, {
+    color: fog,
+    align: "right",
+    max: headerNameWidth,
   });
 
-  y = boxTop - boxHeight - 28;
-  tableHeader(page, y, bold);
-  y -= tableHeaderHeight;
+  y -= 50;
 
-  for (const row of document.rows) {
-    if (y - rowHeight < margin + 60) {
-      page = pdf.addPage([pageWidth, pageHeight]);
-      y = pageHeight - margin;
-      tableHeader(page, y, bold);
-      y -= tableHeaderHeight;
+  const tableTop = y;
+  tableHead(ctx, y);
+  y -= tableHeadHeight;
+
+  let sequence = 0;
+
+  /** ขอบตารางของแต่ละหน้า — เก็บ page ไว้ด้วยเพราะเส้นแนวตั้งต้องวาดบนหน้าของตัวเอง */
+  const segments: { page: PDFPage; top: number; bottom: number }[] = [
+    { page, top: tableTop, bottom: y },
+  ];
+
+  for (const group of groupsOf(document.rows)) {
+    groupRow(ctx, y, group);
+    y -= groupHeight;
+
+    for (const row of document.rows.filter((item) => item.group === group)) {
+      if (y - rowHeight < margin + tailHeight) {
+        const last = segments[segments.length - 1];
+
+        if (last !== undefined) {
+          last.bottom = y;
+        }
+
+        page = pdf.addPage([pageWidth, pageHeight]);
+        ctx = { page, regular, bold, qr };
+        y = pageHeight - margin;
+        tableHead(ctx, y);
+        y -= tableHeadHeight;
+        segments.push({ page, top: y + tableHeadHeight, bottom: y });
+      }
+
+      sequence += 1;
+      itemRow(ctx, y, sequence, row);
+      y -= rowHeight;
     }
-
-    itemRow(page, row.label, row.detail, row.amount, y, regular);
-    y -= rowHeight;
   }
 
-  y -= 10;
-  ruleLine(page, y, 2, rgb(0.55, 0.58, 0.62));
-  y -= 10;
-  page.drawText("ยอดรวมทั้งสิ้น", { x: labelX, y: y - 14, size: 13, font: bold, color: ink });
-  rightAligned(page, `${formatBaht(document.total)} บาท`, bold, 13, y - 14, totalInk);
+  totalRow(ctx, y, document.total);
+  y -= totalHeight;
 
-  if (qrPng !== undefined) {
-    const blockTop = qrBottom + qrSize;
+  const current = segments[segments.length - 1];
 
-    if (y - 30 < blockTop + qrRuleGap) {
-      page = pdf.addPage([pageWidth, pageHeight]);
+  if (current !== undefined) {
+    current.bottom = y;
+  }
+
+  const columnEdges = [
+    columns.seq,
+    columns.label,
+    columns.quantity,
+    columns.unitPrice,
+    columns.end,
+  ];
+
+  for (const segment of segments) {
+    for (const x of columnEdges) {
+      segment.page.drawLine({
+        start: { x, y: segment.top },
+        end: { x, y: segment.bottom },
+        thickness: 1,
+        color: ash,
+      });
     }
-
-    const image = await pdf.embedPng(qrPng);
-    ruleLine(page, blockTop + qrRuleGap);
-    page.drawImage(image, { x: margin, y: qrBottom, width: qrSize, height: qrSize });
-
-    const noteX = margin + qrSize + 22;
-    const noteWidth = contentRight - noteX;
-    page.drawText("ชำระเงินผ่านพร้อมเพย์", { x: noteX, y: blockTop - 10, size: 12, font: bold, color: ink });
-    page.drawText(clip("สแกนจ่ายยอดนี้ด้วยแอปธนาคาร", regular, 10, noteWidth), { x: noteX, y: blockTop - 34, size: 10, font: regular, color: muted });
-    page.drawText(clip("ส่งสลิปกลับในแชท LINE ของหอได้เลย", regular, 10, noteWidth), { x: noteX, y: blockTop - 50, size: 10, font: regular, color: muted });
   }
 
-  page.drawText("ขอบคุณที่ใช้บริการ", { x: margin, y: footerY, size: 10, font: regular, color: muted });
+  y -= bahtWordsGap;
+  text(ctx, `(${bahtWords(document.total)})`, margin, y, 9, { color: steel });
+  y -= paymentGap;
+
+  paymentBlock(ctx, issuer, y);
+
+  text(ctx, "ขอบคุณที่ใช้บริการ", margin, 34, 8, { color: silver });
 
   return new Uint8Array(await pdf.save());
 }

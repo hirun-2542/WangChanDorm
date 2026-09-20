@@ -19,8 +19,16 @@ function decodeBase64(value: string): Uint8Array | null {
   }
 }
 
-export async function verifyLineSignature(channelSecret: string, rawBody: string, headerSignature: string): Promise<boolean> {
-  if (channelSecret === "" || headerSignature === "") {
+export async function verifyLineSignature(channelSecret: string | undefined, rawBody: string, headerSignature: string): Promise<boolean> {
+  const secret = typeof channelSecret === "string" ? channelSecret.trim() : "";
+
+  // ไม่มี secret แปลว่ายืนยันไม่ได้ ไม่ใช่ "ไม่มีอะไรต้องตรวจ" จึงต้องปฏิเสธ
+  if (secret === "") {
+    console.error(JSON.stringify({ message: "line signature rejected", reason: "LINE_CHANNEL_SECRET is not configured" }));
+    return false;
+  }
+
+  if (headerSignature === "") {
     return false;
   }
 
@@ -34,7 +42,7 @@ export async function verifyLineSignature(channelSecret: string, rawBody: string
   try {
     const key = await crypto.subtle.importKey(
       "raw",
-      new TextEncoder().encode(channelSecret),
+      new TextEncoder().encode(secret),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["verify"],

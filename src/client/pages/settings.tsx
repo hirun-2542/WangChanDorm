@@ -1,19 +1,44 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   ApiError,
+  fetchDormCharges,
   fetchSettings,
   regenerateOwnerCode,
+  saveDormCharges,
   updateSettings,
+  type DormChargeInput,
   type PromptpayType,
   type Settings,
 } from "../api";
-import { Badge, Button, Card, CardHeader, Dialog, EmptyState, Field, PageHeader, Skeleton, Toast } from "../ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Dialog,
+  EmptyState,
+  Field,
+  IconButton,
+  PageHeader,
+  Skeleton,
+  Toast,
+} from "../ui";
 import { ChoiceRow, numericValue } from "./dorm-shared";
+import { bankLogoUrl, fetchBanks, type Bank } from "./banks";
 
 const sectionList = [
   { id: "settings-dorm", label: "ข้อมูลหอ" },
   { id: "settings-rates", label: "ค่าน้ำ/ค่าไฟ" },
-  { id: "settings-promptpay", label: "พร้อมเพย์" },
+  { id: "settings-charges", label: "ค่าใช้จ่ายของหอ" },
+  { id: "settings-payment", label: "ช่องทางรับเงิน" },
   { id: "settings-line", label: "LINE เจ้าของ" },
   { id: "settings-integrations", label: "การเชื่อมต่อ" },
 ] as const;
@@ -23,6 +48,20 @@ interface SectionProps {
   title: string;
   description?: string;
   children: ReactNode;
+}
+
+interface ChargeDraft {
+  key: number;
+  id: string | null;
+  name: string;
+  amount: string;
+}
+
+let chargeKey = 0;
+
+function nextChargeKey(): number {
+  chargeKey += 1;
+  return chargeKey;
 }
 
 function Section({ id, title, description, children }: SectionProps) {
@@ -36,68 +75,496 @@ function Section({ id, title, description, children }: SectionProps) {
   );
 }
 
-function IntegrationRow({ name, description, configured }: { name: string; description: string; configured: boolean }) {
+function IntegrationRow({
+  name,
+  description,
+  configured,
+}: {
+  name: string;
+  description: string;
+  configured: boolean;
+}) {
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
       <div className="min-w-0">
         <span className="block text-sm text-charcoal">{name}</span>
         <span className="block text-xs text-fog">{description}</span>
       </div>
-      <Badge tone={configured ? "paid" : "neutral"} icon={configured ? "check_circle" : "link_off"}>
+      <Badge
+        tone={configured ? "paid" : "neutral"}
+        icon={configured ? "check_circle" : "link_off"}
+      >
         {configured ? "ตั้งค่าแล้ว" : "ยังไม่ตั้งค่า"}
       </Badge>
     </li>
   );
 }
 
-function QrPreview() {
-  const path = useMemo(() => {
-    const size = 21;
-    let data = "";
+const promptpayTypeLabels: Record<PromptpayType, string> = {
+  phone: "เบอร์โทรศัพท์",
+  "citizen-id": "เลขบัตรประชาชน / นิติบุคคล",
+};
 
-    for (let y = 0; y < size; y += 1) {
-      for (let x = 0; x < size; x += 1) {
-        const finderAt = (originX: number, originY: number) => {
-          const localX = x - originX;
-          const localY = y - originY;
-          const edge = localX === 0 || localY === 0 || localX === 6 || localY === 6;
-          const core = localX >= 2 && localX <= 4 && localY >= 2 && localY <= 4;
-          return edge || core;
-        };
+/** ความสว่างสัมพัทธ์ของสี — ใช้ตัดสินว่าพื้นสว่างพอจนโลโก้ขาวจะหายไปหรือไม่ */
+function luminance(hex: string): number {
+  const value = hex.replace("#", "");
+  const channels = [0, 2, 4].map((offset) => {
+    const channel = Number.parseInt(value.slice(offset, offset + 2), 16) / 255;
+    return channel <= 0.03928
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
+  });
 
-        let on: boolean;
+  return (
+    0.2126 * (channels[0] ?? 0) +
+    0.7152 * (channels[1] ?? 0) +
+    0.0722 * (channels[2] ?? 0)
+  );
+}
 
-        if (x < 7 && y < 7) {
-          on = finderAt(0, 0);
-        } else if (x >= size - 7 && y < 7) {
-          on = finderAt(size - 7, 0);
-        } else if (x < 7 && y >= size - 7) {
-          on = finderAt(0, size - 7);
-        } else {
-          on = (x * 3 + y * 5 + ((x * y) % 7)) % 11 < 5;
-        }
+/**
+ * โลโก้ธนาคาร — ไฟล์ทุกตัวเป็นสีขาวบนพื้นโปร่งใส จึงต้องมีพื้นสีของธนาคารอยู่ข้างหลัง
+ * ธนาคารสีอ่อนมาก (เช่น ttb #ecf0f1) ทำให้โลโก้ขาวจมหาย จึงใช้พื้น charcoal แทนและคาดแถบสีบาง ๆ ไว้ที่ขอบ
+ */
+function BankMark({
+  bank,
+  size = "md",
+}: {
+  bank: Bank | null;
+  size?: "sm" | "md";
+}) {
+  const box = size === "sm" ? "h-5 w-5" : "h-8 w-8";
+  const pad = size === "sm" ? "p-0.5" : "p-1";
 
-        if (on) {
-          data += `M${x} ${y}h1v1h-1z`;
-        }
-      }
+  if (bank === null) {
+    return (
+      <span
+        className={`ms grid ${box} shrink-0 place-items-center rounded-md border border-ash text-[18px] text-steel`}
+        aria-hidden="true"
+      >
+        account_balance
+      </span>
+    );
+  }
+
+  // เกณฑ์ 0.75 คัดเฉพาะสีที่สว่างจนโลโก้ขาวหายจริง (ttb #ecf0f1 = 0.865)
+  // สีอย่าง bay #fec43b (0.609) ยังอ่านออก จึงคงสีธนาคารไว้
+  const faded = luminance(bank.color) > 0.75;
+
+  return (
+    <span
+      className={`grid ${box} shrink-0 place-items-center rounded-md border border-ash/60 ${pad}`}
+      style={{ backgroundColor: faded ? "#171717" : bank.color }}
+    >
+      <img
+        src={bankLogoUrl(bank.id)}
+        alt=""
+        className="h-full w-full object-contain"
+      />
+    </span>
+  );
+}
+
+function AccountNumberRow({
+  bank,
+  number,
+}: {
+  bank: Bank | null;
+  number: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+
+  useEffect(() => {
+    if (!copied && !copyFailed) {
+      return;
     }
 
-    return data;
-  }, []);
+    const timer = window.setTimeout(() => {
+      setCopied(false);
+      setCopyFailed(false);
+    }, 2000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied, copyFailed]);
+
+  const groups = number.replace(/(\d{3})(?=\d)/g, "$1 ");
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <BankMark bank={bank} />
+        <div className="min-w-0">
+          <span className="block text-sm text-charcoal">
+            {bank === null ? "บัญชีธนาคาร" : bank.thaiName}
+          </span>
+          <span className="num block text-xs text-fog">{groups}</span>
+        </div>
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        icon={copied ? "check" : copyFailed ? "error" : "content_copy"}
+        onClick={() => {
+          // บอกว่าคัดลอกแล้วได้ก็ต่อเมื่อเบราว์เซอร์คัดลอกให้จริง
+          void navigator.clipboard
+            .writeText(number)
+            .then(() => {
+              setCopyFailed(false);
+              setCopied(true);
+            })
+            .catch(() => {
+              setCopied(false);
+              setCopyFailed(true);
+            });
+        }}
+      >
+        {copied ? "คัดลอกแล้ว" : copyFailed ? "คัดลอกไม่สำเร็จ" : "คัดลอกเลขบัญชี"}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * ตัวเลือกธนาคาร — ต้องวาดเองเพราะ <select> ของเบราว์เซอร์แสดงรูปใน <option> ไม่ได้
+ * ใช้ .row-menu ที่มี elevation อยู่แล้ว และปิดเมื่อคลิกนอก/กด Escape/เลื่อนหน้า
+ */
+function BankSelect({
+  banks,
+  value,
+  onChange,
+  error,
+}: {
+  banks: Bank[];
+  value: string;
+  onChange: (id: string) => void;
+  error?: string;
+}) {
+  const id = useId();
+  const listId = `${id}-list`;
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [listMaxHeight, setListMaxHeight] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const selected = banks.find((bank) => bank.id === value) ?? null;
+
+  const options: { id: string; bank: Bank | null }[] = [
+    { id: "", bank: null },
+    ...banks.map((bank) => ({ id: bank.id, bank })),
+  ];
+
+  const close = () => {
+    setOpen(false);
+  };
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (
+        !(target instanceof Node) ||
+        wrapRef.current?.contains(target) === true
+      ) {
+        return;
+      }
+
+      close();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", close);
+    window.addEventListener("resize", close);
+    document.addEventListener("pointerdown", onPointerDown, true);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", close);
+      window.removeEventListener("resize", close);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      // preventScroll จำเป็น — ถ้าไม่ใส่ เบราว์เซอร์จะเลื่อนหน้าไปหารายการ ทำให้ตำแหน่งที่วัดเพี้ยน
+      listRef.current?.focus({ preventScroll: true });
+    }
+  }, [open]);
+
+  // จำกัดความสูงไม่ให้ล้นออกนอกจอหรือมุดใต้แถบบันทึกที่ลอยอยู่
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const measure = () => {
+      const trigger = wrapRef.current?.querySelector("button");
+
+      if (trigger === null || trigger === undefined) {
+        return;
+      }
+
+      const bar = document.querySelector(".save-bar");
+      const limit =
+        bar instanceof HTMLElement
+          ? bar.getBoundingClientRect().top
+          : window.innerHeight;
+      const top = trigger.getBoundingClientRect().bottom + 6;
+
+      setListMaxHeight(Math.max(160, Math.round(limit - top - 12)));
+    };
+
+    measure();
+    window.addEventListener("resize", measure);
+
+    return () => {
+      window.removeEventListener("resize", measure);
+    };
+  }, [open]);
+
+  const commit = (next: string) => {
+    onChange(next);
+    close();
+  };
+
+  const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step =
+      event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+
+    if (step !== 0) {
+      event.preventDefault();
+      const next = Math.min(
+        Math.max(activeIndex + step, 0),
+        options.length - 1,
+      );
+      setActiveIndex(next);
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const option = options[activeIndex];
+
+      if (option !== undefined) {
+        commit(option.id);
+      }
+    }
+  };
+
+  return (
+    <div ref={wrapRef}>
+      <label className="field-label" htmlFor={id}>
+        ธนาคาร
+      </label>
+      <div className="relative">
+        <button
+          id={id}
+          type="button"
+          className={`input flex items-center gap-2.5 text-left${
+            error === undefined ? "" : " border-danger"
+          }`}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={open ? listId : undefined}
+          aria-invalid={error !== undefined}
+          aria-describedby={error === undefined ? `${id}-help` : `${id}-error`}
+          onClick={() => {
+            setActiveIndex(options.findIndex((option) => option.id === value));
+            setOpen((current) => !current);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              setActiveIndex(
+                options.findIndex((option) => option.id === value),
+              );
+              setOpen(true);
+            }
+          }}
+        >
+          <BankMark bank={selected} size="sm" />
+          <span
+            className={`min-w-0 flex-1 truncate ${selected === null ? "text-fog" : "text-charcoal"}`}
+          >
+            {selected === null ? "ไม่ระบุธนาคาร" : selected.thaiName}
+          </span>
+          <span
+            className="ms shrink-0 text-[20px] text-steel"
+            aria-hidden="true"
+          >
+            {open ? "expand_less" : "expand_more"}
+          </span>
+        </button>
+
+        {open && (
+          <div
+            ref={listRef}
+            id={listId}
+            role="listbox"
+            tabIndex={-1}
+            aria-label="เลือกธนาคาร"
+            className="absolute left-0 right-0 top-[calc(100%+6px)] z-40 overflow-y-auto rounded-xl border border-ash bg-canvas-white py-1 shadow-sm"
+            style={
+              listMaxHeight === null ? undefined : { maxHeight: listMaxHeight }
+            }
+            onKeyDown={onListKeyDown}
+          >
+            {options.map((option, index) => {
+              const active = index === activeIndex;
+              const isSelected = option.id === value;
+
+              return (
+                <button
+                  key={option.id === "" ? "__none" : option.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  className={`flex min-h-11 w-full items-center gap-2.5 px-2.5 text-left text-sm ${
+                    active ? "bg-paper-mist" : ""
+                  }`}
+                  onPointerEnter={() => {
+                    setActiveIndex(index);
+                  }}
+                  onClick={() => {
+                    commit(option.id);
+                  }}
+                >
+                  <BankMark bank={option.bank} size="sm" />
+                  <span
+                    className={`min-w-0 flex-1 truncate ${option.bank === null ? "text-fog" : ""}`}
+                  >
+                    {option.bank === null
+                      ? "ไม่ระบุธนาคาร"
+                      : option.bank.thaiName}
+                  </span>
+                  {isSelected && (
+                    <span
+                      className="ms shrink-0 text-[18px] text-charcoal"
+                      aria-hidden="true"
+                    >
+                      check
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {error === undefined ? (
+        <p id={`${id}-help`} className="mt-1.5 text-xs text-fog">
+          เลือกจากรายการเพื่อให้ได้โลโก้และสีของธนาคาร
+        </p>
+      ) : (
+        <p id={`${id}-error`} className="mt-1.5 text-xs text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** ยอดตัวอย่างในตัวอย่าง QR — ยอดจริงมาจากบิลแต่ละใบ */
+const sampleQrAmount = 1000;
+
+/** กติกาเดียวกับ worker: เบอร์ 9–10 หลัก · เลขบัตร 13 หลัก */
+function promptpayIdValid(id: string, type: PromptpayType): boolean {
+  const digits = id.replace(/\D/g, "");
+
+  return type === "phone"
+    ? digits.length === 9 || digits.length === 10
+    : digits.length === 13;
+}
+
+function QrPreview({
+  promptpayId,
+  payType,
+}: {
+  promptpayId: string;
+  payType: PromptpayType;
+}) {
+  const [failed, setFailed] = useState(false);
+  const id = promptpayId.trim();
+  const ready = id !== "" && promptpayIdValid(id, payType);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [id, payType]);
+
+  const url = ready
+    ? `/qr/preview.png?${new URLSearchParams({
+        id,
+        type: payType,
+        amount: String(sampleQrAmount),
+      }).toString()}`
+    : null;
 
   return (
     <div className="rounded-xl border border-ash p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm text-charcoal">ภาพตัวอย่าง QR พร้อมเพย์</span>
-        <Badge tone="neutral">ตัวอย่าง — ไม่ใช้เงินจริง</Badge>
+        <span className="text-sm text-charcoal">QR พร้อมเพย์</span>
+        {url === null || failed ? (
+          <Badge tone="neutral" icon="link_off">
+            ยังสร้างไม่ได้
+          </Badge>
+        ) : (
+          <Badge tone="paid" icon="qr_code_2">
+            ตัวอย่างสแกนได้
+          </Badge>
+        )}
       </div>
-      <div className="mx-auto mt-3 w-40 text-charcoal" aria-hidden="true">
-        <svg viewBox="-2 -2 25 25" width="100%" role="presentation">
-          <path d={path} fill="currentColor" shapeRendering="crispEdges" />
-        </svg>
-      </div>
-      <p className="mt-2 text-center text-xs text-fog">ภาพนี้เป็นตัวอย่างสำหรับดูตำแหน่งเท่านั้น ไม่ใช่รหัสที่สแกนจ่ายได้จริง</p>
+
+      {url === null || failed ? (
+        <>
+          <div className="mx-auto mt-3 grid h-40 w-40 place-items-center rounded-lg border border-dashed border-ash px-3 text-center">
+            <span className="text-[11px] text-fog">
+              {failed ? "สร้าง QR ไม่สำเร็จ" : "ยังกรอกพร้อมเพย์ไม่ครบ"}
+            </span>
+          </div>
+          <p className="mt-3 text-center text-xs text-fog">
+            {failed
+              ? "ลองตรวจพร้อมเพย์ไอดีกับประเภทให้ตรงกันแล้วบันทึกอีกครั้ง"
+              : payType === "phone"
+                ? "กรอกเบอร์ที่ผูกพร้อมเพย์ 9–10 หลัก แล้วตัวอย่าง QR จะขึ้นที่นี่"
+                : "กรอกเลขบัตรประชาชนหรือนิติบุคคล 13 หลัก แล้วตัวอย่าง QR จะขึ้นที่นี่"}
+          </p>
+        </>
+      ) : (
+        <>
+          <img
+            src={url}
+            alt={`ตัวอย่าง QR พร้อมเพย์สำหรับยอด ${sampleQrAmount.toLocaleString("en-US")} บาท`}
+            className="mx-auto mt-3 h-40 w-40"
+            onError={() => {
+              setFailed(true);
+            }}
+          />
+          <p className="num mt-3 text-center text-sm text-charcoal">
+            ตัวอย่างยอด {sampleQrAmount.toLocaleString("en-US")} บาท
+          </p>
+          <p className="mt-1 text-center text-xs text-fog">
+            ยอดจริงระบบสร้างให้ตอนออกบิลแต่ละใบ
+          </p>
+          <p className="mt-1 text-center text-xs text-fog">
+            บิลที่สร้างไปแล้วยังใช้พร้อมเพย์ที่บันทึกไว้ในบิลนั้น
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -107,7 +574,10 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<{ message: string; field?: string } | null>(null);
+  const [saveError, setSaveError] = useState<{
+    message: string;
+    field?: string;
+  } | null>(null);
   const [dormName, setDormName] = useState("");
   const [ownerName, setOwnerName] = useState("");
   const [ownerPhone, setOwnerPhone] = useState("");
@@ -116,10 +586,19 @@ export function SettingsPage() {
   const [payType, setPayType] = useState<PromptpayType>("phone");
   const [payId, setPayId] = useState("");
   const [payName, setPayName] = useState("");
+  const [bankName, setBankName] = useState("");
+  const [bankNumber, setBankNumber] = useState("");
+  const [bankOwner, setBankOwner] = useState("");
+  const [banks, setBanks] = useState<Bank[]>([]);
   const [code, setCode] = useState("");
   const [confirmRegen, setConfirmRegen] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  // ตัวจริงที่กันกดรัว: state ใช้แค่ปิดปุ่ม เพราะอ่านค่าไม่ทันในคลิกเดียวกัน
+  const regeneratingRef = useRef(false);
+  const [confirmPayChange, setConfirmPayChange] = useState(false);
   const [activeSection, setActiveSection] = useState<string>(sectionList[0].id);
   const [toast, setToast] = useState<string | null>(null);
+  const [chargeRows, setChargeRows] = useState<ChargeDraft[]>([]);
 
   const applySettings = useCallback((data: Settings) => {
     setSettings(data);
@@ -131,6 +610,9 @@ export function SettingsPage() {
     setPayType(data.promptpayType === "citizen-id" ? "citizen-id" : "phone");
     setPayId(data.promptpayId);
     setPayName(data.promptpayName);
+    setBankName(data.bankName);
+    setBankNumber(data.bankAccountNumber);
+    setBankOwner(data.bankAccountName);
     setCode(data.ownerLinkCode);
   }, []);
 
@@ -139,10 +621,23 @@ export function SettingsPage() {
     setLoadError(null);
 
     try {
-      const data = await fetchSettings();
+      const [data, charges] = await Promise.all([
+        fetchSettings(),
+        fetchDormCharges(),
+      ]);
       applySettings(data);
+      setChargeRows(
+        charges.map((charge) => ({
+          key: nextChargeKey(),
+          id: charge.id,
+          name: charge.name,
+          amount: String(charge.amount),
+        })),
+      );
     } catch (error) {
-      setLoadError(error instanceof ApiError ? error.message : "โหลดการตั้งค่าไม่สำเร็จ");
+      setLoadError(
+        error instanceof ApiError ? error.message : "โหลดการตั้งค่าไม่สำเร็จ",
+      );
     } finally {
       setLoading(false);
     }
@@ -151,6 +646,20 @@ export function SettingsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let active = true;
+
+    void fetchBanks().then((list) => {
+      if (active) {
+        setBanks(list);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (toast === null) {
@@ -207,23 +716,101 @@ export function SettingsPage() {
   const waterValue = numericValue(waterRate);
   const electricValue = numericValue(electricRate);
   const ownerPhoneDigits = ownerPhone.replace(/[\s-]/g, "");
-  const ownerPhoneValid = ownerPhoneDigits === "" || /^0\d{9}$/.test(ownerPhoneDigits);
+  const ownerPhoneValid =
+    ownerPhoneDigits === "" || /^0\d{9}$/.test(ownerPhoneDigits);
+  const bankDigits = bankNumber.replace(/\D/g, "");
+  const bankNumberValid =
+    bankDigits === "" || (bankDigits.length >= 10 && bankDigits.length <= 15);
+  // บัญชีธนาคารนับว่าใช้ได้เฉพาะเมื่อเลือกธนาคารและกรอกเลขบัญชีครบคู่
+  // เลขบัญชีอย่างเดียวโดยไม่รู้ธนาคารทำให้ผู้เช่าโอนเงินไม่ได้จริง
+  const hasBankPayout = bankName.trim() !== "" && bankDigits !== "";
+  const hasPayoutDestination = payId.trim() !== "" || hasBankPayout;
+  const chargeRowsInvalid = chargeRows.some((row) => {
+    const amount = numericValue(row.amount);
+    return (
+      row.name.trim() === "" ||
+      amount === null ||
+      !Number.isInteger(amount) ||
+      amount < 0
+    );
+  });
   const canSave =
     dormName.trim() !== "" &&
-    payId.trim() !== "" &&
+    hasPayoutDestination &&
+    bankNumberValid &&
     ownerPhoneValid &&
     waterValue !== null &&
     waterValue > 0 &&
     electricValue !== null &&
     electricValue > 0 &&
+    !chargeRowsInvalid &&
     !saving;
 
   const fieldError = (name: string): string | undefined =>
-    saveError !== null && saveError.field === name ? saveError.message : undefined;
+    saveError !== null && saveError.field === name
+      ? saveError.message
+      : undefined;
+
+  const payChanges: { label: string; from: string; to: string }[] = [];
+
+  if (settings !== null) {
+    if (payType !== settings.promptpayType) {
+      payChanges.push({
+        label: "ประเภทพร้อมเพย์",
+        from: promptpayTypeLabels[settings.promptpayType],
+        to: promptpayTypeLabels[payType],
+      });
+    }
+
+    if (payId.trim() !== settings.promptpayId) {
+      payChanges.push({
+        label: "พร้อมเพย์ไอดี",
+        from: settings.promptpayId,
+        to: payId.trim(),
+      });
+    }
+
+    if (bankDigits !== settings.bankAccountNumber.replace(/\D/g, "")) {
+      payChanges.push({
+        label: "เลขบัญชีธนาคาร",
+        from:
+          settings.bankAccountNumber === ""
+            ? "ยังไม่ได้กรอก"
+            : settings.bankAccountNumber,
+        to: bankDigits === "" ? "ยังไม่ได้กรอก" : bankDigits,
+      });
+    }
+  }
+
+  const payChanged = payChanges.length > 0;
+
+  const selectedBank = banks.find((bank) => bank.id === bankName) ?? null;
 
   const goTo = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document
+      .getElementById(id)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
     setActiveSection(id);
+  };
+
+  const appendChargeRow = () => {
+    setChargeRows((rows) => [
+      ...rows,
+      { key: nextChargeKey(), id: null, name: "", amount: "" },
+    ]);
+  };
+
+  const removeChargeRow = (key: number) => {
+    setChargeRows((rows) => rows.filter((row) => row.key !== key));
+  };
+
+  const editChargeRow = (
+    key: number,
+    patch: Partial<Pick<ChargeDraft, "name" | "amount">>,
+  ) => {
+    setChargeRows((rows) =>
+      rows.map((row) => (row.key === key ? { ...row, ...patch } : row)),
+    );
   };
 
   const save = async () => {
@@ -240,15 +827,39 @@ export function SettingsPage() {
         promptpayType: payType,
         promptpayId: payId.trim(),
         promptpayName: payName.trim(),
+        bankName: bankName.trim(),
+        bankAccountNumber: bankNumber,
+        bankAccountName: bankOwner.trim(),
       });
       applySettings(updated);
+
+      const inputs: DormChargeInput[] = chargeRows.map((row) => {
+        const amount = numericValue(row.amount) ?? 0;
+        return row.id === null
+          ? { name: row.name.trim(), amount }
+          : { id: row.id, name: row.name.trim(), amount };
+      });
+      const savedCharges = await saveDormCharges(inputs);
+      setChargeRows(
+        savedCharges.map((charge) => ({
+          key: nextChargeKey(),
+          id: charge.id,
+          name: charge.name,
+          amount: String(charge.amount),
+        })),
+      );
+
       setToast("บันทึกการตั้งค่าเรียบร้อย");
     } catch (error) {
       if (error instanceof ApiError && error.field !== undefined) {
         setSaveError({ message: error.message, field: error.field });
       } else {
         setSaveError(null);
-        setToast(error instanceof ApiError ? error.message : "บันทึกการตั้งค่าไม่สำเร็จ");
+        setToast(
+          error instanceof ApiError
+            ? error.message
+            : "บันทึกการตั้งค่าไม่สำเร็จ",
+        );
       }
     } finally {
       setSaving(false);
@@ -256,15 +867,33 @@ export function SettingsPage() {
   };
 
   const regenCode = async () => {
+    // ออกซ้ำสองครั้งจะได้รหัสสองใบและใบแรกใช้ไม่ได้ทันที ต้องกันกดรัว
+    // ต้องกันด้วย ref เพราะ state ยังไม่ทันอัปเดตภายในคีย์เดียวกัน
+    if (regeneratingRef.current) {
+      return;
+    }
+
+    regeneratingRef.current = true;
+    setRegenerating(true);
+
     try {
       const next = await regenerateOwnerCode();
       setCode(next);
-      setSettings((current) => (current === null ? current : { ...current, ownerLinkCode: next }));
+      setSettings((current) =>
+        current === null ? current : { ...current, ownerLinkCode: next },
+      );
       setConfirmRegen(false);
       setToast(`ออกรหัสเชื่อมต่อใหม่ ${next} แล้ว`);
     } catch (error) {
       setConfirmRegen(false);
-      setToast(error instanceof ApiError ? error.message : "ออกรหัสเชื่อมต่อใหม่ไม่สำเร็จ");
+      setToast(
+        error instanceof ApiError
+          ? error.message
+          : "ออกรหัสเชื่อมต่อใหม่ไม่สำเร็จ",
+      );
+    } finally {
+      regeneratingRef.current = false;
+      setRegenerating(false);
     }
   };
 
@@ -272,11 +901,17 @@ export function SettingsPage() {
 
   return (
     <div className="pb-24">
-      <PageHeader title="ตั้งค่า" supporting="แก้ค่าตั้งต้นของหอโดยไม่กระทบบิลที่สร้างไปแล้ว" />
+      <PageHeader
+        title="ตั้งค่า"
+        supporting="แก้ค่าตั้งต้นของหอโดยไม่กระทบบิลที่สร้างไปแล้ว"
+      />
 
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[200px_minmax(0,1fr)]">
-        <nav aria-label="หัวข้อตั้งค่า" className="min-w-0 lg:sticky lg:top-20 lg:self-start">
-          <ul className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1 lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0 lg:pb-0">
+        <nav
+          aria-label="หัวข้อตั้งค่า"
+          className="min-w-0 lg:sticky lg:top-20 lg:self-start"
+        >
+          <ul className="-mx-1 flex gap-1 overflow-x-auto pb-1 pl-1 pr-6 [mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent)] lg:mx-0 lg:flex-col lg:overflow-visible lg:pb-0 lg:pl-0 lg:pr-0 lg:[mask-image:none]">
             {sectionList.map((item) => {
               const active = activeSection === item.id;
 
@@ -289,7 +924,9 @@ export function SettingsPage() {
                       goTo(item.id);
                     }}
                     className={`flex min-h-11 w-auto items-center whitespace-nowrap rounded-lg px-3 text-left text-sm transition-colors lg:w-full ${
-                      active ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel hover:bg-paper-mist"
+                      active
+                        ? "bg-status-unpaid-bg font-medium text-deep-sapphire"
+                        : "text-steel hover:bg-paper-mist"
                     }`}
                   >
                     {item.label}
@@ -332,13 +969,20 @@ export function SettingsPage() {
             </Card>
           ) : (
             <>
-              <Section id="settings-dorm" title="ข้อมูลหอ" description="แสดงบนใบแจ้งหนี้และข้อความที่ส่งถึงผู้เช่า">
+              <Section
+                id="settings-dorm"
+                title="ข้อมูลหอ"
+                description="แสดงบนใบแจ้งหนี้และข้อความที่ส่งถึงผู้เช่า"
+              >
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
                     label="ชื่อหอ"
                     value={dormName}
                     onChange={setDormName}
-                    error={fieldError("dormName") ?? (dormName.trim() === "" ? "กรอกชื่อหอ" : undefined)}
+                    error={
+                      fieldError("dormName") ??
+                      (dormName.trim() === "" ? "กรอกชื่อหอ" : undefined)
+                    }
                   />
                   <Field
                     label="ชื่อเจ้าของ"
@@ -352,12 +996,21 @@ export function SettingsPage() {
                     onChange={setOwnerPhone}
                     inputMode="tel"
                     helper="ใช้ตอบกลับผู้เช่าที่พิมพ์ ติดต่อเจ้าของ"
-                    error={fieldError("ownerPhone") ?? (ownerPhoneValid ? undefined : "กรอกเบอร์ 10 หลัก เริ่มด้วย 0")}
+                    error={
+                      fieldError("ownerPhone") ??
+                      (ownerPhoneValid
+                        ? undefined
+                        : "กรอกเบอร์ 10 หลัก เริ่มด้วย 0")
+                    }
                   />
                 </div>
               </Section>
 
-              <Section id="settings-rates" title="ค่าน้ำ/ค่าไฟ" description="อัตราตั้งต้นที่ใช้กับห้องที่ยังไม่กำหนดอัตราเอง">
+              <Section
+                id="settings-rates"
+                title="ค่าน้ำ/ค่าไฟ"
+                description="อัตราตั้งต้นที่ใช้กับห้องที่ยังไม่กำหนดอัตราเอง"
+              >
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
                     label="ค่าน้ำตั้งต้น (บาท/หน่วย)"
@@ -365,7 +1018,12 @@ export function SettingsPage() {
                     onChange={setWaterRate}
                     inputMode="numeric"
                     helper={`ปัจจุบัน ${settings.defaultWaterRate} บาท/หน่วย`}
-                    error={fieldError("defaultWaterRate") ?? (waterValue === null || waterValue <= 0 ? "กรอกอัตราที่มากกว่า 0" : undefined)}
+                    error={
+                      fieldError("defaultWaterRate") ??
+                      (waterValue === null || waterValue <= 0
+                        ? "กรอกอัตราที่มากกว่า 0"
+                        : undefined)
+                    }
                   />
                   <Field
                     label="ค่าไฟตั้งต้น (บาท/หน่วย)"
@@ -373,24 +1031,140 @@ export function SettingsPage() {
                     onChange={setElectricRate}
                     inputMode="numeric"
                     helper={`ปัจจุบัน ${settings.defaultElectricRate} บาท/หน่วย`}
-                    error={fieldError("defaultElectricRate") ?? (electricValue === null || electricValue <= 0 ? "กรอกอัตราที่มากกว่า 0" : undefined)}
+                    error={
+                      fieldError("defaultElectricRate") ??
+                      (electricValue === null || electricValue <= 0
+                        ? "กรอกอัตราที่มากกว่า 0"
+                        : undefined)
+                    }
                   />
                 </div>
                 <div className="panel-muted mt-4">
-                  <p className="text-sm text-charcoal">บิลที่สร้างไปแล้วจะไม่เปลี่ยนตามค่านี้</p>
+                  <p className="text-sm text-charcoal">
+                    บิลที่สร้างไปแล้วจะไม่เปลี่ยนตามค่านี้
+                  </p>
                   <p className="mt-1 text-xs text-steel">
-                    ทุกบิลจะเก็บอัตราน้ำไฟที่ใช้ตอนออกบิลไว้เป็นข้อมูลของบิลนั้น และใช้ค่าที่บันทึกไว้ตลอดไป
+                    ทุกบิลจะเก็บอัตราน้ำไฟที่ใช้ตอนออกบิลไว้เป็นข้อมูลของบิลนั้น
+                    และใช้ค่าที่บันทึกไว้ตลอดไป
                   </p>
                 </div>
               </Section>
 
-              <Section id="settings-promptpay" title="พร้อมเพย์" description="ใช้สร้าง QR ให้ผู้เช่าสแกนจ่ายเมื่อออกบิล">
+              <Section
+                id="settings-charges"
+                title="ค่าใช้จ่ายของหอ"
+                description="เก็บกับทุกห้องโดยอัตโนมัติ ปิดเป็นรายห้องได้ที่หน้าห้องพัก"
+              >
+                {chargeRows.length > 0 && (
+                  <div className="flex items-end gap-2" aria-hidden="true">
+                    <span className="field-label min-w-0 flex-1">
+                      ชื่อรายการ
+                    </span>
+                    <span className="field-label w-24 shrink-0 text-right">
+                      จำนวนเงิน
+                    </span>
+                    <span className="w-11 shrink-0 md:w-[38px]" />
+                  </div>
+                )}
+
+                <div className="grid gap-2">
+                  {chargeRows.map((row) => {
+                    const amount = numericValue(row.amount);
+                    const nameInvalid = row.name.trim() === "";
+                    const amountInvalid =
+                      amount === null ||
+                      !Number.isInteger(amount) ||
+                      amount < 0;
+
+                    return (
+                      <div key={row.key} className="flex items-end gap-2">
+                        <div className="min-w-0 flex-1">
+                          <input
+                            type="text"
+                            aria-label={`ชื่อรายการ ${row.key}`}
+                            placeholder="เช่น ค่าบริการ"
+                            className={`input-inline w-full text-left${nameInvalid ? " border-danger" : ""}`}
+                            value={row.name}
+                            aria-invalid={nameInvalid}
+                            onChange={(event) => {
+                              editChargeRow(row.key, {
+                                name: event.target.value,
+                              });
+                            }}
+                          />
+                        </div>
+                        <div className="w-24 shrink-0">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            aria-label={`จำนวนเงิน ${row.key}`}
+                            className={`input-inline num w-full${amountInvalid ? " border-danger" : ""}`}
+                            value={row.amount}
+                            aria-invalid={amountInvalid}
+                            onChange={(event) => {
+                              editChargeRow(row.key, {
+                                amount: event.target.value,
+                              });
+                            }}
+                          />
+                        </div>
+                        <IconButton
+                          icon="delete"
+                          label="ลบรายการนี้"
+                          onClick={() => {
+                            removeChargeRow(row.key);
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="add"
+                  className="mt-2"
+                  onClick={appendChargeRow}
+                >
+                  เพิ่มรายการ
+                </Button>
+
+                {chargeRowsInvalid && (
+                  <p className="mt-1 text-xs text-danger">
+                    ค่าใช้จ่ายของหอต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ
+                  </p>
+                )}
+                {fieldError("charges") !== undefined && (
+                  <p className="text-xs text-danger">{fieldError("charges")}</p>
+                )}
+
+                <div className="panel-muted mt-4">
+                  <p className="text-sm text-charcoal">
+                    บิลที่สร้างไปแล้วจะไม่เปลี่ยนตามค่านี้
+                  </p>
+                  <p className="mt-1 text-xs text-steel">
+                    ทุกบิลเก็บรายการและยอดที่ใช้ตอนออกบิลไว้ในตัวบิลนั้น
+                    แก้ที่นี่มีผลกับบิลที่ออกใหม่เท่านั้น
+                  </p>
+                </div>
+              </Section>
+
+              <Section
+                id="settings-payment"
+                title="ช่องทางรับเงิน"
+                description="ผู้เช่าเห็นข้อมูลนี้บนใบแจ้งหนี้และการ์ด LINE · มีพร้อมเพย์หรือเลขบัญชีอย่างน้อยหนึ่งอย่าง"
+              >
+                <p className="field-label">พร้อมเพย์</p>
+                <p className="-mt-3 mb-2 text-xs text-fog">
+                  ใช้สร้าง QR ให้ผู้เช่าสแกนจ่ายยอดตรงตอนออกบิล
+                </p>
                 <fieldset className="grid gap-2">
-                  <legend className="field-label">ประเภทพร้อมเพย์</legend>
+                  <legend className="sr-only">ประเภทพร้อมเพย์</legend>
                   <ChoiceRow
                     name="promptpay-type"
                     checked={payType === "phone"}
-                    title="เบอร์โทรศัพท์"
+                    title={promptpayTypeLabels.phone}
                     helper="ใช้เบอร์ที่ผูกพร้อมเพย์ไว้ เช่น 081-234-5678"
                     onSelect={() => {
                       setPayType("phone");
@@ -399,7 +1173,7 @@ export function SettingsPage() {
                   <ChoiceRow
                     name="promptpay-type"
                     checked={payType === "citizen-id"}
-                    title="เลขบัตรประชาชน / นิติบุคคล"
+                    title={promptpayTypeLabels["citizen-id"]}
                     helper="ใช้เลข 13 หลักที่ลงทะเบียนพร้อมเพย์"
                     onSelect={() => {
                       setPayType("citizen-id");
@@ -412,36 +1186,117 @@ export function SettingsPage() {
                     label="PromptPay ID"
                     value={payId}
                     onChange={setPayId}
-                    helper={payType === "phone" ? "เบอร์โทรศัพท์ที่ผูกพร้อมเพย์" : "เลขบัตรประชาชนหรือเลขทะเบียนนิติบุคคล 13 หลัก"}
-                    error={fieldError("promptpayId") ?? (payId.trim() === "" ? "กรอกพร้อมเพย์ไอดี" : undefined)}
+                    helper={
+                      payType === "phone"
+                        ? "เบอร์โทรศัพท์ที่ผูกพร้อมเพย์"
+                        : "เลขบัตรประชาชนหรือเลขทะเบียนนิติบุคคล 13 หลัก"
+                    }
+                    error={fieldError("promptpayId")}
                   />
-                  <Field label="ชื่อบัญชี" value={payName} onChange={setPayName} error={fieldError("promptpayName")} />
+                  <Field
+                    label="ชื่อบัญชีพร้อมเพย์"
+                    value={payName}
+                    onChange={setPayName}
+                    error={fieldError("promptpayName")}
+                  />
                 </div>
 
                 <div className="mt-4">
-                  <QrPreview />
+                  <QrPreview promptpayId={payId} payType={payType} />
                 </div>
+
+                <div className="mt-6 border-t border-ash pt-5">
+                  <p className="field-label">บัญชีธนาคาร</p>
+                  <p className="-mt-3 mb-2 text-xs text-fog">
+                    ใช้เมื่อไม่มีพร้อมเพย์ ·
+                    ระบบจะแสดงเลขบัญชีและปุ่มคัดลอกให้ผู้เช่าแทน QR
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <BankSelect
+                      banks={banks}
+                      value={bankName}
+                      onChange={setBankName}
+                      error={fieldError("bankName")}
+                    />
+                    <Field
+                      label="เลขบัญชี"
+                      value={bankNumber}
+                      onChange={setBankNumber}
+                      inputMode="numeric"
+                      placeholder="xxx-x-xxxxx-x"
+                      helper="ตัวเลข 10–15 หลัก ใส่ขีดหรือเว้นวรรคก็ได้"
+                      error={
+                        fieldError("bankAccountNumber") ??
+                        (bankNumberValid
+                          ? undefined
+                          : "เลขบัญชีต้องเป็นตัวเลข 10–15 หลัก")
+                      }
+                    />
+                    <Field
+                      label="ชื่อเจ้าของบัญชี"
+                      value={bankOwner}
+                      onChange={setBankOwner}
+                      error={fieldError("bankAccountName")}
+                    />
+                  </div>
+
+                  {bankDigits === "" ? (
+                    <p className="mt-3 text-xs text-fog">
+                      ยังไม่ได้กรอกเลขบัญชี
+                    </p>
+                  ) : bankName.trim() === "" ? (
+                    <p className="mt-3 text-xs text-danger">
+                      กรอกเลขบัญชีแล้วแต่ยังไม่ได้เลือกธนาคาร ผู้เช่าโอนเงินไม่ได้ถ้าไม่รู้ธนาคาร
+                    </p>
+                  ) : (
+                    <AccountNumberRow bank={selectedBank} number={bankDigits} />
+                  )}
+                </div>
+
+                {!hasPayoutDestination && (
+                  <p className="mt-4 text-xs text-danger">
+                    กรอกพร้อมเพย์ หรือเลือกธนาคารพร้อมเลขบัญชีคู่กัน อย่างน้อยหนึ่งช่องทาง
+                  </p>
+                )}
               </Section>
 
-              <Section id="settings-line" title="LINE เจ้าของ" description="ใช้รับสลิปและแจ้งเตือนไปยัง LINE ของเจ้าของหอ">
+              <Section
+                id="settings-line"
+                title="LINE เจ้าของ"
+                description="ใช้รับสลิปและแจ้งเตือนไปยัง LINE ของเจ้าของหอ"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
                   <div className="min-w-0">
-                    <span className="block text-sm text-charcoal">สถานะการเชื่อมต่อ</span>
-                    <span className="block text-xs text-fog">แจ้งเตือนสลิปรอตรวจและสรุปผลการส่งบิลจะส่งมาที่ LINE นี้</span>
+                    <span className="block text-sm text-charcoal">
+                      สถานะการเชื่อมต่อ
+                    </span>
+                    <span className="block text-xs text-fog">
+                      แจ้งเตือนสลิปรอตรวจและสรุปผลการส่งบิลจะส่งมาที่ LINE นี้
+                    </span>
                   </div>
-                  <Badge tone={ownerConnected ? "paid" : "vacant"} icon={ownerConnected ? "check_circle" : "link_off"}>
+                  <Badge
+                    tone={ownerConnected ? "paid" : "vacant"}
+                    icon={ownerConnected ? "check_circle" : "link_off"}
+                  >
                     {ownerConnected ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
                   </Badge>
                 </div>
 
                 {!ownerConnected && (
-                  <p className="mt-3 text-xs text-steel">พิมพ์รหัสด้านล่างในแชท LINE บอทเพื่อเชื่อมและรับการแจ้งเตือนจากระบบ</p>
+                  <p className="mt-3 text-xs text-steel">
+                    พิมพ์รหัสด้านล่างในแชท LINE
+                    บอทเพื่อเชื่อมและรับการแจ้งเตือนจากระบบ
+                  </p>
                 )}
 
                 <div className="mt-4 rounded-lg border border-ash p-4">
                   <p className="text-xs text-fog">รหัสเชื่อมต่อ 6 หลัก</p>
-                  <p className="num mt-1 text-2xl tracking-[0.3em] text-charcoal">{code}</p>
-                  <p className="mt-1 text-xs text-steel">ให้เจ้าของหอพิมพ์รหัสนี้ในแชท LINE บอทเพื่อยืนยันตัวตน</p>
+                  <p className="num mt-1 text-2xl tracking-[0.3em] text-charcoal">
+                    {code}
+                  </p>
+                  <p className="mt-1 text-xs text-steel">
+                    ให้เจ้าของหอพิมพ์รหัสนี้ในแชท LINE บอทเพื่อยืนยันตัวตน
+                  </p>
                   <Button
                     variant="secondary"
                     icon="refresh"
@@ -455,7 +1310,11 @@ export function SettingsPage() {
                 </div>
               </Section>
 
-              <Section id="settings-integrations" title="การเชื่อมต่อ" description="สถานะบริการที่หอใช้อยู่">
+              <Section
+                id="settings-integrations"
+                title="การเชื่อมต่อ"
+                description="สถานะบริการที่หอใช้อยู่"
+              >
                 <ul className="grid gap-3">
                   <IntegrationRow
                     name="LINE Messaging API"
@@ -468,7 +1327,10 @@ export function SettingsPage() {
                     configured={settings.integrations.slipOkConfigured}
                   />
                 </ul>
-                <p className="mt-3 text-xs text-fog">ระบบเก็บคีย์การเชื่อมต่อไว้ฝั่งเซิร์ฟเวอร์ จึงไม่แสดงคีย์ในหน้านี้</p>
+                <p className="mt-3 text-xs text-fog">
+                  ระบบเก็บคีย์การเชื่อมต่อไว้ฝั่งเซิร์ฟเวอร์
+                  จึงไม่แสดงคีย์ในหน้านี้
+                </p>
               </Section>
             </>
           )}
@@ -476,14 +1338,18 @@ export function SettingsPage() {
       </div>
 
       {ready && (
-        <div className="fixed inset-x-0 bottom-[calc(3.5rem_+_env(safe-area-inset-bottom))] z-30 border-t border-ash bg-canvas-white px-4 py-3 md:inset-x-auto md:bottom-6 md:right-6 md:rounded-xl md:border md:px-3 md:py-2">
+        <div className="save-bar fixed inset-x-0 bottom-[calc(3.5rem_+_env(safe-area-inset-bottom))] z-30 border-t border-ash bg-canvas-white px-4 py-3 md:inset-x-auto md:bottom-6 md:right-6 md:rounded-xl md:border md:px-3 md:py-2">
           <Button
             variant="primary"
             icon="save"
             className="w-full md:w-auto"
             disabled={!canSave}
             onClick={() => {
-              void save();
+              if (payChanged) {
+                setConfirmPayChange(true);
+              } else {
+                void save();
+              }
             }}
           >
             บันทึกการตั้งค่า
@@ -494,13 +1360,16 @@ export function SettingsPage() {
       <Dialog
         open={confirmRegen}
         onClose={() => {
-          setConfirmRegen(false);
+          if (!regenerating) {
+            setConfirmRegen(false);
+          }
         }}
         title="ออกรหัสเชื่อมต่อใหม่"
         footer={
           <>
             <Button
               variant="ghost"
+              disabled={regenerating}
               onClick={() => {
                 setConfirmRegen(false);
               }}
@@ -510,18 +1379,79 @@ export function SettingsPage() {
             <Button
               variant="primary"
               icon="refresh"
+              disabled={regenerating}
               onClick={() => {
                 void regenCode();
               }}
             >
-              ออกรหัสใหม่
+              {regenerating ? "กำลังออกรหัส" : "ออกรหัสใหม่"}
             </Button>
           </>
         }
       >
         <p className="text-sm text-steel">
-          เมื่อยืนยันแล้ว รหัสเดิม {code} จะถูกยกเลิกทันที และใช้เชื่อมต่อไม่ได้อีก ต้องใช้รหัสใหม่เท่านั้น
+          เมื่อยืนยันแล้ว รหัสเดิม {code} จะถูกยกเลิกทันที
+          และใช้เชื่อมต่อไม่ได้อีก ต้องใช้รหัสใหม่เท่านั้น
         </p>
+      </Dialog>
+
+      <Dialog
+        open={confirmPayChange}
+        onClose={() => {
+          setConfirmPayChange(false);
+        }}
+        title="ยืนยันเปลี่ยนช่องทางรับเงิน"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setConfirmPayChange(false);
+              }}
+            >
+              ยกเลิก
+            </Button>
+            <Button
+              variant="primary"
+              icon="save"
+              onClick={() => {
+                setConfirmPayChange(false);
+                void save();
+              }}
+            >
+              ยืนยันและบันทึก
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3">
+          <p className="text-sm text-steel">
+            ช่องทางรับเงินเป็นปลายทางที่เงินของผู้เช่าจะเข้า
+            จึงต้องยืนยันก่อนบันทึก
+          </p>
+          <dl className="grid gap-2 rounded-lg border border-ash p-3 text-sm">
+            {payChanges.map((change) => (
+              <div
+                key={change.label}
+                className="flex flex-wrap items-start justify-between gap-3"
+              >
+                <dt className="text-steel">{change.label}</dt>
+                <dd className="num text-charcoal">
+                  {change.from} → {change.to}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <div className="panel-muted">
+            <p className="text-sm text-charcoal">
+              บิลที่ออกใหม่หลังจากนี้จะสร้าง QR จากพร้อมเพย์ใหม่
+            </p>
+            <p className="mt-1 text-xs text-steel">
+              บิลที่สร้างไปแล้วยังเก็บพร้อมเพย์และอัตราน้ำ/ค่าไฟที่ใช้ตอนออกบิลไว้ในตัวบิลนั้น
+              ไม่เปลี่ยนตาม
+            </p>
+          </div>
+        </div>
       </Dialog>
 
       <Toast message={toast ?? ""} open={toast !== null} />

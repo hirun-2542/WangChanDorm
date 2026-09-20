@@ -5,8 +5,9 @@ export interface ErrorBody {
   error: { code: ErrorCode; message: string; field?: string };
 }
 
+/** ตั้งค่าของครอบครัว — คีย์คือ (family_id, key) จึงต้องผูก family_id เป็นพารามิเตอร์ตัวแรกเสมอ */
 export const upsertSettingSql =
-  "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
+  "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 
 export function roomNumberOrder(column: string): string {
   return `LENGTH(${column}), ${column}`;

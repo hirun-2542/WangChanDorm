@@ -1,7 +1,8 @@
 import { Hono } from "hono";
+import { familyId, type AppEnv } from "../lib/auth";
 import { errorBody, isIsoDate, readJsonObject } from "./shared";
 
-const tenants = new Hono<{ Bindings: Env }>();
+const tenants = new Hono<AppEnv>();
 
 type TenantStatus = "current" | "moved-out";
 
@@ -32,7 +33,7 @@ interface TenantPayload {
 const tenantColumns =
   "t.id, t.full_name, t.phone, t.room_id, t.check_in_date, t.check_out_date, t.line_user_id, t.status, r.room_number";
 
-const tenantFrom = "FROM tenants t JOIN rooms r ON r.id = t.room_id";
+const tenantFrom = "FROM tenants t JOIN rooms r ON r.id = t.room_id AND r.family_id = t.family_id";
 
 const tenantOrder =
   "ORDER BY CASE t.status WHEN 'current' THEN 0 ELSE 1 END ASC, LENGTH(CASE WHEN t.status = 'current' THEN r.room_number END) ASC, CASE WHEN t.status = 'current' THEN r.room_number END ASC, CASE WHEN t.status = 'moved-out' THEN t.check_out_date END DESC";
@@ -55,14 +56,26 @@ function parseText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/**
+ * เบอร์มือถือไทย: ตัดช่องว่างและขีดออกแล้วต้องเหลือ 9-10 หลัก (มี + นำหน้าได้)
+ *
+ * ฝั่งเซิร์ฟเวอร์เป็นผู้ตัดสินเสมอ ไคลเอนต์เป็นเพียงตัวช่วยกรอก
+ * จึงต้องคืน error.field = "phone" ให้หน้าเว็บแสดงข้อความตรงช่องได้
+ */
 function isPhone(value: string): boolean {
-  const digits = value.replace(/\D/g, "");
-  return digits.length === 9 || digits.length === 10;
+  const compact = value.replace(/[\s-]/g, "");
+  const digits = compact.startsWith("+") ? compact.slice(1) : compact;
+
+  return /^\d{9,10}$/.test(digits);
 }
 
 tenants.get("/", async (c) => {
+  const family = familyId(c);
+
   try {
-    const result = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} ${tenantOrder}`).all<TenantRow>();
+    const result = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.family_id = ? ${tenantOrder}`)
+      .bind(family)
+      .all<TenantRow>();
     return c.json({ ok: true, tenants: result.results.map(toTenant) }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -72,6 +85,7 @@ tenants.get("/", async (c) => {
 });
 
 tenants.post("/", async (c) => {
+  const family = familyId(c);
   const body = await readJsonObject(c.req.raw);
 
   if (body === null) {
@@ -105,14 +119,16 @@ tenants.post("/", async (c) => {
   const id = crypto.randomUUID();
 
   try {
-    const room = await c.env.DB.prepare("SELECT id FROM rooms WHERE id = ?").bind(roomId).first<{ id: string }>();
+    const room = await c.env.DB.prepare("SELECT id FROM rooms WHERE id = ? AND family_id = ?")
+      .bind(roomId, family)
+      .first<{ id: string }>();
 
     if (room === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบห้องที่เลือก", "roomId"), 404);
     }
 
-    const occupant = await c.env.DB.prepare("SELECT id FROM tenants WHERE room_id = ? AND status = 'current'")
-      .bind(roomId)
+    const occupant = await c.env.DB.prepare("SELECT id FROM tenants WHERE family_id = ? AND room_id = ? AND status = 'current'")
+      .bind(family, roomId)
       .first<{ id: string }>();
 
     if (occupant !== null) {
@@ -121,12 +137,14 @@ tenants.post("/", async (c) => {
 
     await c.env.DB.batch([
       c.env.DB.prepare(
-        "INSERT INTO tenants (id, full_name, phone, room_id, check_in_date, status) VALUES (?, ?, ?, ?, ?, 'current')",
-      ).bind(id, fullName, phone, roomId, checkInRaw),
-      c.env.DB.prepare("UPDATE rooms SET status = 'occupied' WHERE id = ?").bind(roomId),
+        "INSERT INTO tenants (id, family_id, full_name, phone, room_id, check_in_date, status) VALUES (?, ?, ?, ?, ?, ?, 'current')",
+      ).bind(id, family, fullName, phone, roomId, checkInRaw),
+      c.env.DB.prepare("UPDATE rooms SET status = 'occupied' WHERE id = ? AND family_id = ?").bind(roomId, family),
     ]);
 
-    const row = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.id = ?`).bind(id).first<TenantRow>();
+    const row = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.id = ? AND t.family_id = ?`)
+      .bind(id, family)
+      .first<TenantRow>();
 
     if (row === null) {
       console.error(JSON.stringify({ message: "create tenant readback failed", tenantId: id }));
@@ -147,6 +165,7 @@ tenants.post("/", async (c) => {
 });
 
 tenants.patch("/:id", async (c) => {
+  const family = familyId(c);
   const id = c.req.param("id");
   const body = await readJsonObject(c.req.raw);
 
@@ -159,8 +178,8 @@ tenants.patch("/:id", async (c) => {
   }
 
   try {
-    const existing = await c.env.DB.prepare("SELECT id, full_name, phone, check_in_date, check_out_date, status FROM tenants WHERE id = ?")
-      .bind(id)
+    const existing = await c.env.DB.prepare("SELECT id, full_name, phone, check_in_date, check_out_date, status FROM tenants WHERE id = ? AND family_id = ?")
+      .bind(id, family)
       .first<{ id: string; full_name: string; phone: string; check_in_date: string; check_out_date: string | null; status: string }>();
 
     if (existing === null) {
@@ -207,11 +226,13 @@ tenants.patch("/:id", async (c) => {
       return c.json(errorBody("VALIDATION", "วันเข้าต้องไม่หลังวันออก", "checkInDate"), 400);
     }
 
-    await c.env.DB.prepare("UPDATE tenants SET full_name = ?, phone = ?, check_in_date = ? WHERE id = ?")
-      .bind(fullName, phone, checkInDate, id)
+    await c.env.DB.prepare("UPDATE tenants SET full_name = ?, phone = ?, check_in_date = ? WHERE id = ? AND family_id = ?")
+      .bind(fullName, phone, checkInDate, id, family)
       .run();
 
-    const row = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.id = ?`).bind(id).first<TenantRow>();
+    const row = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.id = ? AND t.family_id = ?`)
+      .bind(id, family)
+      .first<TenantRow>();
 
     if (row === null) {
       console.error(JSON.stringify({ message: "update tenant readback failed", tenantId: id }));
@@ -228,6 +249,7 @@ tenants.patch("/:id", async (c) => {
 });
 
 tenants.post("/:id/checkout", async (c) => {
+  const family = familyId(c);
   const id = c.req.param("id");
   const body = await readJsonObject(c.req.raw);
 
@@ -242,8 +264,8 @@ tenants.post("/:id/checkout", async (c) => {
   }
 
   try {
-    const existing = await c.env.DB.prepare("SELECT id, room_id, check_in_date, status FROM tenants WHERE id = ?")
-      .bind(id)
+    const existing = await c.env.DB.prepare("SELECT id, room_id, check_in_date, status FROM tenants WHERE id = ? AND family_id = ?")
+      .bind(id, family)
       .first<{ id: string; room_id: string; check_in_date: string; status: string }>();
 
     if (existing === null) {
@@ -259,11 +281,13 @@ tenants.post("/:id/checkout", async (c) => {
     }
 
     await c.env.DB.batch([
-      c.env.DB.prepare("UPDATE tenants SET status = 'moved-out', check_out_date = ? WHERE id = ?").bind(checkOutRaw, id),
-      c.env.DB.prepare("UPDATE rooms SET status = 'vacant' WHERE id = ?").bind(existing.room_id),
+      c.env.DB.prepare("UPDATE tenants SET status = 'moved-out', check_out_date = ? WHERE id = ? AND family_id = ?").bind(checkOutRaw, id, family),
+      c.env.DB.prepare("UPDATE rooms SET status = 'vacant' WHERE id = ? AND family_id = ?").bind(existing.room_id, family),
     ]);
 
-    const row = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.id = ?`).bind(id).first<TenantRow>();
+    const row = await c.env.DB.prepare(`SELECT ${tenantColumns} ${tenantFrom} WHERE t.id = ? AND t.family_id = ?`)
+      .bind(id, family)
+      .first<TenantRow>();
 
     if (row === null) {
       console.error(JSON.stringify({ message: "checkout tenant readback failed", tenantId: id }));

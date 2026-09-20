@@ -1,5 +1,6 @@
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createFamily, signIn, withAuth, type TestSession } from "./auth-helper";
 
 interface RoomPayload {
   id: string;
@@ -44,40 +45,58 @@ interface ErrorBody {
 const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
 
-function createRoom(roomNumber: string): Promise<Response> {
-  return SELF.fetch(roomsUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ roomNumber, rent: 3500 }),
-  });
+let session: TestSession;
+
+beforeEach(async () => {
+  session = await signIn();
+});
+
+function createRoom(roomNumber: string, as: TestSession = session): Promise<Response> {
+  return SELF.fetch(
+    roomsUrl,
+    withAuth(as, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomNumber, rent: 3500 }),
+    }),
+  );
 }
 
-function createTenant(payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(tenantsUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+function createTenant(payload: Record<string, unknown>, as: TestSession = session): Promise<Response> {
+  return SELF.fetch(
+    tenantsUrl,
+    withAuth(as, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
-function patchTenant(id: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(`${tenantsUrl}/${id}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+function patchTenant(id: string, payload: Record<string, unknown>, as: TestSession = session): Promise<Response> {
+  return SELF.fetch(
+    `${tenantsUrl}/${id}`,
+    withAuth(as, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
-function checkoutTenant(id: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(`${tenantsUrl}/${id}/checkout`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+function checkoutTenant(id: string, payload: Record<string, unknown>, as: TestSession = session): Promise<Response> {
+  return SELF.fetch(
+    `${tenantsUrl}/${id}/checkout`,
+    withAuth(as, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
-async function newRoom(roomNumber: string): Promise<RoomPayload> {
-  const response = await createRoom(roomNumber);
+async function newRoom(roomNumber: string, as: TestSession = session): Promise<RoomPayload> {
+  const response = await createRoom(roomNumber, as);
   expect(response.status).toBe(201);
   const body = await response.json<{ ok: boolean; room: RoomPayload }>();
   return body.room;
@@ -90,8 +109,8 @@ async function newTenant(roomId: string, fullName: string, checkInDate: string):
   return body.tenant;
 }
 
-async function roomById(id: string): Promise<RoomPayload> {
-  const list = await (await SELF.fetch(roomsUrl)).json<RoomListBody>();
+async function roomById(id: string, as: TestSession = session): Promise<RoomPayload> {
+  const list = await (await SELF.fetch(roomsUrl, withAuth(as))).json<RoomListBody>();
   const found = list.rooms.find((room) => room.id === id);
   if (found === undefined) {
     throw new Error("room not found");
@@ -99,8 +118,8 @@ async function roomById(id: string): Promise<RoomPayload> {
   return found;
 }
 
-async function tenantsList(): Promise<TenantPayload[]> {
-  return (await (await SELF.fetch(tenantsUrl)).json<TenantListBody>()).tenants;
+async function tenantsList(as: TestSession = session): Promise<TenantPayload[]> {
+  return (await (await SELF.fetch(tenantsUrl, withAuth(as))).json<TenantListBody>()).tenants;
 }
 
 describe("tenants check-in and check-out", () => {
@@ -331,5 +350,101 @@ describe("tenants check-in and check-out", () => {
 
     const stored = (await tenantsList()).find((item) => item.id === created.tenant.id);
     expect(stored?.phone).toBe("+081-234-5678");
+  });
+
+  it("accepts 9-10 digit phones with spaces or dashes and rejects anything else", async () => {
+    const spacedRoom = await newRoom("T115");
+    const spaced = await createTenant({
+      fullName: "สมหมาย ใจงาม",
+      phone: "081 234 5678",
+      roomId: spacedRoom.id,
+      checkInDate: "2025-07-03",
+    });
+    expect(spaced.status).toBe(201);
+    expect((await spaced.json<TenantBody>()).tenant.phone).toBe("081 234 5678");
+
+    const shortRoom = await newRoom("T116");
+    const short = await createTenant({
+      fullName: "บุญมี พูนทรัพย์",
+      phone: "081-234-567",
+      roomId: shortRoom.id,
+      checkInDate: "2025-07-04",
+    });
+    expect(short.status).toBe(201);
+    const shortTenant = (await short.json<TenantBody>()).tenant;
+
+    const longRoom = await newRoom("T117");
+    const tooLong = await createTenant({
+      fullName: "สมบัติ ร่ำรวย",
+      phone: "08123456789",
+      roomId: longRoom.id,
+      checkInDate: "2025-07-05",
+    });
+    expect(tooLong.status).toBe(400);
+    expect((await tooLong.json<ErrorBody>()).error.field).toBe("phone");
+
+    const bracketedRoom = await newRoom("T118");
+    const bracketed = await createTenant({
+      fullName: "อารีย์ สุขใจ",
+      phone: "(081)2345678",
+      roomId: bracketedRoom.id,
+      checkInDate: "2025-07-06",
+    });
+    expect(bracketed.status).toBe(400);
+    expect((await bracketed.json<ErrorBody>()).error.field).toBe("phone");
+
+    const edited = await patchTenant(shortTenant.id, { phone: "08123456789" });
+    expect(edited.status).toBe(400);
+    expect((await edited.json<ErrorBody>()).error.field).toBe("phone");
+
+    const kept = (await tenantsList()).find((item) => item.id === shortTenant.id);
+    expect(kept?.phone).toBe("081-234-567");
+  });
+});
+
+describe("family isolation", () => {
+  it("hides another family's room and tenant and refuses to edit them", async () => {
+    const other = await signIn("owner", await createFamily());
+
+    const room = await newRoom("S201");
+    const tenant = await newTenant(room.id, "สมชาย ใจดี", "2025-03-01");
+
+    const theirRooms = await (await SELF.fetch(roomsUrl, withAuth(other))).json<RoomListBody>();
+    expect(theirRooms.rooms.some((item) => item.id === room.id)).toBe(false);
+
+    const theirTenants = await tenantsList(other);
+    expect(theirTenants.some((item) => item.id === tenant.id)).toBe(false);
+
+    const patched = await patchTenant(tenant.id, { fullName: "แก้ไขข้ามครอบครัว" }, other);
+    expect(patched.status).toBe(404);
+    expect((await patched.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const checkedOut = await checkoutTenant(tenant.id, { checkOutDate: "2025-08-30" }, other);
+    expect(checkedOut.status).toBe(404);
+
+    const kept = (await tenantsList()).find((item) => item.id === tenant.id);
+    expect(kept?.fullName).toBe("สมชาย ใจดี");
+    expect(kept?.status).toBe("current");
+
+    const keptRoom = await roomById(room.id);
+    expect(keptRoom.status).toBe("occupied");
+    expect(keptRoom.occupiedBy).toBe("สมชาย ใจดี");
+  });
+
+  it("refuses to check a tenant into another family's room", async () => {
+    const other = await signIn("owner", await createFamily());
+    const room = await newRoom("S202");
+
+    const response = await createTenant(
+      { fullName: "ข้ามครอบครัว", phone: "081-234-5678", roomId: room.id, checkInDate: "2025-03-01" },
+      other,
+    );
+
+    expect(response.status).toBe(404);
+    expect((await response.json<ErrorBody>()).error.field).toBe("roomId");
+
+    const keptRoom = await roomById(room.id);
+    expect(keptRoom.status).toBe("vacant");
+    expect((await tenantsList()).some((item) => item.roomId === room.id)).toBe(false);
   });
 });

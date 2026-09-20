@@ -17,6 +17,9 @@ const countryCodeTh = "TH";
 const crcTag = "63";
 const crcLength = 4;
 
+const merchantTargetLength = 13;
+const phoneCountryCode = "66";
+
 const crcPolynomial = 0x1021;
 const crcInitial = 0xffff;
 
@@ -42,9 +45,12 @@ function field(tag: string, value: string): string {
   return `${tag}${String(value.length).padStart(2, "0")}${value}`;
 }
 
+/**
+ * เบอร์ 9 หลัก (ไม่นำด้วย 0) และ 10 หลัก (นำด้วย 0) คือหมายเลขเดียวกัน
+ * ต้องได้ 0066XXXXXXXXX เหมือนกันทั้งคู่ ไม่งั้น QR จะจ่ายไม่ได้
+ */
 function phoneMerchantTarget(digits: string): string {
-  const withCountryCode = digits.replace(/^0/, "66");
-  return `0000000000000${withCountryCode}`.slice(-13);
+  return `${phoneCountryCode}${digits.replace(/^0/, "")}`.padStart(merchantTargetLength, "0");
 }
 
 export function promptPayMerchantTarget(type: PromptPayIdType, id: string): string {

@@ -18,6 +18,28 @@ const maxImageContentBytes = 5 * 1024 * 1024;
 
 const allowedImageContentTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 
+/**
+ * ทุกคำขอออกนอก Worker ต้องมีเพดานเวลา ไม่งั้น LINE หรือ SlipOK ที่ค้าง
+ * จะลากคำขอของผู้ใช้ไปด้วยจนหมดเวลาของแพลตฟอร์ม
+ */
+export const lineOutboundTimeoutMs = 10_000;
+
+/** อ่านรูปสลิปและส่งไฟล์ให้ผู้ให้บริการตรวจใช้เวลานานกว่าคำขอทั่วไป */
+export const lineUploadTimeoutMs = 20_000;
+
+/**
+ * ช่อง LINE หนึ่งช่องเป็นของครอบครัวเดียว เพราะ secret และ token เป็นค่า
+ * ระดับ Worker บันทึกไว้ที่ meta.line_family_id ตั้งแต่ migration 0010
+ *
+ * คืน null เมื่อยังไม่กำหนด เพื่อให้ผู้เรียกปฏิเสธงานแทนที่จะเดาครอบครัว
+ */
+export async function lineFamilyId(env: Env): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT value FROM meta WHERE key = 'line_family_id'").first<{ value: string }>();
+  const value = typeof row?.value === "string" ? row.value.trim() : "";
+
+  return value === "" ? null : value;
+}
+
 export function failureDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -53,6 +75,7 @@ export async function replyMessage(env: Env, replyToken: string, message: LineOu
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ replyToken, messages: [message] }),
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
     });
 
     if (!response.ok) {
@@ -81,6 +104,7 @@ export async function pushMessage(env: Env, to: string, messages: readonly LineO
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ to, messages }),
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
     });
 
     if (!response.ok) {
@@ -156,6 +180,7 @@ export async function fetchMessageContent(env: Env, messageId: string): Promise<
     const response = await fetch(`${lineDataBase}/message/${encodeURIComponent(messageId)}/content`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(lineUploadTimeoutMs),
     });
 
     if (!response.ok) {
@@ -213,6 +238,7 @@ export async function fetchProfile(env: Env, userId: string): Promise<LineProfil
     const response = await fetch(`${lineApiBase}/profile/${encodeURIComponent(userId)}`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
     });
 
     if (!response.ok) {

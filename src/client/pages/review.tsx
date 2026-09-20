@@ -8,8 +8,20 @@ import {
   type SlipReason,
   type SlipResolveAction,
 } from "../api";
-import { Badge, Button, Card, CardHeader, Dialog, EmptyState, PageHeader, Skeleton, Toast, type BadgeTone } from "../ui";
-import { baht, periodLabel, stampLabel } from "./bills-shared";
+import {
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Dialog,
+  EmptyState,
+  HeroMoney,
+  PageHeader,
+  Skeleton,
+  Toast,
+  type BadgeTone,
+} from "../ui";
+import { baht, billNumber, periodLabel, stampLabel } from "./bills-shared";
 
 type FilterId = "all" | "mismatch" | "not_verified";
 
@@ -41,6 +53,16 @@ const settleBlockedReason =
 
 const queueLoadFailed = "โหลดคิวสลิปไม่สำเร็จ";
 const resolveFailed = "ตัดสินสลิปไม่สำเร็จ";
+
+const rejectNote = "บิลไม่เปลี่ยนแปลง สลิปจะออกจากคิวรอตรวจ";
+
+const rejectHistoryHint =
+  "สลิปที่ปฏิเสธแล้วยังดูย้อนหลังได้ที่หน้าบิลของห้องนี้ หัวข้อประวัติการชำระ พร้อมเหตุผลว่าปฏิเสธ ไม่นำมาปิดบิล";
+
+interface Decision {
+  slip: Slip;
+  action: SlipResolveAction;
+}
 
 function roomLabel(slip: Slip): string {
   return slip.bill === null ? unknownRoom : slip.bill.roomNumber;
@@ -75,6 +97,19 @@ function deltaOf(slip: Slip): number | null {
   return slip.slipAmount - slip.bill.total;
 }
 
+interface DeltaFigure {
+  value: string;
+  unit: string;
+}
+
+function deltaFigure(delta: number | null): DeltaFigure {
+  if (delta === null) {
+    return { value: "—", unit: "" };
+  }
+
+  return { value: `${delta > 0 ? "+" : ""}${baht(delta)}`, unit: " บาท" };
+}
+
 function deltaLabel(delta: number | null): string {
   if (delta === null) {
     return "เทียบไม่ได้";
@@ -87,16 +122,23 @@ function deltaLabel(delta: number | null): string {
   return `${delta > 0 ? "+" : ""}${baht(delta)} บาท`;
 }
 
-function deltaTone(delta: number | null): string {
+interface DeltaBadge {
+  tone: BadgeTone;
+  label: string;
+}
+
+function deltaBadge(delta: number | null): DeltaBadge {
   if (delta === null) {
-    return "text-fog";
+    return { tone: "neutral", label: "ไม่มีบิลเทียบ" };
   }
 
   if (delta === 0) {
-    return "text-vivid-green";
+    return { tone: "paid", label: "ยอดตรงกัน" };
   }
 
-  return delta < 0 ? "text-danger" : "text-tangerine";
+  return delta < 0
+    ? { tone: "danger", label: "สลิปขาด" }
+    : { tone: "review", label: "สลิปเกิน" };
 }
 
 function verifyLabel(slip: Slip): string {
@@ -142,7 +184,11 @@ interface FilterTabsProps {
 
 function FilterTabs({ value, onChange }: FilterTabsProps) {
   return (
-    <div className="flex flex-wrap gap-1 rounded-lg border border-ash p-1" role="group" aria-label="ตัวกรองสลิปรอตรวจ">
+    <div
+      className="flex flex-wrap gap-1 rounded-lg border border-ash p-1"
+      role="group"
+      aria-label="ตัวกรองสลิปรอตรวจ"
+    >
       {filterOptions.map((option) => {
         const active = option.id === value;
 
@@ -151,7 +197,7 @@ function FilterTabs({ value, onChange }: FilterTabsProps) {
             key={option.id}
             type="button"
             aria-pressed={active}
-            className={`btn ${active ? "bg-paper-mist text-charcoal" : "text-steel"}`}
+            className={`btn ${active ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel hover:bg-paper-mist"}`}
             onClick={() => {
               onChange(option.id);
             }}
@@ -170,7 +216,7 @@ export function ReviewPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [filter, setFilter] = useState<FilterId>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<Slip | null>(null);
+  const [decision, setDecision] = useState<Decision | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -191,7 +237,9 @@ export function ReviewPage() {
         }
 
         setItems((prev) => prev ?? []);
-        setQueueError(error instanceof ApiError ? error.message : queueLoadFailed);
+        setQueueError(
+          error instanceof ApiError ? error.message : queueLoadFailed,
+        );
       });
 
     return () => {
@@ -223,11 +271,19 @@ export function ReviewPage() {
     setReloadKey((value) => value + 1);
   }, []);
 
-  const visible = (items ?? []).filter((item) => filter === "all" || item.reason === filter);
-  const selected = visible.find((item) => item.id === selectedId) ?? visible[0] ?? null;
+  const visible = (items ?? []).filter(
+    (item) => filter === "all" || item.reason === filter,
+  );
+  const selected =
+    visible.find((item) => item.id === selectedId) ?? visible[0] ?? null;
   const selectedKey = selected === null ? null : selected.id;
-  const mismatchCount = (items ?? []).filter((item) => item.reason === "mismatch").length;
-  const notVerifiedCount = (items ?? []).filter((item) => item.reason === "not_verified").length;
+  const selectedDelta = selected === null ? null : deltaOf(selected);
+  const mismatchCount = (items ?? []).filter(
+    (item) => item.reason === "mismatch",
+  ).length;
+  const notVerifiedCount = (items ?? []).filter(
+    (item) => item.reason === "not_verified",
+  ).length;
 
   useEffect(() => {
     setActionError(null);
@@ -246,8 +302,10 @@ export function ReviewPage() {
 
     void resolveSlip(slip.id, action)
       .then((updated) => {
-        setConfirming(null);
-        setItems((prev) => (prev ?? []).filter((item) => item.id !== updated.id));
+        setDecision(null);
+        setItems((prev) =>
+          (prev ?? []).filter((item) => item.id !== updated.id),
+        );
         setSelectedId(null);
         refreshQuietly();
         announceReviewQueueChanged();
@@ -258,9 +316,10 @@ export function ReviewPage() {
         );
       })
       .catch((error: unknown) => {
-        const message = error instanceof ApiError ? error.message : resolveFailed;
+        const message =
+          error instanceof ApiError ? error.message : resolveFailed;
 
-        setConfirming(null);
+        setDecision(null);
         setActionError(message);
         setToast(message);
         refreshQuietly();
@@ -279,10 +338,21 @@ export function ReviewPage() {
 
   return (
     <div>
-      <PageHeader title="รอตรวจ" supporting={supporting} actions={<FilterTabs value={filter} onChange={setFilter} />} />
+      <PageHeader
+        title="รอตรวจ"
+        supporting={supporting}
+        actions={
+          loading || list.length === 0 ? undefined : (
+            <FilterTabs value={filter} onChange={setFilter} />
+          )
+        }
+      />
 
       {loading ? (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]" aria-busy="true">
+        <div
+          className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]"
+          aria-busy="true"
+        >
           <Card>
             <div className="grid gap-3">
               <Skeleton className="h-5 w-32" />
@@ -307,6 +377,17 @@ export function ReviewPage() {
               icon="check_circle"
               title="ไม่มีสลิปรอตรวจ"
               description="สลิปที่ยอดไม่ตรงหรือ SlipOK ตรวจไม่ผ่าน พร้อมยอดเทียบก่อนปิดบิล จะแสดงที่นี่"
+              action={
+                <Button
+                  variant="secondary"
+                  icon="receipt_long"
+                  onClick={() => {
+                    window.location.hash = "#bills";
+                  }}
+                >
+                  ไปหน้าบิล
+                </Button>
+              }
             />
           </Card>
         ) : (
@@ -329,7 +410,12 @@ export function ReviewPage() {
             <Card className="mb-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-danger">{`โหลดคิวสลิปไม่สำเร็จ: ${queueError}`}</p>
-                <Button variant="secondary" size="sm" icon="refresh" onClick={retryLoad}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon="refresh"
+                  onClick={retryLoad}
+                >
                   ลองใหม่
                 </Button>
               </div>
@@ -338,9 +424,14 @@ export function ReviewPage() {
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
             <Card className="lg:max-h-[calc(100vh-9rem)] lg:overflow-y-auto">
-              <CardHeader title="คิวสลิป" description={`แสดง ${visible.length} จาก ${list.length} รายการ`} />
+              <CardHeader
+                title="คิวสลิป"
+                description={`แสดง ${visible.length} จาก ${list.length} รายการ`}
+              />
               {visible.length === 0 ? (
-                <p className="py-6 text-center text-sm text-fog">ไม่พบสลิปที่ตรงกับตัวกรองที่เลือก</p>
+                <p className="py-6 text-center text-sm text-fog">
+                  ไม่พบสลิปที่ตรงกับตัวกรองที่เลือก
+                </p>
               ) : (
                 <ul className="grid gap-2">
                   {visible.map((item) => {
@@ -355,22 +446,34 @@ export function ReviewPage() {
                             setSelectedId(item.id);
                           }}
                           className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                            active ? "border-pebble bg-paper-mist" : "border-ash hover:bg-paper-mist"
+                            active
+                              ? "border-pebble bg-paper-mist"
+                              : "border-ash hover:bg-paper-mist"
                           }`}
                         >
                           <SlipThumb slip={item} />
                           <span className="min-w-0 flex-1">
                             <span className="flex items-center justify-between gap-2">
                               <span className="truncate text-sm font-medium text-charcoal">{`ห้อง ${roomLabel(item)}`}</span>
-                              <Badge tone={reasonTone(item.reason)}>{reasonLabel(item.reason)}</Badge>
+                              <Badge tone={reasonTone(item.reason)}>
+                                {reasonLabel(item.reason)}
+                              </Badge>
                             </span>
-                            <span className="mt-0.5 block truncate text-xs text-fog">{tenantLabel(item)}</span>
+                            <span className="mt-0.5 block truncate text-xs text-fog">
+                              {tenantLabel(item)}
+                            </span>
                             <span className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-steel">
                               <span>
-                                สลิป <span className="num text-charcoal">{amountLabel(item.slipAmount)}</span>
+                                สลิป{" "}
+                                <span className="num text-charcoal">
+                                  {amountLabel(item.slipAmount)}
+                                </span>
                               </span>
                               <span>
-                                บิล <span className="num text-charcoal">{billTotalLabel(item)}</span>
+                                บิล{" "}
+                                <span className="num text-charcoal">
+                                  {billTotalLabel(item)}
+                                </span>
                               </span>
                             </span>
                             <span className="mt-1 block text-[11px] text-fog">{`ส่งเมื่อ ${stampLabel(item.createdAt)}`}</span>
@@ -396,16 +499,29 @@ export function ReviewPage() {
                 <CardHeader
                   title={`สลิปห้อง ${roomLabel(selected)}`}
                   description={`${tenantLabel(selected)} · ส่งเมื่อ ${stampLabel(selected.createdAt)}`}
-                  actions={<Badge tone={reasonTone(selected.reason)} icon="fact_check">{reasonLabel(selected.reason)}</Badge>}
+                  actions={
+                    <Badge tone={reasonTone(selected.reason)} icon="fact_check">
+                      {reasonLabel(selected.reason)}
+                    </Badge>
+                  }
                 />
 
                 <div className="grid gap-3">
                   <div className="panel-muted">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm text-charcoal">สลิปโอนเงินที่ผู้เช่าส่งมา</span>
-                      <Badge tone={selected.verified ? "paid" : "danger"}>{verifyLabel(selected)}</Badge>
+                      <span className="text-sm text-charcoal">
+                        สลิปโอนเงินที่ผู้เช่าส่งมา
+                      </span>
+                      <Badge tone={selected.verified ? "paid" : "danger"}>
+                        {verifyLabel(selected)}
+                      </Badge>
                     </div>
-                    <a href={selected.imageUrl} target="_blank" rel="noreferrer" className="mt-3 block">
+                    <a
+                      href={selected.imageUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 block"
+                    >
                       <img
                         src={selected.imageUrl}
                         alt={`สลิปโอนเงินของห้อง ${roomLabel(selected)}`}
@@ -418,10 +534,15 @@ export function ReviewPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2">
                     <span className="text-sm text-steel">ผลตรวจจาก SlipOK</span>
                     <span className="flex flex-wrap items-center gap-2">
-                      <Badge tone={selected.verified ? "paid" : "danger"} icon={selected.verified ? "verified" : "error"}>
+                      <Badge
+                        tone={selected.verified ? "paid" : "danger"}
+                        icon={selected.verified ? "verified" : "error"}
+                      >
                         {selected.verified ? "สลิปจริง" : "ตรวจไม่ผ่าน"}
                       </Badge>
-                      <span className="num text-xs text-fog">{transRefLabel(selected)}</span>
+                      <span className="num text-xs text-fog">
+                        {transRefLabel(selected)}
+                      </span>
                     </span>
                   </div>
 
@@ -430,18 +551,28 @@ export function ReviewPage() {
                       <div>
                         <p className="text-xs text-fog">ยอดโอนจากสลิป</p>
                         <p className="num mt-1 text-lg text-charcoal">
-                          {selected.slipAmount === null ? "—" : baht(selected.slipAmount)}
+                          {selected.slipAmount === null
+                            ? "—"
+                            : baht(selected.slipAmount)}
                         </p>
                       </div>
                       <div>
                         <p className="text-xs text-fog">ยอดบิล</p>
                         <p className="num mt-1 text-lg text-charcoal">
-                          {selected.bill === null ? "—" : baht(selected.bill.total)}
+                          {selected.bill === null
+                            ? "—"
+                            : baht(selected.bill.total)}
                         </p>
                       </div>
-                      <div>
-                        <p className="text-xs text-fog">ผลต่าง</p>
-                        <p className={`num mt-1 text-lg ${deltaTone(deltaOf(selected))}`}>{deltaLabel(deltaOf(selected))}</p>
+                      <div className="flex flex-col items-start gap-1 sm:items-end sm:text-right">
+                        <HeroMoney
+                          value={deltaFigure(selectedDelta).value}
+                          unit={deltaFigure(selectedDelta).unit}
+                          label="ผลต่าง"
+                        />
+                        <Badge tone={deltaBadge(selectedDelta).tone}>
+                          {deltaBadge(selectedDelta).label}
+                        </Badge>
                       </div>
                     </div>
 
@@ -449,7 +580,9 @@ export function ReviewPage() {
                       <p className="text-xs text-fog">บิลที่นำมาเทียบ</p>
                       {selected.bill === null ? (
                         <p className="mt-1 text-sm text-charcoal">
-                          สลิปนี้ไม่มีบิลให้เทียบ เพราะตอนส่งสลิปห้องนี้ยังไม่มีบิลค้าง หรือบิลถูกลบไปแล้ว
+                          สลิปนี้ไม่มีบิลให้เทียบ
+                          เพราะตอนส่งสลิปห้องนี้ยังไม่มีบิลค้าง
+                          หรือบิลถูกลบไปแล้ว
                         </p>
                       ) : (
                         <>
@@ -462,7 +595,7 @@ export function ReviewPage() {
                             </a>
                           </div>
                           <p className="mt-0.5 text-xs text-fog">
-                            {`รอบบิล ${periodLabel(selected.bill.period)} · เลขที่บิล ${selected.bill.id}`}
+                            {`รอบบิล ${periodLabel(selected.bill.period)} · เลขที่ใบแจ้งหนี้ ${billNumber(selected.bill)}`}
                           </p>
                         </>
                       )}
@@ -470,15 +603,20 @@ export function ReviewPage() {
 
                     <div className="mt-3 border-t border-ash pt-3">
                       <p className="text-xs text-fog">วันเวลาที่โอน</p>
-                      <p className="num mt-1 text-sm text-charcoal">{transferLabel(selected)}</p>
+                      <p className="num mt-1 text-sm text-charcoal">
+                        {transferLabel(selected)}
+                      </p>
                     </div>
                   </div>
 
                   <p className="text-xs text-steel">
-                    ระบบเทียบยอดสลิปกับบิลล่าสุดของห้องนี้แล้ว ตรวจทานยอดให้ตรงก่อนตัดสินใจ
+                    ระบบเทียบยอดสลิปกับบิลล่าสุดของห้องนี้แล้ว
+                    ตรวจทานยอดให้ตรงก่อนตัดสินใจ
                   </p>
 
-                  {actionError !== null && <p className="text-sm text-danger">{actionError}</p>}
+                  {actionError !== null && (
+                    <p className="text-sm text-danger">{actionError}</p>
+                  )}
 
                   <div className="flex flex-wrap justify-end gap-2 border-t border-ash pt-3">
                     <Button
@@ -486,7 +624,7 @@ export function ReviewPage() {
                       icon="block"
                       disabled={busy}
                       onClick={() => {
-                        runResolve(selected, "reject");
+                        setDecision({ slip: selected, action: "reject" });
                       }}
                     >
                       ปฏิเสธสลิป
@@ -495,16 +633,20 @@ export function ReviewPage() {
                       variant="primary"
                       icon="task_alt"
                       disabled={busy || selected.bill === null}
-                      title={selected.bill === null ? settleBlockedReason : undefined}
+                      title={
+                        selected.bill === null ? settleBlockedReason : undefined
+                      }
                       onClick={() => {
-                        setConfirming(selected);
+                        setDecision({ slip: selected, action: "settle" });
                       }}
                     >
                       ปิดบิลด้วยสลิปนี้
                     </Button>
                   </div>
 
-                  {selected.bill === null && <p className="text-xs text-fog">{settleBlockedReason}</p>}
+                  {selected.bill === null && (
+                    <p className="text-xs text-fog">{settleBlockedReason}</p>
+                  )}
                 </div>
               </Card>
             )}
@@ -513,47 +655,82 @@ export function ReviewPage() {
       )}
 
       <Dialog
-        open={confirming !== null}
+        open={decision !== null}
         onClose={() => {
-          setConfirming(null);
+          setDecision(null);
         }}
-        title="ยืนยันปิดบิลใบนี้"
+        title={
+          decision !== null && decision.action === "reject"
+            ? "ยืนยันปฏิเสธสลิป"
+            : "ยืนยันปิดบิลใบนี้"
+        }
         footer={
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               variant="ghost"
               disabled={busy}
               onClick={() => {
-                setConfirming(null);
+                setDecision(null);
               }}
             >
               ยกเลิก
             </Button>
-            <Button
-              variant="primary"
-              icon="task_alt"
-              disabled={busy}
-              onClick={() => {
-                if (confirming !== null) {
-                  runResolve(confirming, "settle");
-                }
-              }}
-            >
-              {busy ? "กำลังปิดบิล" : "ยืนยันปิดบิล"}
-            </Button>
+            {decision !== null && decision.action === "reject" ? (
+              <Button
+                variant="danger-soft"
+                icon="block"
+                disabled={busy}
+                onClick={() => {
+                  runResolve(decision.slip, "reject");
+                }}
+              >
+                {busy ? "กำลังปฏิเสธสลิป" : "ยืนยันปฏิเสธสลิป"}
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                icon="task_alt"
+                disabled={busy}
+                onClick={() => {
+                  if (decision !== null) {
+                    runResolve(decision.slip, "settle");
+                  }
+                }}
+              >
+                {busy ? "กำลังปิดบิล" : "ยืนยันปิดบิล"}
+              </Button>
+            )}
           </div>
         }
       >
-        {confirming !== null && (
+        {decision !== null && (
           <div className="grid gap-3 text-sm">
             <dl className="grid gap-2">
-              <ConfirmRow label="ห้อง" value={roomLabel(confirming)} />
-              <ConfirmRow label="ผู้เช่า" value={tenantLabel(confirming)} />
-              <ConfirmRow label="ยอดในสลิป" value={amountLabel(confirming.slipAmount)} />
-              <ConfirmRow label="ยอดบิล" value={billTotalLabel(confirming)} />
-              <ConfirmRow label="ผลต่าง" value={deltaLabel(deltaOf(confirming))} />
+              <ConfirmRow label="ห้อง" value={roomLabel(decision.slip)} />
+              <ConfirmRow label="ผู้เช่า" value={tenantLabel(decision.slip)} />
+              <ConfirmRow
+                label="ยอดในสลิป"
+                value={amountLabel(decision.slip.slipAmount)}
+              />
+              <ConfirmRow
+                label="ยอดบิล"
+                value={billTotalLabel(decision.slip)}
+              />
+              <ConfirmRow
+                label="ผลต่าง"
+                value={deltaLabel(deltaOf(decision.slip))}
+              />
             </dl>
-            <p className="text-steel">ปิดบิลแล้วย้อนกลับไม่ได้ ระบบจะแจ้งผลให้ผู้เช่าทาง LINE</p>
+            {decision.action === "reject" ? (
+              <>
+                <p className="text-steel">{rejectNote}</p>
+                <p className="text-xs text-fog">{rejectHistoryHint}</p>
+              </>
+            ) : (
+              <p className="text-steel">
+                ปิดบิลแล้วย้อนกลับไม่ได้ ระบบจะแจ้งผลให้ผู้เช่าทาง LINE
+              </p>
+            )}
           </div>
         )}
       </Dialog>

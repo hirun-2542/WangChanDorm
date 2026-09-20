@@ -1,12 +1,16 @@
 import { Hono } from "hono";
+import type { AppEnv } from "../lib/auth";
+import { errorBody } from "./shared";
 
-const api = new Hono<{ Bindings: Env }>();
+const api = new Hono<AppEnv>();
 
 api.get("/ping", (c) => c.json({ ok: true }));
 
 api.post("/seam-probe", async (c) => {
+  // ปิดเป็นค่าเริ่มต้น เปิดเฉพาะเมื่อตั้งค่าตรง ๆ ว่า "1" เท่านั้น
+  // ตัวแปรที่พิมพ์ผิดหรือถูกตั้งเป็นค่าอื่นจึงปิดทางนี้ไว้ ไม่ใช่เปิดค้าง
   if (String(c.env.SEAM_PROBE) !== "1") {
-    return c.json({ ok: false, error: "not found" }, 404);
+    return c.json(errorBody("NOT_FOUND", "ไม่พบเส้นทางนี้"), 404);
   }
 
   let outboundUrl: string;
@@ -15,7 +19,7 @@ api.post("/seam-probe", async (c) => {
     const body = await c.req.json<{ outboundUrl?: string }>();
     outboundUrl = body.outboundUrl ?? "";
   } catch {
-    return c.json({ ok: false, error: "invalid json body" }, 400);
+    return c.json(errorBody("VALIDATION", "รูปแบบข้อมูลไม่ถูกต้อง"), 400);
   }
 
   let target: URL;
@@ -23,11 +27,11 @@ api.post("/seam-probe", async (c) => {
   try {
     target = new URL(outboundUrl);
   } catch {
-    return c.json({ ok: false, error: "outboundUrl must be a valid url" }, 400);
+    return c.json(errorBody("VALIDATION", "outboundUrl ต้องเป็น URL ที่ถูกต้อง"), 400);
   }
 
   if (target.protocol !== "http:" && target.protocol !== "https:") {
-    return c.json({ ok: false, error: "outboundUrl must use http or https" }, 400);
+    return c.json(errorBody("VALIDATION", "outboundUrl ต้องใช้ http หรือ https"), 400);
   }
 
   const value = crypto.randomUUID();
@@ -57,18 +61,21 @@ api.post("/seam-probe", async (c) => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ probe: value }),
     });
-    const outboundBody = await outboundResponse.text();
+
+    // ไม่ส่งเนื้อหาตอบกลับของปลายทางออกไป เพราะเป็นข้อความจากระบบอื่น
+    // ที่เราไม่ได้ควบคุม และเส้นทางนี้ใช้ตรวจว่าเรียกออกไปได้จริงเท่านั้น
+    await outboundResponse.body?.cancel();
 
     return c.json({
       ok: true,
       d1: { written: value, readBack: row?.value ?? null },
       r2: { key, readBack: objectText },
-      outbound: { status: outboundResponse.status, body: outboundBody },
+      outbound: { status: outboundResponse.status },
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ message: "seam probe failed", error: detail }));
-    return c.json({ ok: false, error: "seam probe failed" }, 500);
+    return c.json(errorBody("INTERNAL", "ตรวจสอบเส้นทางไม่สำเร็จ"), 500);
   }
 });
 

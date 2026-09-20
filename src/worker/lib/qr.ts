@@ -2,7 +2,8 @@ import { encode } from "uqr";
 import { encodeGrayscalePng } from "./png";
 
 const modulePixels = 10;
-const quietZoneModules = 2;
+/** ISO/IEC 18004 กำหนดพื้นที่ว่างรอบโค้ด 4 โมดูล — น้อยกว่านี้สแกนเนอร์บางตัวอ่านไม่ได้ */
+const quietZoneModules = 4;
 
 export async function encodeQrPng(text: string): Promise<Uint8Array<ArrayBuffer>> {
   const qr = encode(text, { ecc: "M", border: quietZoneModules });

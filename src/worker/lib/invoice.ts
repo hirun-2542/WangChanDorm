@@ -17,7 +17,20 @@ const thaiMonths = [
   "ธันวาคม",
 ];
 
-const thaiMonthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+const thaiMonthsShort = [
+  "ม.ค.",
+  "ก.พ.",
+  "มี.ค.",
+  "เม.ย.",
+  "พ.ค.",
+  "มิ.ย.",
+  "ก.ค.",
+  "ส.ค.",
+  "ก.ย.",
+  "ต.ค.",
+  "พ.ย.",
+  "ธ.ค.",
+];
 
 export interface InvoiceCharge {
   name: string;
@@ -49,8 +62,13 @@ export interface InvoiceBill extends InvoiceAmountSource {
 }
 
 export interface InvoiceRow {
+  group: string;
   label: string;
   detail: string;
+  /** จำนวนที่คิดเงิน — 1 สำหรับรายการคงที่ต่อเดือน */
+  quantity: number;
+  /** ราคาต่อหน่วยเป็นบาท — เท่ากับจำนวนเงินเมื่อ quantity เป็น 1 */
+  unitPrice: number;
   amount: number;
 }
 
@@ -62,12 +80,25 @@ export interface InvoiceDocument {
   tenantName: string;
   waterMeter: string;
   electricMeter: string;
+  meterSummary: string;
   rows: InvoiceRow[];
   total: number;
 }
 
 export function formatBaht(value: number): string {
   return Math.round(value).toLocaleString("en-US");
+}
+
+/** ราคาต่อหน่วย — เก็บทศนิยมไม่เกิน 2 ตำแหน่ง เพราะอัตราน้ำ/ไฟมีทศนิยมได้ */
+export function formatPrice(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+
+  return Number.isInteger(rounded)
+    ? rounded.toLocaleString("en-US")
+    : rounded.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
 }
 
 export function formatUnits(value: number): string {
@@ -106,56 +137,99 @@ export function thaiDateLabel(value: string): string {
   const day = Number(dayPart);
   const monthName = thaiMonthsShort[month - 1];
 
-  if (!Number.isInteger(year) || !Number.isInteger(day) || monthName === undefined) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(day) ||
+    monthName === undefined
+  ) {
     return value;
   }
 
   return `${day} ${monthName} ${year + buddhistYearOffset}`;
 }
 
-function waterRow(bill: InvoiceAmountSource): InvoiceRow {
+const groupPremises = "ค่าที่พัก";
+const groupUtilities = "ค่าสาธารณูปโภค";
+const groupExtras = "ค่าใช้จ่ายเพิ่มเติม";
+
+function waterRow(bill: InvoiceBill): InvoiceRow {
+  const units = Math.round(bill.waterUnits * 100) / 100;
+
   return {
+    group: groupUtilities,
     label: "ค่าน้ำ",
-    detail: `${formatUnits(bill.waterUnits)} หน่วย × ${formatUnits(bill.waterRate)} บาท/หน่วย`,
+    detail: `มิเตอร์ ${formatUnits(bill.waterPrevious)} → ${formatUnits(bill.waterCurrent)}`,
+    quantity: units,
+    unitPrice: bill.waterRate,
     amount: bill.waterAmount,
   };
 }
 
-function electricRow(bill: InvoiceAmountSource): InvoiceRow {
+function electricRow(bill: InvoiceBill): InvoiceRow {
   if (bill.electricMode === "flat") {
-    return { label: "ค่าไฟ", detail: `เหมาจ่าย ${formatBaht(bill.electricAmount)} บาท`, amount: bill.electricAmount };
+    return {
+      group: groupUtilities,
+      label: "ค่าไฟ",
+      detail: "เหมาจ่ายรายเดือน",
+      quantity: 1,
+      unitPrice: bill.electricAmount,
+      amount: bill.electricAmount,
+    };
   }
 
+  const units = Math.round((bill.electricUnits ?? 0) * 100) / 100;
+
   return {
+    group: groupUtilities,
     label: "ค่าไฟ",
-    detail: `${formatUnits(bill.electricUnits ?? 0)} หน่วย × ${formatUnits(bill.electricRate ?? 0)} บาท/หน่วย`,
+    detail: `มิเตอร์ ${formatUnits(bill.electricPrevious)} → ${formatUnits(bill.electricCurrent)}`,
+    quantity: units,
+    unitPrice: bill.electricRate ?? 0,
     amount: bill.electricAmount,
   };
 }
 
-export function buildInvoiceRows(bill: InvoiceAmountSource): InvoiceRow[] {
+export function buildInvoiceRows(bill: InvoiceBill): InvoiceRow[] {
   const rows: InvoiceRow[] = [
-    { label: "ค่าเช่าห้อง", detail: "รายเดือน", amount: bill.rent },
+    {
+      group: groupPremises,
+      label: "ค่าเช่าห้อง",
+      detail: "รายเดือน",
+      quantity: 1,
+      unitPrice: bill.rent,
+      amount: bill.rent,
+    },
     waterRow(bill),
     electricRow(bill),
   ];
 
   for (const charge of bill.charges) {
-    rows.push({ label: charge.name, detail: "ค่าใช้จ่ายเพิ่มเติม", amount: charge.amount });
+    rows.push({
+      group: groupExtras,
+      label: charge.name,
+      detail: "ค่าประจำของหอ",
+      quantity: 1,
+      unitPrice: charge.amount,
+      amount: charge.amount,
+    });
   }
 
   return rows;
 }
 
 export function buildInvoiceDocument(bill: InvoiceBill): InvoiceDocument {
+  const waterMeter = `${formatUnits(bill.waterPrevious)} → ${formatUnits(bill.waterCurrent)}`;
+  const electricMeter = `${formatUnits(bill.electricPrevious)} → ${formatUnits(bill.electricCurrent)}`;
+
   return {
     number: invoiceNumber(bill.period, bill.roomNumber),
     issueDate: thaiDateLabel(bill.createdAt),
     periodLabel: thaiPeriodLabel(bill.period),
     roomNumber: bill.roomNumber,
     tenantName: bill.tenantName,
-    waterMeter: `${formatUnits(bill.waterPrevious)} → ${formatUnits(bill.waterCurrent)}`,
-    electricMeter: `${formatUnits(bill.electricPrevious)} → ${formatUnits(bill.electricCurrent)}`,
+    waterMeter,
+    electricMeter,
+    meterSummary: `มิเตอร์น้ำ ${waterMeter} · มิเตอร์ไฟ ${electricMeter}`,
     rows: buildInvoiceRows(bill),
     total: bill.total,
   };

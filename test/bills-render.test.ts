@@ -1,5 +1,5 @@
 import { SELF, env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { buildInvoiceDocument, buildInvoiceRows, type InvoiceBill } from "../src/worker/lib/invoice";
 import {
   buildPromptPayPayload,
@@ -9,6 +9,7 @@ import {
   promptPayMerchantTarget,
   promptPayPayloadChecksum,
 } from "../src/worker/lib/promptpay";
+import { createFamily, signIn, withAuth, type TestSession } from "./auth-helper";
 
 interface RoomPayload {
   id: string;
@@ -39,8 +40,19 @@ const settingsUrl = "https://dorm.test/api/settings";
 
 const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
+let session: TestSession;
+
+/** ยิง API ภายใต้ /api ด้วยเซสชันของเทสต์นี้ ส่วน /qr และ /invoices ยังเปิดสาธารณะ */
+function api(url: string, init: RequestInit = {}): Promise<Response> {
+  return SELF.fetch(url, withAuth(session, init));
+}
+
+beforeEach(async () => {
+  session = await signIn();
+});
+
 function post(url: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(url, {
+  return api(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
@@ -70,7 +82,7 @@ function readUint32(bytes: Uint8Array, offset: number): number {
 }
 
 async function putIssuer(promptpayType: "phone" | "citizen-id" = "phone"): Promise<void> {
-  const response = await SELF.fetch(settingsUrl, {
+  const response = await api(settingsUrl, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -104,14 +116,54 @@ async function occupiedRoom(roomNumber: string, payload: Record<string, unknown>
   return room;
 }
 
-async function generatedBill(roomId: string, entry: Record<string, unknown>): Promise<BillPayload> {
-  const response = await post(`${billsUrl}/generate`, { period: "2026-09", entries: [{ roomId, ...entry }] });
+async function generatedBill(roomId: string, entry: Record<string, unknown>, period = "2026-09"): Promise<BillPayload> {
+  const response = await post(`${billsUrl}/generate`, { period, entries: [{ roomId, ...entry }] });
   expect(response.status).toBe(201);
   return first((await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
 }
 
+/** สร้างห้องที่มีผู้เช่าในครอบครัวของเซสชันที่ส่งเข้ามา (ใช้เทสต์ข้ามครอบครัว) */
+async function occupiedRoomFor(owner: TestSession, roomNumber: string): Promise<RoomPayload> {
+  const roomResponse = await SELF.fetch(
+    roomsUrl,
+    withAuth(owner, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomNumber, rent: 3500, waterMeterInit: 10, electricMeterInit: 20 }),
+    }),
+  );
+  expect(roomResponse.status).toBe(201);
+
+  const room = (await roomResponse.json<{ ok: boolean; room: RoomPayload }>()).room;
+  const tenantResponse = await SELF.fetch(
+    tenantsUrl,
+    withAuth(owner, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ fullName: `ผู้เช่า ${roomNumber}`, phone: "081-234-5678", roomId: room.id, checkInDate: "2025-03-01" }),
+    }),
+  );
+  expect(tenantResponse.status).toBe(201);
+
+  return room;
+}
+
+async function generatedBillFor(owner: TestSession, roomId: string, period = "2026-09"): Promise<BillPayload> {
+  const response = await SELF.fetch(
+    `${billsUrl}/generate`,
+    withAuth(owner, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ period, entries: [{ roomId, waterCurrent: 18, electricCurrent: 40 }] }),
+    }),
+  );
+  expect(response.status).toBe(201);
+
+  return first((await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
+}
+
 function patchBill(id: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(`${billsUrl}/${id}`, {
+  return api(`${billsUrl}/${id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
@@ -214,11 +266,11 @@ describe("promptpay payload", () => {
 describe("invoice document", () => {
   it("derives one row per meter, charge and amount with the invoice number and dates", () => {
     expect(buildInvoiceRows(meteredBill)).toEqual([
-      { label: "ค่าเช่าห้อง", detail: "รายเดือน", amount: 3800 },
-      { label: "ค่าน้ำ", detail: "5 หน่วย × 18 บาท/หน่วย", amount: 90 },
-      { label: "ค่าไฟ", detail: "61 หน่วย × 6 บาท/หน่วย", amount: 366 },
-      { label: "ค่าจัดเก็บขยะ", detail: "ค่าใช้จ่ายเพิ่มเติม", amount: 30 },
-      { label: "ค่า WiFi", detail: "ค่าใช้จ่ายเพิ่มเติม", amount: 100 },
+      { group: "ค่าที่พัก", label: "ค่าเช่าห้อง", detail: "รายเดือน", quantity: 1, unitPrice: 3800, amount: 3800 },
+      { group: "ค่าสาธารณูปโภค", label: "ค่าน้ำ", detail: "มิเตอร์ 100 → 105", quantity: 5, unitPrice: 18, amount: 90 },
+      { group: "ค่าสาธารณูปโภค", label: "ค่าไฟ", detail: "มิเตอร์ 240 → 301", quantity: 61, unitPrice: 6, amount: 366 },
+      { group: "ค่าใช้จ่ายเพิ่มเติม", label: "ค่าจัดเก็บขยะ", detail: "ค่าประจำของหอ", quantity: 1, unitPrice: 30, amount: 30 },
+      { group: "ค่าใช้จ่ายเพิ่มเติม", label: "ค่า WiFi", detail: "ค่าประจำของหอ", quantity: 1, unitPrice: 100, amount: 100 },
     ]);
 
     const document = buildInvoiceDocument(meteredBill);
@@ -238,9 +290,9 @@ describe("invoice document", () => {
     const rows = buildInvoiceRows(flatBill);
 
     expect(rows).toEqual([
-      { label: "ค่าเช่าห้อง", detail: "รายเดือน", amount: 3900 },
-      { label: "ค่าน้ำ", detail: "4 หน่วย × 18 บาท/หน่วย", amount: 72 },
-      { label: "ค่าไฟ", detail: "เหมาจ่าย 600 บาท", amount: 600 },
+      { group: "ค่าที่พัก", label: "ค่าเช่าห้อง", detail: "รายเดือน", quantity: 1, unitPrice: 3900, amount: 3900 },
+      { group: "ค่าสาธารณูปโภค", label: "ค่าน้ำ", detail: "มิเตอร์ 20 → 24", quantity: 4, unitPrice: 18, amount: 72 },
+      { group: "ค่าสาธารณูปโภค", label: "ค่าไฟ", detail: "เหมาจ่ายรายเดือน", quantity: 1, unitPrice: 600, amount: 600 },
     ]);
 
     const document = buildInvoiceDocument(flatBill);
@@ -260,7 +312,7 @@ describe("GET /qr/:billId.png", () => {
     const response = await SELF.fetch(qrUrl(bill.id));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
-    expect(response.headers.get("cache-control")).toContain("max-age");
+    expect(response.headers.get("cache-control")).toBe("no-store");
 
     const bytes = new Uint8Array(await response.arrayBuffer());
     expect(startsWith(bytes, pngSignature)).toBe(true);
@@ -356,7 +408,7 @@ describe("GET /invoices/:billId.pdf", () => {
     expect(chargedPdf.length).toBeGreaterThan(plainPdf.length);
   });
 
-  it("embeds the bill's promptpay QR image in the invoice", async () => {
+  it("embeds the bill's promptpay QR image in the invoice, unaffected by a later settings change", async () => {
     await putIssuer();
     const room = await occupiedRoom("C204", { rent: 3800, waterMeterInit: 100, electricMeterInit: 240 });
     const bill = await generatedBill(room.id, { waterCurrent: 105, electricCurrent: 301 });
@@ -365,12 +417,17 @@ describe("GET /invoices/:billId.pdf", () => {
     const withQrText = new TextDecoder("latin1").decode(withQr);
     expect(withQrText).toContain("/Subtype /Image");
 
-    await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'promptpay_id'").run();
+    // เจ้าของหอเปลี่ยนพร้อมเพย์ในตั้งค่าหลังบิลใบนี้ออกไปแล้ว
+    await env.DB.prepare(
+      "UPDATE settings SET value = '0899991234' WHERE family_id = ? AND key = 'promptpay_id'",
+    )
+      .bind(session.familyId)
+      .run();
 
-    const withoutQr = new Uint8Array(await (await SELF.fetch(invoiceUrl(bill.id))).arrayBuffer());
-    const withoutQrText = new TextDecoder("latin1").decode(withoutQr);
-    expect(withoutQrText).not.toContain("/Subtype /Image");
-    expect(withQr.length).toBeGreaterThan(withoutQr.length);
+    // บิลที่ออกไปแล้วต้องยังมี QR อยู่ เพราะผู้รับเงินถูก snapshot ไว้ในบิลแล้ว
+    // ไม่ได้อ่านตั้งค่าปัจจุบันสด ๆ ตอนสร้างเอกสาร (ดู migration 0011)
+    const afterChange = new Uint8Array(await (await SELF.fetch(invoiceUrl(bill.id))).arrayBuffer());
+    expect(new TextDecoder("latin1").decode(afterChange)).toContain("/Subtype /Image");
 
     await putIssuer();
   });
@@ -389,5 +446,90 @@ describe("GET /invoices/:billId.pdf", () => {
     const wrongExtension = await SELF.fetch("https://dorm.test/invoices/bill.pdf.png");
     expect(wrongExtension.status).toBe(404);
     expect((await wrongExtension.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+  });
+
+  it("keeps the invoice number of an issued bill after the room is renamed", async () => {
+    await putIssuer();
+    const room = await occupiedRoom("D301", { rent: 3800, waterMeterInit: 100, electricMeterInit: 240 });
+    const bill = await generatedBill(room.id, { waterCurrent: 105, electricCurrent: 301 });
+
+    const before = await SELF.fetch(invoiceUrl(bill.id));
+    expect(before.status).toBe(200);
+    expect(before.headers.get("content-disposition")).toContain("B2569-09-D301.pdf");
+
+    await env.DB.prepare("UPDATE rooms SET room_number = ? WHERE family_id = ? AND id = ?")
+      .bind("D302", session.familyId, room.id)
+      .run();
+
+    const after = await SELF.fetch(invoiceUrl(bill.id));
+    expect(after.status).toBe(200);
+
+    const disposition = after.headers.get("content-disposition") ?? "";
+    expect(disposition).toContain("B2569-09-D301.pdf");
+    expect(disposition).not.toContain("D302");
+
+    // บิลใหม่ของเดือนถัดไปยังใช้เลขห้องล่าสุดตามปกติ
+    const next = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 320 }, "2026-10");
+    const nextInvoice = await SELF.fetch(invoiceUrl(next.id));
+    expect(nextInvoice.headers.get("content-disposition")).toContain("B2569-10-D302.pdf");
+  });
+});
+
+describe("promptpay settings per family", () => {
+  it("snapshots each family's own payee onto its own bills, never another family's", async () => {
+    await putIssuer();
+    const ownRoom = await occupiedRoom("D401", { waterMeterInit: 10, electricMeterInit: 20 });
+    const ownBill = await generatedBill(ownRoom.id, { waterCurrent: 18, electricCurrent: 40 });
+
+    const ownQr = await SELF.fetch(qrUrl(ownBill.id));
+    expect(ownQr.status).toBe(200);
+
+    const otherFamily = await createFamily("หอของอีกครอบครัว");
+    const other = await signIn("owner", otherFamily);
+
+    // ครอบครัวที่สองมีบัญชีธนาคารครบคู่ (ชื่อธนาคาร + เลขบัญชี ผ่านเงื่อนไข
+    // "ต้องมีช่องทางรับเงินอย่างน้อยหนึ่งอย่างก่อนออกบิลได้") แต่ยังไม่มีพร้อมเพย์เลย
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'bank_name', ?, datetime('now'))",
+      ).bind(otherFamily, "kbank"),
+      env.DB.prepare(
+        "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'bank_account_number', ?, datetime('now'))",
+      ).bind(otherFamily, "1234567890"),
+    ]);
+
+    const otherRoom = await occupiedRoomFor(other, "E101");
+    const otherBill = await generatedBillFor(other, otherRoom.id);
+
+    // บิลใบนี้ snapshot ไว้ว่าไม่มีพร้อมเพย์ จึงสร้าง QR พร้อมเพย์ไม่ได้ และต้องไม่ยืม
+    // ค่าพร้อมเพย์ของครอบครัวแรกมาใช้
+    const otherQr = await SELF.fetch(qrUrl(otherBill.id));
+    expect(otherQr.status).toBe(500);
+    expect((await otherQr.json<ErrorBody>()).error.code).toBe("INTERNAL");
+
+    const otherInvoice = new Uint8Array(await (await SELF.fetch(invoiceUrl(otherBill.id))).arrayBuffer());
+    expect(new TextDecoder("latin1").decode(otherInvoice)).not.toContain("/Subtype /Image");
+
+    // ตั้งพร้อมเพย์เพิ่มทีหลัง — บิลเก่าที่ออกไปแล้วต้อง "ไม่" เปลี่ยนตาม (snapshot ไว้แล้ว)
+    await env.DB.prepare(
+      "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'promptpay_id', ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value",
+    )
+      .bind(otherFamily, "0899991234")
+      .run();
+
+    const staleQr = await SELF.fetch(qrUrl(otherBill.id));
+    expect(staleQr.status).toBe(500);
+
+    const staleInvoice = new Uint8Array(await (await SELF.fetch(invoiceUrl(otherBill.id))).arrayBuffer());
+    expect(new TextDecoder("latin1").decode(staleInvoice)).not.toContain("/Subtype /Image");
+
+    // บิลใหม่ที่ออกหลังตั้งพร้อมเพย์แล้วต้อง snapshot พร้อมเพย์ตัวใหม่ของตัวเอง
+    const newBill = await generatedBillFor(other, otherRoom.id, "2026-10");
+    const newQr = await SELF.fetch(qrUrl(newBill.id));
+    expect(newQr.status).toBe(200);
+    expect(newQr.headers.get("content-type")).toBe("image/png");
+
+    const newInvoice = new Uint8Array(await (await SELF.fetch(invoiceUrl(newBill.id))).arrayBuffer());
+    expect(new TextDecoder("latin1").decode(newInvoice)).toContain("/Subtype /Image");
   });
 });

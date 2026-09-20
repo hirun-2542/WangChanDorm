@@ -1,41 +1,68 @@
 import { Hono } from "hono";
+import type { AppEnv } from "../lib/auth";
+import { familyId } from "../lib/auth";
 import { lineChannelConfigured, pushMessage } from "../line/api";
-import { buildBillFlexMessage, type BillMessageIssuer } from "../line/bill-message";
+import { bankThaiName } from "../lib/banks";
+import {
+  buildBillFlexMessage,
+  type BillMessagePayee,
+} from "../line/bill-message";
 import { ownerSendSummaryMessage } from "../line/messages";
 import { thaiPeriodLabel } from "../lib/invoice";
+import { resolveAllRoomCharges } from "../lib/charges";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
-import { asRecord, errorBody, isIsoDate, readJsonObject, roomNumberOrder } from "./shared";
+import {
+  asRecord,
+  errorBody,
+  isIsoDate,
+  readJsonObject,
+  roomNumberOrder,
+} from "./shared";
 
-const bills = new Hono<{ Bindings: Env }>();
+const bills = new Hono<AppEnv>();
 
 type ElectricMode = "meter" | "flat";
 type BillStatus = "paid" | "unpaid";
 
 const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
 
-const isoTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/;
+const isoTimestampPattern =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/;
 
+/**
+ * เลขห้องและชื่อผู้เช่าอ่านจากคอลัมน์ snapshot ในบิลเอง
+ *
+ * เดิมอ่านผ่าน JOIN rooms/tenants ทำให้แก้ชื่อห้องแล้วเลขที่ใบแจ้งหนี้ของบิล
+ * ที่ออกไปแล้วเปลี่ยนตาม ซึ่งผิดหลัก "บิลที่ออกแล้วห้ามเปลี่ยน"
+ */
 const billColumns =
-  "b.id, b.room_id, r.room_number, b.tenant_id, t.full_name AS tenant_name, b.period, b.rent, b.water_previous, b.water_current, b.water_units, b.water_rate, b.water_amount, b.electric_mode, b.electric_previous, b.electric_current, b.electric_units, b.electric_rate, b.electric_amount, b.total, b.status, b.paid_at, b.paid_method, b.sent_at, b.created_at";
+  "b.id, b.room_id, b.room_number, b.tenant_id, b.tenant_name, b.period, b.rent, b.water_previous, b.water_current, b.water_units, b.water_rate, b.water_amount, b.electric_mode, b.electric_previous, b.electric_current, b.electric_units, b.electric_rate, b.electric_amount, b.total, b.status, b.paid_at, b.paid_method, b.sent_at, b.created_at";
 
-const billFrom = "FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id";
+const billFrom = "FROM bills b";
 
 const occupiedRoomColumns =
   "r.id AS room_id, r.room_number, r.rent, r.water_rate, r.electric_mode, r.electric_rate, r.water_meter_init, r.electric_meter_init, t.id AS tenant_id, t.full_name AS tenant_name";
 
-const occupiedRoomFrom = "FROM rooms r JOIN tenants t ON t.room_id = r.id AND t.status = 'current'";
+const occupiedRoomFrom =
+  "FROM rooms r JOIN tenants t ON t.room_id = r.id AND t.status = 'current'";
 
 const insertBillSql =
-  "INSERT INTO bills (id, room_id, tenant_id, period, rent, water_previous, water_current, water_units, water_rate, water_amount, electric_mode, electric_previous, electric_current, electric_units, electric_rate, electric_amount, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+  "INSERT INTO bills (id, family_id, room_id, tenant_id, period, room_number, tenant_name, rent, water_previous, water_current, water_units, water_rate, water_amount, electric_mode, electric_previous, electric_current, electric_units, electric_rate, electric_amount, total, payee_dorm_name, payee_owner_name, payee_promptpay_id, payee_promptpay_type, payee_promptpay_name, payee_bank_name, payee_bank_account_number, payee_bank_account_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-const insertChargeSql = "INSERT INTO bill_charges (id, bill_id, name, amount, position) VALUES (?, ?, ?, ?, ?)";
+const insertChargeSql =
+  "INSERT INTO bill_charges (id, family_id, bill_id, name, amount, position) VALUES (?, ?, ?, ?, ?, ?)";
 
 const updateBillSql =
-  "UPDATE bills SET water_current = ?, water_units = ?, water_amount = ?, electric_current = ?, electric_units = ?, electric_rate = ?, electric_amount = ?, total = ? WHERE id = ?";
+  "UPDATE bills SET water_current = ?, water_units = ?, water_amount = ?, electric_current = ?, electric_units = ?, electric_rate = ?, electric_amount = ?, total = ? WHERE id = ? AND family_id = ?";
 
-const deleteChargesSql = "DELETE FROM bill_charges WHERE bill_id = ?";
+const deleteChargesSql =
+  "DELETE FROM bill_charges WHERE bill_id = ? AND family_id = ?";
 
-const deleteBillSql = "DELETE FROM bills WHERE id = ?";
+const deleteBillSql = "DELETE FROM bills WHERE id = ? AND family_id = ?";
+
+/** บิลเดือนถัดไปของห้องเดียวกัน — ใช้กันไม่ให้แก้เลขมิเตอร์ซ้ำหน่วยกับเดือนถัดไป */
+const nextReadingSql =
+  "SELECT water_previous, electric_previous FROM bills WHERE family_id = ? AND room_id = ? AND period > ? ORDER BY period ASC LIMIT 1";
 
 interface BillRow {
   id: string;
@@ -139,7 +166,9 @@ interface GenerateEntry {
   charges: ChargePayload[];
 }
 
-type EntryParse = { ok: true; entry: GenerateEntry } | { ok: false; field: string; message: string };
+type EntryParse =
+  | { ok: true; entry: GenerateEntry }
+  | { ok: false; field: string; message: string };
 
 function isPeriod(value: unknown): value is string {
   return typeof value === "string" && periodPattern.test(value);
@@ -150,7 +179,9 @@ function toElectricMode(value: string): ElectricMode {
 }
 
 function parseReading(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
 }
 
 function parseCharges(value: unknown): ChargePayload[] | null {
@@ -174,7 +205,12 @@ function parseCharges(value: unknown): ChargePayload[] | null {
     const name = typeof record.name === "string" ? record.name.trim() : "";
     const amount = record.amount;
 
-    if (name === "" || typeof amount !== "number" || !Number.isInteger(amount) || amount < 0) {
+    if (
+      name === "" ||
+      typeof amount !== "number" ||
+      !Number.isInteger(amount) ||
+      amount < 0
+    ) {
       return null;
     }
 
@@ -200,36 +236,69 @@ function parseEntry(raw: unknown): EntryParse {
   const waterCurrent = parseReading(record.waterCurrent);
 
   if (waterCurrent === null) {
-    return { ok: false, field: "waterCurrent", message: "เลขมิเตอร์น้ำต้องเป็นตัวเลขไม่ติดลบ" };
+    return {
+      ok: false,
+      field: "waterCurrent",
+      message: "เลขมิเตอร์น้ำต้องเป็นตัวเลขไม่ติดลบ",
+    };
   }
 
   const electricCurrent = parseReading(record.electricCurrent);
 
   if (electricCurrent === null) {
-    return { ok: false, field: "electricCurrent", message: "เลขมิเตอร์ไฟต้องเป็นตัวเลขไม่ติดลบ" };
+    return {
+      ok: false,
+      field: "electricCurrent",
+      message: "เลขมิเตอร์ไฟต้องเป็นตัวเลขไม่ติดลบ",
+    };
   }
 
   const charges = parseCharges(record.charges);
 
   if (charges === null) {
-    return { ok: false, field: "charges", message: "ค่าใช้จ่ายเพิ่มเติมต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ" };
+    return {
+      ok: false,
+      field: "charges",
+      message: "ค่าใช้จ่ายเพิ่มเติมต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ",
+    };
   }
 
   const rawFlat = record.flatElectricAmount;
   let flatElectricAmount: number | null = null;
 
   if (rawFlat !== undefined && rawFlat !== null) {
-    if (typeof rawFlat !== "number" || !Number.isFinite(rawFlat) || rawFlat < 0) {
-      return { ok: false, field: "flatElectricAmount", message: "ยอดค่าไฟเหมาจ่ายต้องเป็นตัวเลขไม่ติดลบ" };
+    if (
+      typeof rawFlat !== "number" ||
+      !Number.isFinite(rawFlat) ||
+      rawFlat < 0
+    ) {
+      return {
+        ok: false,
+        field: "flatElectricAmount",
+        message: "ยอดค่าไฟเหมาจ่ายต้องเป็นตัวเลขไม่ติดลบ",
+      };
     }
 
     flatElectricAmount = rawFlat;
   }
 
-  return { ok: true, entry: { roomId, waterCurrent, electricCurrent, flatElectricAmount, charges } };
+  return {
+    ok: true,
+    entry: {
+      roomId,
+      waterCurrent,
+      electricCurrent,
+      flatElectricAmount,
+      charges,
+    },
+  };
 }
 
-function parseRate(key: string, value: string | undefined, fallback: number): number {
+function parseRate(
+  key: string,
+  value: string | undefined,
+  fallback: number,
+): number {
   if (value === undefined) {
     return fallback;
   }
@@ -240,42 +309,121 @@ function parseRate(key: string, value: string | undefined, fallback: number): nu
     return parsed;
   }
 
-  console.error(JSON.stringify({ message: "invalid stored setting", key, value }));
+  console.error(
+    JSON.stringify({ message: "invalid stored setting", key, value }),
+  );
   return fallback;
 }
 
-async function loadEffectiveRates(env: Env): Promise<{ water: number; electric: number }> {
+async function loadEffectiveRates(
+  env: Env,
+  family: string,
+): Promise<{ water: number; electric: number }> {
   const result = await env.DB.prepare(
-    "SELECT key, value FROM settings WHERE key IN ('default_water_rate', 'default_electric_rate')",
-  ).all<{ key: string; value: string }>();
+    "SELECT key, value FROM settings WHERE family_id = ? AND key IN ('default_water_rate', 'default_electric_rate')",
+  )
+    .bind(family)
+    .all<{ key: string; value: string }>();
   const stored = new Map(result.results.map((row) => [row.key, row.value]));
 
   return {
-    water: parseRate("default_water_rate", stored.get("default_water_rate"), defaultWaterRate),
-    electric: parseRate("default_electric_rate", stored.get("default_electric_rate"), defaultElectricRate),
+    water: parseRate(
+      "default_water_rate",
+      stored.get("default_water_rate"),
+      defaultWaterRate,
+    ),
+    electric: parseRate(
+      "default_electric_rate",
+      stored.get("default_electric_rate"),
+      defaultElectricRate,
+    ),
   };
 }
 
-async function loadOccupiedRooms(env: Env): Promise<OccupiedRoomRow[]> {
-  const result = await env.DB.prepare(`SELECT ${occupiedRoomColumns} ${occupiedRoomFrom} ORDER BY ${roomNumberOrder("r.room_number")}`).all<OccupiedRoomRow>();
+interface PayeeSnapshot {
+  dormName: string;
+  ownerName: string;
+  promptpayId: string;
+  promptpayType: "phone" | "citizen-id";
+  promptpayName: string;
+  bankName: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
+}
+
+const payeeSettingKeys = [
+  "dorm_name",
+  "owner_name",
+  "promptpay_id",
+  "promptpay_type",
+  "promptpay_name",
+  "bank_name",
+  "bank_account_number",
+  "bank_account_name",
+];
+
+/**
+ * อ่านผู้รับเงินปัจจุบันของครอบครัว เพื่อ snapshot ลงบิลที่กำลังจะออก ณ ตอนนี้
+ *
+ * เรียกครั้งเดียวตอนออกบิล ไม่ใช่ตอนแสดงผลบิลที่ออกไปแล้ว — ค่าที่ snapshot
+ * ไว้ในบิลต้องไม่เปลี่ยนตามการแก้ตั้งค่าภายหลัง (ดู migration 0011)
+ */
+async function loadPayeeSnapshot(env: Env, family: string): Promise<PayeeSnapshot> {
+  const placeholders = payeeSettingKeys.map(() => "?").join(", ");
+  const result = await env.DB.prepare(
+    `SELECT key, value FROM settings WHERE family_id = ? AND key IN (${placeholders})`,
+  )
+    .bind(family, ...payeeSettingKeys)
+    .all<{ key: string; value: string }>();
+  const stored = new Map(result.results.map((row) => [row.key, row.value]));
+
+  return {
+    dormName: stored.get("dorm_name") ?? "",
+    ownerName: stored.get("owner_name") ?? "",
+    promptpayId: stored.get("promptpay_id") ?? "",
+    promptpayType: stored.get("promptpay_type") === "citizen-id" ? "citizen-id" : "phone",
+    promptpayName: stored.get("promptpay_name") ?? "",
+    bankName: stored.get("bank_name") ?? "",
+    bankAccountNumber: stored.get("bank_account_number") ?? "",
+    bankAccountName: stored.get("bank_account_name") ?? "",
+  };
+}
+
+async function loadOccupiedRooms(
+  env: Env,
+  family: string,
+): Promise<OccupiedRoomRow[]> {
+  const result = await env.DB.prepare(
+    `SELECT ${occupiedRoomColumns} ${occupiedRoomFrom} WHERE r.family_id = ? AND t.family_id = ? ORDER BY ${roomNumberOrder("r.room_number")}`,
+  )
+    .bind(family, family)
+    .all<OccupiedRoomRow>();
   return result.results;
 }
 
-async function loadLatestReadings(env: Env, period: string): Promise<Map<string, LatestReadingRow>> {
+async function loadLatestReadings(
+  env: Env,
+  family: string,
+  period: string,
+): Promise<Map<string, LatestReadingRow>> {
   const result = await env.DB.prepare(
-    `SELECT b.room_id, b.water_current, b.electric_current FROM bills b JOIN (SELECT room_id, MAX(period) AS period FROM bills WHERE period < ? GROUP BY room_id) latest ON latest.room_id = b.room_id AND latest.period = b.period`,
+    `SELECT b.room_id, b.water_current, b.electric_current FROM bills b JOIN (SELECT room_id, MAX(period) AS period FROM bills WHERE family_id = ? AND period < ? GROUP BY room_id) latest ON latest.room_id = b.room_id AND latest.period = b.period WHERE b.family_id = ?`,
   )
-    .bind(period)
+    .bind(family, period, family)
     .all<LatestReadingRow>();
 
   return new Map(result.results.map((row) => [row.room_id, row]));
 }
 
-async function loadCharges(env: Env, period: string): Promise<Map<string, ChargePayload[]>> {
+async function loadCharges(
+  env: Env,
+  family: string,
+  period: string,
+): Promise<Map<string, ChargePayload[]>> {
   const result = await env.DB.prepare(
-    "SELECT bc.bill_id, bc.name, bc.amount FROM bill_charges bc JOIN bills b ON b.id = bc.bill_id WHERE b.period = ? ORDER BY bc.bill_id ASC, bc.position ASC",
+    "SELECT bc.bill_id, bc.name, bc.amount FROM bill_charges bc JOIN bills b ON b.id = bc.bill_id AND b.family_id = bc.family_id WHERE b.family_id = ? AND b.period = ? ORDER BY bc.bill_id ASC, bc.position ASC",
   )
-    .bind(period)
+    .bind(family, period)
     .all<{ bill_id: string; name: string; amount: number }>();
 
   const grouped = new Map<string, ChargePayload[]>();
@@ -289,19 +437,18 @@ async function loadCharges(env: Env, period: string): Promise<Map<string, Charge
   return grouped;
 }
 
-async function loadRoomChargeDefaults(env: Env): Promise<Map<string, ChargePayload[]>> {
-  const result = await env.DB.prepare("SELECT room_id, name, amount FROM room_charges ORDER BY room_id ASC, position ASC")
-    .all<{ room_id: string; name: string; amount: number }>();
+async function loadRoomChargeDefaults(
+  env: Env,
+  family: string,
+): Promise<Map<string, ChargePayload[]>> {
+  const resolved = await resolveAllRoomCharges(env, family);
+  const defaults = new Map<string, ChargePayload[]>();
 
-  const grouped = new Map<string, ChargePayload[]>();
-
-  for (const row of result.results) {
-    const list = grouped.get(row.room_id) ?? [];
-    list.push({ name: row.name, amount: row.amount });
-    grouped.set(row.room_id, list);
+  for (const [roomId, room] of resolved) {
+    defaults.set(roomId, room.charges);
   }
 
-  return grouped;
+  return defaults;
 }
 
 function toBill(row: BillRow, charges: ChargePayload[]): BillPayload {
@@ -334,24 +481,40 @@ function toBill(row: BillRow, charges: ChargePayload[]): BillPayload {
   };
 }
 
-async function loadBills(env: Env, period: string): Promise<BillPayload[]> {
-  const result = await env.DB.prepare(`SELECT ${billColumns} ${billFrom} WHERE b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`)
-    .bind(period)
+async function loadBills(
+  env: Env,
+  family: string,
+  period: string,
+): Promise<BillPayload[]> {
+  const result = await env.DB.prepare(
+    `SELECT ${billColumns} ${billFrom} WHERE b.family_id = ? AND b.period = ? ORDER BY ${roomNumberOrder("b.room_number")}`,
+  )
+    .bind(family, period)
     .all<BillRow>();
-  const charges = await loadCharges(env, period);
+  const charges = await loadCharges(env, family, period);
 
   return result.results.map((row) => toBill(row, charges.get(row.id) ?? []));
 }
 
-async function loadBill(env: Env, id: string): Promise<BillPayload | null> {
-  const row = await env.DB.prepare(`SELECT ${billColumns} ${billFrom} WHERE b.id = ?`).bind(id).first<BillRow>();
+async function loadBill(
+  env: Env,
+  family: string,
+  id: string,
+): Promise<BillPayload | null> {
+  const row = await env.DB.prepare(
+    `SELECT ${billColumns} ${billFrom} WHERE b.family_id = ? AND b.id = ?`,
+  )
+    .bind(family, id)
+    .first<BillRow>();
 
   if (row === null) {
     return null;
   }
 
-  const charges = await env.DB.prepare("SELECT name, amount FROM bill_charges WHERE bill_id = ? ORDER BY position ASC")
-    .bind(id)
+  const charges = await env.DB.prepare(
+    "SELECT name, amount FROM bill_charges WHERE family_id = ? AND bill_id = ? ORDER BY position ASC",
+  )
+    .bind(family, id)
     .all<ChargePayload>();
 
   return toBill(row, charges.results);
@@ -376,33 +539,112 @@ function publicBaseUrl(requestUrl: string): string {
   const origin = new URL(requestUrl).origin;
 
   if (!origin.startsWith("https://")) {
-    console.warn(JSON.stringify({ message: "bill link origin is not https", origin }));
+    console.warn(
+      JSON.stringify({ message: "bill link origin is not https", origin }),
+    );
   }
 
   return origin;
 }
 
-async function loadBillIssuer(env: Env): Promise<BillMessageIssuer> {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'promptpay_name'").first<{ value: string }>();
-  return { promptpayName: row?.value ?? "" };
+interface BillPayeeRow {
+  id: string;
+  payee_promptpay_id: string;
+  payee_promptpay_name: string;
+  payee_bank_name: string;
+  payee_bank_account_number: string;
+  payee_bank_account_name: string;
 }
 
-async function loadLinkedTenants(env: Env): Promise<Map<string, string>> {
-  const result = await env.DB.prepare("SELECT id, line_user_id FROM tenants WHERE line_user_id IS NOT NULL").all<{
-    id: string;
-    line_user_id: string;
-  }>();
+function payeeFromRow(row: BillPayeeRow): BillMessagePayee {
+  return {
+    promptpayId: row.payee_promptpay_id,
+    promptpayName: row.payee_promptpay_name,
+    bankName: bankThaiName(row.payee_bank_name),
+    bankAccountNumber: row.payee_bank_account_number,
+    bankAccountName: row.payee_bank_account_name,
+  };
+}
+
+/** ไม่ควรเกิดขึ้นจริง เพราะบิลมาจาก query ครอบครัวเดียวกันเสมอ แต่กันชนิดไว้ */
+const emptyPayee: BillMessagePayee = {
+  promptpayId: "",
+  promptpayName: "",
+  bankName: "",
+  bankAccountNumber: "",
+  bankAccountName: "",
+};
+
+const billPayeeColumns =
+  "id, payee_promptpay_id, payee_promptpay_name, payee_bank_name, payee_bank_account_number, payee_bank_account_name";
+
+/**
+ * ผู้รับเงินที่ snapshot ไว้ในบิลนั้นเอง ณ ตอนออกบิล ไม่ใช่ค่าปัจจุบันของ
+ * ตั้งค่า — แก้พร้อมเพย์หรือบัญชีธนาคารทีหลังจึงไม่ทำให้บิลที่ส่งไปแล้ว
+ * เปลี่ยนช่องทางรับเงินย้อนหลัง (ดู migration 0011)
+ */
+async function loadBillPayee(env: Env, family: string, billId: string): Promise<BillMessagePayee | null> {
+  const row = await env.DB.prepare(`SELECT ${billPayeeColumns} FROM bills WHERE family_id = ? AND id = ?`)
+    .bind(family, billId)
+    .first<BillPayeeRow>();
+
+  return row === null ? null : payeeFromRow(row);
+}
+
+/** เวอร์ชันดึงหลายบิลพร้อมกัน ใช้ตอนส่งทั้งเดือนเพื่อเลี่ยง query ในลูป */
+async function loadBillPayees(
+  env: Env,
+  family: string,
+  billIds: string[],
+): Promise<Map<string, BillMessagePayee>> {
+  if (billIds.length === 0) {
+    return new Map();
+  }
+
+  const placeholders = billIds.map(() => "?").join(", ");
+  const result = await env.DB.prepare(
+    `SELECT ${billPayeeColumns} FROM bills WHERE family_id = ? AND id IN (${placeholders})`,
+  )
+    .bind(family, ...billIds)
+    .all<BillPayeeRow>();
+
+  return new Map(result.results.map((row) => [row.id, payeeFromRow(row)]));
+}
+
+async function loadLinkedTenants(
+  env: Env,
+  family: string,
+): Promise<Map<string, string>> {
+  const result = await env.DB.prepare(
+    "SELECT id, line_user_id FROM tenants WHERE family_id = ? AND line_user_id IS NOT NULL",
+  )
+    .bind(family)
+    .all<{
+      id: string;
+      line_user_id: string;
+    }>();
 
   return new Map(result.results.map((row) => [row.id, row.line_user_id]));
 }
 
-async function loadOwnerLineUserId(env: Env): Promise<string | null> {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'owner_line_user_id'").first<{ value: string }>();
+async function loadOwnerLineUserId(
+  env: Env,
+  family: string,
+): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+  )
+    .bind(family)
+    .first<{ value: string }>();
   return row?.value ?? null;
 }
 
-async function sendOwnerSummary(env: Env, summary: SendSummary): Promise<void> {
-  const ownerId = await loadOwnerLineUserId(env);
+async function sendOwnerSummary(
+  env: Env,
+  family: string,
+  summary: SendSummary,
+): Promise<void> {
+  const ownerId = await loadOwnerLineUserId(env, family);
 
   if (ownerId === null || ownerId.trim() === "") {
     return;
@@ -429,43 +671,60 @@ function parsePaidAt(value: unknown): string | null {
   return isIsoDate(trimmed) ? trimmed : null;
 }
 
-function roomLabel(rooms: Map<string, OccupiedRoomRow>, roomId: string): string {
+function roomLabel(
+  rooms: Map<string, OccupiedRoomRow>,
+  roomId: string,
+): string {
   return rooms.get(roomId)?.room_number ?? roomId;
 }
 
 bills.get("/", async (c) => {
+  const family = familyId(c);
   const period = c.req.query("period") ?? "";
 
   if (!isPeriod(period)) {
-    return c.json(errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"), 400);
+    return c.json(
+      errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"),
+      400,
+    );
   }
 
   try {
-    const list = await loadBills(c.env, period);
+    const list = await loadBills(c.env, family, period);
     return c.json({ ok: true, period, bills: list }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "list bills failed", period, error: detail }));
+    console.error(
+      JSON.stringify({ message: "list bills failed", period, error: detail }),
+    );
     return c.json(errorBody("INTERNAL", "โหลดข้อมูลบิลไม่สำเร็จ"), 500);
   }
 });
 
 bills.get("/meter-sheet", async (c) => {
+  const family = familyId(c);
   const period = c.req.query("period") ?? "";
 
   if (!isPeriod(period)) {
-    return c.json(errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"), 400);
+    return c.json(
+      errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"),
+      400,
+    );
   }
 
   try {
-    const rates = await loadEffectiveRates(c.env);
-    const occupied = await loadOccupiedRooms(c.env);
-    const latest = await loadLatestReadings(c.env, period);
-    const defaultCharges = await loadRoomChargeDefaults(c.env);
-    const existing = await c.env.DB.prepare("SELECT id, room_id FROM bills WHERE period = ?")
-      .bind(period)
+    const rates = await loadEffectiveRates(c.env, family);
+    const occupied = await loadOccupiedRooms(c.env, family);
+    const latest = await loadLatestReadings(c.env, family, period);
+    const defaultCharges = await loadRoomChargeDefaults(c.env, family);
+    const existing = await c.env.DB.prepare(
+      "SELECT id, room_id FROM bills WHERE family_id = ? AND period = ?",
+    )
+      .bind(family, period)
       .all<{ id: string; room_id: string }>();
-    const existingByRoom = new Map(existing.results.map((row) => [row.room_id, row.id]));
+    const existingByRoom = new Map(
+      existing.results.map((row) => [row.room_id, row.id]),
+    );
 
     const rows: MeterRowPayload[] = occupied.map((room) => {
       const previous = latest.get(room.room_id);
@@ -479,9 +738,11 @@ bills.get("/meter-sheet", async (c) => {
         rent: room.rent,
         waterRate: room.water_rate ?? rates.water,
         electricMode: mode,
-        electricRate: mode === "flat" ? null : (room.electric_rate ?? rates.electric),
+        electricRate:
+          mode === "flat" ? null : (room.electric_rate ?? rates.electric),
         waterPrevious: previous?.water_current ?? room.water_meter_init,
-        electricPrevious: previous?.electric_current ?? room.electric_meter_init,
+        electricPrevious:
+          previous?.electric_current ?? room.electric_meter_init,
         existingBillId: existingByRoom.get(room.room_id) ?? null,
         charges: defaultCharges.get(room.room_id) ?? [],
       };
@@ -490,12 +751,41 @@ bills.get("/meter-sheet", async (c) => {
     return c.json({ ok: true, period, rows }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "load meter sheet failed", period, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "load meter sheet failed",
+        period,
+        error: detail,
+      }),
+    );
     return c.json(errorBody("INTERNAL", "โหลดข้อมูลมิเตอร์ไม่สำเร็จ"), 500);
   }
 });
 
+bills.get("/periods", async (c) => {
+  const family = familyId(c);
+
+  try {
+    const result = await c.env.DB.prepare(
+      "SELECT DISTINCT period FROM bills WHERE family_id = ? ORDER BY period DESC",
+    )
+      .bind(family)
+      .all<{ period: string }>();
+    return c.json(
+      { ok: true, periods: result.results.map((row) => row.period) },
+      200,
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      JSON.stringify({ message: "list bill periods failed", error: detail }),
+    );
+    return c.json(errorBody("INTERNAL", "โหลดรายการเดือนของบิลไม่สำเร็จ"), 500);
+  }
+});
+
 bills.post("/generate", async (c) => {
+  const family = familyId(c);
   const body = await readJsonObject(c.req.raw);
 
   if (body === null) {
@@ -505,13 +795,19 @@ bills.post("/generate", async (c) => {
   const period = body.period;
 
   if (!isPeriod(period)) {
-    return c.json(errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"), 400);
+    return c.json(
+      errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"),
+      400,
+    );
   }
 
   const rawEntries = body.entries;
 
   if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
-    return c.json(errorBody("VALIDATION", "กรุณาส่งรายการห้องที่จะออกบิล", "entries"), 400);
+    return c.json(
+      errorBody("VALIDATION", "กรุณาส่งรายการห้องที่จะออกบิล", "entries"),
+      400,
+    );
   }
 
   const entries: GenerateEntry[] = [];
@@ -527,8 +823,26 @@ bills.post("/generate", async (c) => {
   }
 
   try {
-    const rates = await loadEffectiveRates(c.env);
-    const occupiedById = new Map((await loadOccupiedRooms(c.env)).map((room) => [room.room_id, room]));
+    const rates = await loadEffectiveRates(c.env, family);
+    const payee = await loadPayeeSnapshot(c.env, family);
+
+    // ห้ามออกบิลที่ผู้เช่าจ่ายไม่ได้เลย — ต้องมีอย่างน้อยพร้อมเพย์หรือบัญชี
+    // ธนาคารก่อนเสมอ settings.ts บังคับไว้แล้วตอนบันทึกค่า แต่เช็คซ้ำที่นี่
+    // เผื่อครอบครัวใหม่ที่ยังไม่เคยบันทึกช่องทางรับเงินเลยมาออกบิลตรง ๆ
+    // บัญชีธนาคารนับว่าใช้ได้เฉพาะเมื่อมีทั้งชื่อธนาคารและเลขบัญชีครบคู่
+    // เลขบัญชีอย่างเดียวโดยไม่รู้ธนาคารทำให้ผู้เช่าโอนเงินไม่ได้จริง
+    const hasBankPayout = payee.bankName !== "" && payee.bankAccountNumber !== "";
+
+    if (payee.promptpayId === "" && !hasBankPayout) {
+      return c.json(
+        errorBody("VALIDATION", "กรุณาตั้งค่าพร้อมเพย์หรือบัญชีธนาคารรับเงินก่อนออกบิล"),
+        400,
+      );
+    }
+
+    const occupiedById = new Map(
+      (await loadOccupiedRooms(c.env, family)).map((room) => [room.room_id, room]),
+    );
 
     const seen = new Set<string>();
     const repeated: string[] = [];
@@ -542,7 +856,14 @@ bills.post("/generate", async (c) => {
     }
 
     if (repeated.length > 0) {
-      return c.json(errorBody("VALIDATION", `มีห้องซ้ำในรายการ: ${repeated.join(", ")}`, "entries"), 400);
+      return c.json(
+        errorBody(
+          "VALIDATION",
+          `มีห้องซ้ำในรายการ: ${repeated.join(", ")}`,
+          "entries",
+        ),
+        400,
+      );
     }
 
     const unknownRooms: string[] = [];
@@ -553,8 +874,10 @@ bills.post("/generate", async (c) => {
         continue;
       }
 
-      const room = await c.env.DB.prepare("SELECT room_number FROM rooms WHERE id = ?")
-        .bind(entry.roomId)
+      const room = await c.env.DB.prepare(
+        "SELECT room_number FROM rooms WHERE family_id = ? AND id = ?",
+      )
+        .bind(family, entry.roomId)
         .first<{ room_number: string }>();
 
       if (room === null) {
@@ -565,27 +888,55 @@ bills.post("/generate", async (c) => {
     }
 
     if (unknownRooms.length > 0) {
-      return c.json(errorBody("VALIDATION", `ไม่พบห้องในรายการ: ${unknownRooms.join(", ")}`, "entries"), 400);
+      return c.json(
+        errorBody(
+          "VALIDATION",
+          `ไม่พบห้องในรายการ: ${unknownRooms.join(", ")}`,
+          "entries",
+        ),
+        400,
+      );
     }
 
     if (vacantRooms.length > 0) {
-      return c.json(errorBody("VALIDATION", `ออกบิลได้เฉพาะห้องที่มีผู้เช่า: ${vacantRooms.join(", ")}`, "entries"), 400);
+      return c.json(
+        errorBody(
+          "VALIDATION",
+          `ออกบิลได้เฉพาะห้องที่มีผู้เช่า: ${vacantRooms.join(", ")}`,
+          "entries",
+        ),
+        400,
+      );
     }
 
-    const billed = await c.env.DB.prepare("SELECT room_id FROM bills WHERE period = ?")
-      .bind(period)
+    const billed = await c.env.DB.prepare(
+      "SELECT room_id FROM bills WHERE family_id = ? AND period = ?",
+    )
+      .bind(family, period)
       .all<{ room_id: string }>();
     const billedRoomIds = new Set(billed.results.map((row) => row.room_id));
-    const conflicts = entries.filter((entry) => billedRoomIds.has(entry.roomId)).map((entry) => roomLabel(occupiedById, entry.roomId));
+    const conflicts = entries
+      .filter((entry) => billedRoomIds.has(entry.roomId))
+      .map((entry) => roomLabel(occupiedById, entry.roomId));
 
     if (conflicts.length > 0) {
-      return c.json(errorBody("CONFLICT", `เดือนนี้มีบิลแล้ว: ${conflicts.join(", ")}`, "entries"), 409);
+      return c.json(
+        errorBody(
+          "CONFLICT",
+          `เดือนนี้มีบิลแล้ว: ${conflicts.join(", ")}`,
+          "entries",
+        ),
+        409,
+      );
     }
 
-    const latest = await loadLatestReadings(c.env, period);
+    const latest = await loadLatestReadings(c.env, family, period);
     const paired = entries
       .map((entry) => ({ entry, room: occupiedById.get(entry.roomId) }))
-      .filter((item): item is { entry: GenerateEntry; room: OccupiedRoomRow } => item.room !== undefined);
+      .filter(
+        (item): item is { entry: GenerateEntry; room: OccupiedRoomRow } =>
+          item.room !== undefined,
+      );
 
     const statements: D1PreparedStatement[] = [];
     const createdIds: string[] = [];
@@ -593,15 +944,31 @@ bills.post("/generate", async (c) => {
     for (const item of paired) {
       const room = item.room;
       const entry = item.entry;
-      const previousWater = latest.get(room.room_id)?.water_current ?? room.water_meter_init;
-      const previousElectric = latest.get(room.room_id)?.electric_current ?? room.electric_meter_init;
+      const previousWater =
+        latest.get(room.room_id)?.water_current ?? room.water_meter_init;
+      const previousElectric =
+        latest.get(room.room_id)?.electric_current ?? room.electric_meter_init;
 
       if (entry.waterCurrent < previousWater) {
-        return c.json(errorBody("VALIDATION", `เลขมิเตอร์น้ำต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${room.room_number})`, "waterCurrent"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            `เลขมิเตอร์น้ำต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${room.room_number})`,
+            "waterCurrent",
+          ),
+          400,
+        );
       }
 
       if (entry.electricCurrent < previousElectric) {
-        return c.json(errorBody("VALIDATION", `เลขมิเตอร์ไฟต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${room.room_number})`, "electricCurrent"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            `เลขมิเตอร์ไฟต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${room.room_number})`,
+            "electricCurrent",
+          ),
+          400,
+        );
       }
 
       const mode = toElectricMode(room.electric_mode);
@@ -614,7 +981,14 @@ bills.post("/generate", async (c) => {
 
       if (mode === "flat") {
         if (entry.flatElectricAmount === null) {
-          return c.json(errorBody("VALIDATION", `กรุณากรอกยอดค่าไฟเหมาจ่าย (ห้อง ${room.room_number})`, "flatElectricAmount"), 400);
+          return c.json(
+            errorBody(
+              "VALIDATION",
+              `กรุณากรอกยอดค่าไฟเหมาจ่าย (ห้อง ${room.room_number})`,
+              "flatElectricAmount",
+            ),
+            400,
+          );
         }
 
         electricAmount = Math.round(entry.flatElectricAmount);
@@ -624,7 +998,10 @@ bills.post("/generate", async (c) => {
         electricAmount = Math.round(electricUnits * electricRate);
       }
 
-      const chargeTotal = entry.charges.reduce((sum, charge) => sum + charge.amount, 0);
+      const chargeTotal = entry.charges.reduce(
+        (sum, charge) => sum + charge.amount,
+        0,
+      );
       const total = room.rent + waterAmount + electricAmount + chargeTotal;
       const id = crypto.randomUUID();
 
@@ -632,9 +1009,12 @@ bills.post("/generate", async (c) => {
       statements.push(
         c.env.DB.prepare(insertBillSql).bind(
           id,
+          family,
           room.room_id,
           room.tenant_id,
           period,
+          room.room_number,
+          room.tenant_name,
           room.rent,
           previousWater,
           entry.waterCurrent,
@@ -648,26 +1028,54 @@ bills.post("/generate", async (c) => {
           electricRate,
           electricAmount,
           total,
+          payee.dormName,
+          payee.ownerName,
+          payee.promptpayId,
+          payee.promptpayType,
+          payee.promptpayName,
+          payee.bankName,
+          payee.bankAccountNumber,
+          payee.bankAccountName,
         ),
       );
 
       entry.charges.forEach((charge, index) => {
-        statements.push(c.env.DB.prepare(insertChargeSql).bind(crypto.randomUUID(), id, charge.name, charge.amount, index));
+        statements.push(
+          c.env.DB.prepare(insertChargeSql).bind(
+            crypto.randomUUID(),
+            family,
+            id,
+            charge.name,
+            charge.amount,
+            index,
+          ),
+        );
       });
     }
 
     await c.env.DB.batch(statements);
 
     const createdIdSet = new Set(createdIds);
-    const created = (await loadBills(c.env, period)).filter((bill) => createdIdSet.has(bill.id));
+    const created = (await loadBills(c.env, family, period)).filter((bill) =>
+      createdIdSet.has(bill.id),
+    );
 
     return c.json({ ok: true, bills: created }, 201);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "generate bills failed", period, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "generate bills failed",
+        period,
+        error: detail,
+      }),
+    );
 
     if (detail.includes("UNIQUE") && detail.includes("bills")) {
-      return c.json(errorBody("CONFLICT", `เดือนนี้มีบิลแล้ว: ${period}`, "entries"), 409);
+      return c.json(
+        errorBody("CONFLICT", `เดือนนี้มีบิลแล้ว: ${period}`, "entries"),
+        409,
+      );
     }
 
     return c.json(errorBody("INTERNAL", "สร้างบิลไม่สำเร็จ"), 500);
@@ -675,6 +1083,7 @@ bills.post("/generate", async (c) => {
 });
 
 bills.patch("/:id", async (c) => {
+  const family = familyId(c);
   const id = c.req.param("id");
   const body = await readJsonObject(c.req.raw);
 
@@ -683,7 +1092,7 @@ bills.patch("/:id", async (c) => {
   }
 
   try {
-    const existing = await loadBill(c.env, id);
+    const existing = await loadBill(c.env, family, id);
 
     if (existing === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการแก้ไข"), 404);
@@ -693,18 +1102,50 @@ bills.patch("/:id", async (c) => {
       return c.json(errorBody("CONFLICT", "บิลที่จ่ายแล้วแก้ไขไม่ได้"), 409);
     }
 
+    // บิลเดือนถัดไปของห้องนี้เริ่มนับจากเลขที่กำลังจะแก้ ถ้าแก้ให้เกินจุดนั้น
+    // หน่วยช่วงเดียวกันจะถูกคิดเงินซ้ำสองรอบ
+    const readingChanged =
+      body.waterCurrent !== undefined || body.electricCurrent !== undefined;
+    const next = readingChanged
+      ? await c.env.DB.prepare(nextReadingSql)
+          .bind(family, existing.roomId, existing.period)
+          .first<{ water_previous: number; electric_previous: number }>()
+      : null;
+
     let waterCurrent = existing.waterCurrent;
 
     if (body.waterCurrent !== undefined) {
       const parsed = parseReading(body.waterCurrent);
 
       if (parsed === null) {
-        return c.json(errorBody("VALIDATION", "เลขมิเตอร์น้ำต้องเป็นตัวเลขไม่ติดลบ", "waterCurrent"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            "เลขมิเตอร์น้ำต้องเป็นตัวเลขไม่ติดลบ",
+            "waterCurrent",
+          ),
+          400,
+        );
       }
 
       if (parsed < existing.waterPrevious) {
         return c.json(
-          errorBody("VALIDATION", `เลขมิเตอร์น้ำต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${existing.roomNumber})`, "waterCurrent"),
+          errorBody(
+            "VALIDATION",
+            `เลขมิเตอร์น้ำต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${existing.roomNumber})`,
+            "waterCurrent",
+          ),
+          400,
+        );
+      }
+
+      if (next !== null && parsed > next.water_previous) {
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            `เลขมิเตอร์น้ำต้องไม่เกิน ${next.water_previous} เพราะบิลเดือนถัดไปเริ่มนับจากเลขนี้แล้ว (ห้อง ${existing.roomNumber})`,
+            "waterCurrent",
+          ),
           400,
         );
       }
@@ -718,12 +1159,34 @@ bills.patch("/:id", async (c) => {
       const parsed = parseReading(body.electricCurrent);
 
       if (parsed === null) {
-        return c.json(errorBody("VALIDATION", "เลขมิเตอร์ไฟต้องเป็นตัวเลขไม่ติดลบ", "electricCurrent"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            "เลขมิเตอร์ไฟต้องเป็นตัวเลขไม่ติดลบ",
+            "electricCurrent",
+          ),
+          400,
+        );
       }
 
       if (parsed < existing.electricPrevious) {
         return c.json(
-          errorBody("VALIDATION", `เลขมิเตอร์ไฟต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${existing.roomNumber})`, "electricCurrent"),
+          errorBody(
+            "VALIDATION",
+            `เลขมิเตอร์ไฟต้องไม่น้อยกว่าครั้งก่อน (ห้อง ${existing.roomNumber})`,
+            "electricCurrent",
+          ),
+          400,
+        );
+      }
+
+      if (next !== null && parsed > next.electric_previous) {
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            `เลขมิเตอร์ไฟต้องไม่เกิน ${next.electric_previous} เพราะบิลเดือนถัดไปเริ่มนับจากเลขนี้แล้ว (ห้อง ${existing.roomNumber})`,
+            "electricCurrent",
+          ),
           400,
         );
       }
@@ -738,7 +1201,14 @@ bills.patch("/:id", async (c) => {
       const parsed = parseCharges(body.charges);
 
       if (parsed === null) {
-        return c.json(errorBody("VALIDATION", "ค่าใช้จ่ายเพิ่มเติมต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ", "charges"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            "ค่าใช้จ่ายเพิ่มเติมต้องมีชื่อและจำนวนเงินเป็นจำนวนเต็มไม่ติดลบ",
+            "charges",
+          ),
+          400,
+        );
       }
 
       charges = parsed;
@@ -753,11 +1223,29 @@ bills.patch("/:id", async (c) => {
       const rawFlat = body.flatElectricAmount;
 
       if (rawFlat === undefined) {
-        return c.json(errorBody("VALIDATION", `กรุณากรอกยอดค่าไฟเหมาจ่าย (ห้อง ${existing.roomNumber})`, "flatElectricAmount"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            `กรุณากรอกยอดค่าไฟเหมาจ่าย (ห้อง ${existing.roomNumber})`,
+            "flatElectricAmount",
+          ),
+          400,
+        );
       }
 
-      if (typeof rawFlat !== "number" || !Number.isFinite(rawFlat) || rawFlat < 0) {
-        return c.json(errorBody("VALIDATION", "ยอดค่าไฟเหมาจ่ายต้องเป็นตัวเลขไม่ติดลบ", "flatElectricAmount"), 400);
+      if (
+        typeof rawFlat !== "number" ||
+        !Number.isFinite(rawFlat) ||
+        rawFlat < 0
+      ) {
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            "ยอดค่าไฟเหมาจ่ายต้องเป็นตัวเลขไม่ติดลบ",
+            "flatElectricAmount",
+          ),
+          400,
+        );
       }
 
       electricUnits = null;
@@ -765,7 +1253,14 @@ bills.patch("/:id", async (c) => {
       electricAmount = Math.round(rawFlat);
     } else {
       if (body.flatElectricAmount !== undefined) {
-        return c.json(errorBody("VALIDATION", "บิลห้องมิเตอร์ไม่ใช้ยอดค่าไฟเหมาจ่าย", "flatElectricAmount"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            "บิลห้องมิเตอร์ไม่ใช้ยอดค่าไฟเหมาจ่าย",
+            "flatElectricAmount",
+          ),
+          400,
+        );
       }
 
       if (body.electricCurrent !== undefined) {
@@ -782,39 +1277,68 @@ bills.patch("/:id", async (c) => {
     const total = existing.rent + waterAmount + electricAmount + chargeTotal;
 
     const statements: D1PreparedStatement[] = [
-      c.env.DB.prepare(updateBillSql).bind(waterCurrent, waterUnits, waterAmount, electricCurrent, electricUnits, electricRate, electricAmount, total, id),
+      c.env.DB.prepare(updateBillSql).bind(
+        waterCurrent,
+        waterUnits,
+        waterAmount,
+        electricCurrent,
+        electricUnits,
+        electricRate,
+        electricAmount,
+        total,
+        id,
+        family,
+      ),
     ];
 
     if (chargesProvided) {
-      statements.push(c.env.DB.prepare(deleteChargesSql).bind(id));
+      statements.push(c.env.DB.prepare(deleteChargesSql).bind(id, family));
 
       charges.forEach((charge, index) => {
-        statements.push(c.env.DB.prepare(insertChargeSql).bind(crypto.randomUUID(), id, charge.name, charge.amount, index));
+        statements.push(
+          c.env.DB.prepare(insertChargeSql).bind(
+            crypto.randomUUID(),
+            family,
+            id,
+            charge.name,
+            charge.amount,
+            index,
+          ),
+        );
       });
     }
 
     await c.env.DB.batch(statements);
 
-    const bill = await loadBill(c.env, id);
+    const bill = await loadBill(c.env, family, id);
 
     if (bill === null) {
-      console.error(JSON.stringify({ message: "update bill readback failed", billId: id }));
+      console.error(
+        JSON.stringify({ message: "update bill readback failed", billId: id }),
+      );
       return c.json(errorBody("INTERNAL", "บันทึกบิลไม่สำเร็จ"), 500);
     }
 
     return c.json({ ok: true, bill }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "update bill failed", billId: id, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "update bill failed",
+        billId: id,
+        error: detail,
+      }),
+    );
     return c.json(errorBody("INTERNAL", "บันทึกบิลไม่สำเร็จ"), 500);
   }
 });
 
 bills.delete("/:id", async (c) => {
+  const family = familyId(c);
   const id = c.req.param("id");
 
   try {
-    const existing = await loadBill(c.env, id);
+    const existing = await loadBill(c.env, family, id);
 
     if (existing === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการลบ"), 404);
@@ -825,19 +1349,26 @@ bills.delete("/:id", async (c) => {
     }
 
     await c.env.DB.batch([
-      c.env.DB.prepare(deleteChargesSql).bind(id),
-      c.env.DB.prepare(deleteBillSql).bind(id),
+      c.env.DB.prepare(deleteChargesSql).bind(id, family),
+      c.env.DB.prepare(deleteBillSql).bind(id, family),
     ]);
 
     return c.json({ ok: true }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "delete bill failed", billId: id, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "delete bill failed",
+        billId: id,
+        error: detail,
+      }),
+    );
     return c.json(errorBody("INTERNAL", "ลบบิลไม่สำเร็จ"), 500);
   }
 });
 
 bills.post("/:id/mark-paid", async (c) => {
+  const family = familyId(c);
   const id = c.req.param("id");
   const body = await readJsonObject(c.req.raw);
 
@@ -846,7 +1377,7 @@ bills.post("/:id/mark-paid", async (c) => {
   }
 
   try {
-    const existing = await loadBill(c.env, id);
+    const existing = await loadBill(c.env, family, id);
 
     if (existing === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการปิด"), 404);
@@ -859,7 +1390,14 @@ bills.post("/:id/mark-paid", async (c) => {
     const method = body.method;
 
     if (method !== "transfer" && method !== "cash") {
-      return c.json(errorBody("VALIDATION", "ช่องทางชำระต้องเป็น transfer หรือ cash", "method"), 400);
+      return c.json(
+        errorBody(
+          "VALIDATION",
+          "ช่องทางชำระต้องเป็น transfer หรือ cash",
+          "method",
+        ),
+        400,
+      );
     }
 
     let paidAt: string;
@@ -870,32 +1408,55 @@ bills.post("/:id/mark-paid", async (c) => {
       const parsed = parsePaidAt(body.paidAt);
 
       if (parsed === null) {
-        return c.json(errorBody("VALIDATION", "วันเวลาที่ชำระไม่ถูกต้อง", "paidAt"), 400);
+        return c.json(
+          errorBody("VALIDATION", "วันเวลาที่ชำระไม่ถูกต้อง", "paidAt"),
+          400,
+        );
       }
 
       paidAt = parsed;
     }
 
-    await c.env.DB.prepare("UPDATE bills SET status = 'paid', paid_at = ?, paid_method = ? WHERE id = ?")
-      .bind(paidAt, method, id)
+    // เงื่อนไข status อยู่ใน UPDATE เอง ไม่ใช่แค่เช็คใน JS ก่อนหน้า
+    // คำขอที่กดซ้ำพร้อมกันจะเปลี่ยนได้แค่คำขอเดียว อีกคำขอได้ CONFLICT
+    const result = await c.env.DB.prepare(
+      "UPDATE bills SET status = 'paid', paid_at = ?, paid_method = ? WHERE id = ? AND family_id = ? AND status = 'unpaid'",
+    )
+      .bind(paidAt, method, id, family)
       .run();
 
-    const bill = await loadBill(c.env, id);
+    if (result.meta.changes === 0) {
+      return c.json(errorBody("CONFLICT", "บิลนี้ปิดไปแล้ว"), 409);
+    }
+
+    const bill = await loadBill(c.env, family, id);
 
     if (bill === null) {
-      console.error(JSON.stringify({ message: "mark bill paid readback failed", billId: id }));
+      console.error(
+        JSON.stringify({
+          message: "mark bill paid readback failed",
+          billId: id,
+        }),
+      );
       return c.json(errorBody("INTERNAL", "ปิดบิลไม่สำเร็จ"), 500);
     }
 
     return c.json({ ok: true, bill }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "mark bill paid failed", billId: id, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "mark bill paid failed",
+        billId: id,
+        error: detail,
+      }),
+    );
     return c.json(errorBody("INTERNAL", "ปิดบิลไม่สำเร็จ"), 500);
   }
 });
 
 bills.post("/send-all", async (c) => {
+  const family = familyId(c);
   const body = await readJsonObject(c.req.raw);
 
   if (body === null) {
@@ -905,43 +1466,80 @@ bills.post("/send-all", async (c) => {
   const period = body.period;
 
   if (!isPeriod(period)) {
-    return c.json(errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"), 400);
+    return c.json(
+      errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "period"),
+      400,
+    );
   }
 
   try {
-    const list = await loadBills(c.env, period);
+    const list = await loadBills(c.env, family, period);
 
     if (list.length === 0) {
-      return c.json(errorBody("VALIDATION", `ยังไม่มีบิลของเดือน ${thaiPeriodLabel(period)}`, "period"), 400);
+      return c.json(
+        errorBody(
+          "VALIDATION",
+          `ยังไม่มีบิลของเดือน ${thaiPeriodLabel(period)}`,
+          "period",
+        ),
+        400,
+      );
     }
 
     let targets = list;
     const rawBillIds = body.billIds;
 
     if (rawBillIds !== undefined) {
-      if (!Array.isArray(rawBillIds) || rawBillIds.some((value) => typeof value !== "string")) {
-        return c.json(errorBody("VALIDATION", "รายการบิลที่จะส่งไม่ถูกต้อง", "billIds"), 400);
+      if (
+        !Array.isArray(rawBillIds) ||
+        rawBillIds.some((value) => typeof value !== "string")
+      ) {
+        return c.json(
+          errorBody("VALIDATION", "รายการบิลที่จะส่งไม่ถูกต้อง", "billIds"),
+          400,
+        );
       }
 
       const requested = rawBillIds as string[];
-      const unknown = requested.filter((billId) => !list.some((bill) => bill.id === billId));
+      const unknown = requested.filter(
+        (billId) => !list.some((bill) => bill.id === billId),
+      );
 
       if (unknown.length > 0) {
-        return c.json(errorBody("VALIDATION", `ไม่พบบิลของเดือนนี้ในรายการ: ${unknown.join(", ")}`, "billIds"), 400);
+        return c.json(
+          errorBody(
+            "VALIDATION",
+            `ไม่พบบิลของเดือนนี้ในรายการ: ${unknown.join(", ")}`,
+            "billIds",
+          ),
+          400,
+        );
       }
 
       const selected = new Set(requested);
       targets = list.filter((bill) => selected.has(bill.id));
     }
 
+    const alreadyPaid = targets.filter((bill) => bill.status === "paid");
+    targets = targets.filter((bill) => bill.status !== "paid");
+
     if (!lineChannelConfigured(c.env)) {
-      console.error(JSON.stringify({ message: "send all bills failed", period, reason: "line channel is not configured" }));
-      return c.json(errorBody("UPSTREAM", "ช่องทาง LINE ของหอยังไม่ได้ตั้งค่า"), 503);
+      console.error(
+        JSON.stringify({
+          message: "send all bills failed",
+          period,
+          reason: "line channel is not configured",
+        }),
+      );
+      return c.json(
+        errorBody("UPSTREAM", "ช่องทาง LINE ของหอยังไม่ได้ตั้งค่า"),
+        503,
+      );
     }
 
-    const issuer = await loadBillIssuer(c.env);
     const baseUrl = publicBaseUrl(c.req.url);
-    const links = await loadLinkedTenants(c.env);
+    const payees = await loadBillPayees(c.env, family, targets.map((bill) => bill.id));
+    const links = await loadLinkedTenants(c.env, family);
 
     let sent = 0;
     let failed = 0;
@@ -954,11 +1552,16 @@ bills.post("/send-all", async (c) => {
       const lineUserId = links.get(bill.tenantId);
 
       if (lineUserId === undefined) {
-        skipped.push({ roomNumber: bill.roomNumber, tenantName: bill.tenantName });
+        skipped.push({
+          roomNumber: bill.roomNumber,
+          tenantName: bill.tenantName,
+        });
         continue;
       }
 
-      const delivered = await pushMessage(c.env, lineUserId, [buildBillFlexMessage(bill, issuer, baseUrl)]);
+      const delivered = await pushMessage(c.env, lineUserId, [
+        buildBillFlexMessage(bill, payees.get(bill.id) ?? emptyPayee, baseUrl),
+      ]);
 
       if (delivered === null) {
         failed += 1;
@@ -973,71 +1576,147 @@ bills.post("/send-all", async (c) => {
 
     if (sentIds.length > 0) {
       const sentAt = new Date().toISOString();
-      await c.env.DB.batch(sentIds.map((billId) => c.env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?").bind(sentAt, billId)));
+      await c.env.DB.batch(
+        sentIds.map((billId) =>
+          c.env.DB.prepare(
+            "UPDATE bills SET sent_at = ? WHERE id = ? AND family_id = ?",
+          ).bind(sentAt, billId, family),
+        ),
+      );
     }
 
     const total = targets.reduce((sum, bill) => sum + bill.total, 0);
 
-    await sendOwnerSummary(c.env, { period, count: targets.length, total, sent, failed, failedRooms, skipped });
+    await sendOwnerSummary(c.env, family, {
+      period,
+      count: targets.length,
+      total,
+      sent,
+      failed,
+      failedRooms,
+      skipped,
+    });
 
-    return c.json({ ok: true, period, sent, failed, failedIds, skipped }, 200);
+    return c.json(
+      {
+        ok: true,
+        period,
+        sent,
+        failed,
+        failedIds,
+        skipped,
+        alreadyPaid: alreadyPaid.map((bill) => ({
+          roomNumber: bill.roomNumber,
+          tenantName: bill.tenantName,
+        })),
+        alreadyPaidIds: alreadyPaid.map((bill) => bill.id),
+      },
+      200,
+    );
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "send all bills failed", period, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "send all bills failed",
+        period,
+        error: detail,
+      }),
+    );
     return c.json(errorBody("INTERNAL", "ส่งบิลทาง LINE ไม่สำเร็จ"), 500);
   }
 });
 
 bills.post("/:id/send", async (c) => {
+  const family = familyId(c);
   const id = c.req.param("id");
 
   try {
-    const bill = await loadBill(c.env, id);
+    const bill = await loadBill(c.env, family, id);
 
     if (bill === null) {
       return c.json(errorBody("NOT_FOUND", "ไม่พบบิลที่ต้องการส่ง"), 404);
     }
 
     if (bill.status === "paid") {
-      return c.json(errorBody("CONFLICT", "บิลที่จ่ายแล้วส่งเป็นใบแจ้งหนี้ไม่ได้"), 409);
+      return c.json(
+        errorBody("CONFLICT", "บิลที่จ่ายแล้วส่งเป็นใบแจ้งหนี้ไม่ได้"),
+        409,
+      );
     }
 
     if (!lineChannelConfigured(c.env)) {
-      console.error(JSON.stringify({ message: "send bill failed", billId: id, reason: "line channel is not configured" }));
-      return c.json(errorBody("UPSTREAM", "ช่องทาง LINE ของหอยังไม่ได้ตั้งค่า"), 503);
+      console.error(
+        JSON.stringify({
+          message: "send bill failed",
+          billId: id,
+          reason: "line channel is not configured",
+        }),
+      );
+      return c.json(
+        errorBody("UPSTREAM", "ช่องทาง LINE ของหอยังไม่ได้ตั้งค่า"),
+        503,
+      );
     }
 
-    const link = await c.env.DB.prepare("SELECT line_user_id FROM tenants WHERE id = ?")
-      .bind(bill.tenantId)
+    const link = await c.env.DB.prepare(
+      "SELECT line_user_id FROM tenants WHERE family_id = ? AND id = ?",
+    )
+      .bind(family, bill.tenantId)
       .first<{ line_user_id: string | null }>();
     const lineUserId = link?.line_user_id ?? null;
 
     if (lineUserId === null || lineUserId === "") {
-      return c.json(errorBody("CONFLICT", "ผู้เช่ารายนี้ยังไม่เชื่อม LINE ส่งบิลไม่ได้"), 409);
+      return c.json(
+        errorBody("CONFLICT", "ผู้เช่ารายนี้ยังไม่เชื่อม LINE ส่งบิลไม่ได้"),
+        409,
+      );
     }
 
-    const issuer = await loadBillIssuer(c.env);
     const baseUrl = publicBaseUrl(c.req.url);
-    const delivered = await pushMessage(c.env, lineUserId, [buildBillFlexMessage(bill, issuer, baseUrl)]);
+    const payee = await loadBillPayee(c.env, family, id);
+    const delivered = await pushMessage(c.env, lineUserId, [
+      buildBillFlexMessage(bill, payee ?? emptyPayee, baseUrl),
+    ]);
 
     if (delivered === null) {
-      console.error(JSON.stringify({ message: "send bill failed", billId: id, reason: "line push failed" }));
+      console.error(
+        JSON.stringify({
+          message: "send bill failed",
+          billId: id,
+          reason: "line push failed",
+        }),
+      );
       return c.json(errorBody("UPSTREAM", "ส่งบิลทาง LINE ไม่สำเร็จ"), 502);
     }
 
-    await c.env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?").bind(new Date().toISOString(), id).run();
+    await c.env.DB.prepare(
+      "UPDATE bills SET sent_at = ? WHERE id = ? AND family_id = ?",
+    )
+      .bind(new Date().toISOString(), id, family)
+      .run();
 
-    const updated = await loadBill(c.env, id);
+    const updated = await loadBill(c.env, family, id);
 
     if (updated === null) {
-      console.error(JSON.stringify({ message: "send bill readback failed", billId: id }));
-      return c.json(errorBody("INTERNAL", "บันทึกสถานะการส่งบิลไม่สำเร็จ"), 500);
+      console.error(
+        JSON.stringify({ message: "send bill readback failed", billId: id }),
+      );
+      return c.json(
+        errorBody("INTERNAL", "บันทึกสถานะการส่งบิลไม่สำเร็จ"),
+        500,
+      );
     }
 
     return c.json({ ok: true, bill: updated }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ message: "send bill failed", billId: id, error: detail }));
+    console.error(
+      JSON.stringify({
+        message: "send bill failed",
+        billId: id,
+        error: detail,
+      }),
+    );
     return c.json(errorBody("INTERNAL", "ส่งบิลไม่สำเร็จ"), 500);
   }
 });

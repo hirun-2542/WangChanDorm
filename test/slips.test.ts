@@ -1,6 +1,7 @@
 import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import app from "../src/worker/index";
+import { type TestSession, configurePayout, createFamily, signIn, withAuth } from "./auth-helper";
 import { flexStrings } from "./flex";
 
 const webhookUrl = "https://dorm.test/webhook/line";
@@ -17,8 +18,17 @@ const lineReplyUrl = "https://api.line.me/v2/bot/message/reply";
 const slipOkBranchId = "10275";
 const slipOkUrl = `https://api.slipok.com/api/line/apikey/${slipOkBranchId}`;
 
-const slipDate = "2026-09-03T10:15:00+07:00";
-const slipPaidAt = "2026-09-03T03:15:00.000Z";
+/** เวลาบนสลิปตามที่ผู้ให้บริการอ่านได้ (10:15:07 น. ไทย = 03:15:07Z) */
+const slipTimestamp = "2026-09-03T03:15:07.000Z";
+const slipDate = slipTimestamp;
+const slipPaidAt = slipTimestamp;
+
+let session: TestSession;
+
+beforeAll(async () => {
+  session = await signIn();
+  await configurePayout();
+});
 
 
 
@@ -209,12 +219,21 @@ async function postWebhook(body: string): Promise<Response> {
   return response;
 }
 
+let eventSeq = 0;
+
+/** LINE ส่ง webhookEventId มาเสมอ ใช้ค่าที่ไม่ซ้ำเพื่อไม่ให้เหตุการณ์ข้ามเทสต์ถูกกันซ้ำ */
+function uniqueEventId(): string {
+  eventSeq += 1;
+  return `evt-${String(eventSeq)}-${Math.random().toString(16).slice(2)}`;
+}
+
 function textEvent(userId: string, replyToken: string, text: string): Record<string, unknown> {
   return {
     type: "message",
     replyToken,
     timestamp: 0,
     mode: "active",
+    webhookEventId: uniqueEventId(),
     source: { type: "user", userId },
     message: { type: "text", id: "msg-text", text },
   };
@@ -226,6 +245,7 @@ function imageEvent(userId: string, replyToken: string, messageId: string): Reco
     replyToken,
     timestamp: 0,
     mode: "active",
+    webhookEventId: uniqueEventId(),
     source: { type: "user", userId },
     message: { type: "image", id: messageId, contentProvider: { type: "line" } },
   };
@@ -282,35 +302,71 @@ function expectReplied(...needles: string[]): void {
   }
 }
 
-function verifiedBody(amount: number, transRef: string, date = "2026-09-03", time = "10:15"): unknown {
+interface SlipOkOverrides {
+  transDate?: unknown;
+  transTime?: unknown;
+  transTimestamp?: unknown;
+  receiver?: unknown;
+}
+
+function verifiedBody(amount: number, transRef: string, overrides: SlipOkOverrides = {}): unknown {
   return {
     success: true,
     data: {
+      success: true,
       amount,
-      date,
-      time,
-      bank: "KBANK",
-      sender: "สมชาย ใจดี",
-      receiver: "หอพักวังจันทร์",
       transRef,
+      transDate: "20260903",
+      transTime: "10:15:07",
+      transTimestamp: slipTimestamp,
+      receivingBank: "006",
+      sendingBank: "004",
+      sender: { displayName: "สมชาย ใจดี", name: "SOMCHAI J", proxy: { type: "MSISDN", value: "089xxx1234" } },
+      receiver: {
+        displayName: "หอพักวังจันทร์",
+        name: "WANGCHAN DORM",
+        proxy: { type: "MSISDN", value: "081xxx5678" },
+        account: { type: "BANKAC", value: "xxx-x-x5678-x" },
+      },
+      ...overrides,
     },
   };
 }
 
 function post(url: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  return SELF.fetch(
+    url,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
 async function putRates(water: number, electric: number): Promise<void> {
-  const response = await SELF.fetch(settingsUrl, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ defaultWaterRate: water, defaultElectricRate: electric }),
-  });
+  const response = await SELF.fetch(
+    settingsUrl,
+    withAuth(session, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ defaultWaterRate: water, defaultElectricRate: electric }),
+    }),
+  );
+
+  expect(response.status).toBe(200);
+}
+
+/** ตั้งบัญชีรับเงินของหอ เพื่อให้เทียบกับบัญชีผู้รับบนสลิปได้ */
+async function putPayee(promptpayId: string): Promise<void> {
+  const response = await SELF.fetch(
+    settingsUrl,
+    withAuth(session, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promptpayType: "phone", promptpayId }),
+    }),
+  );
 
   expect(response.status).toBe(200);
 }
@@ -334,7 +390,7 @@ async function generateBill(roomId: string, entry: Record<string, unknown>, peri
 }
 
 async function listBills(period: string): Promise<BillPayload[]> {
-  const response = await SELF.fetch(`${billsUrl}?period=${period}`);
+  const response = await SELF.fetch(`${billsUrl}?period=${period}`, withAuth(session));
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills;
 }
@@ -359,8 +415,9 @@ async function storedImageKeys(): Promise<string[]> {
   return objects.objects.map((object) => object.key).sort();
 }
 
+/** เบอร์ที่ลงทะเบียนในเทสต์คือ 081-234-5678 เลขท้าย 4 ตัวจึงเป็น 5678 */
 async function linkTenantByRoomNumber(roomNumber: string, lineUserId: string, fullName: string): Promise<void> {
-  const response = await postWebhook(lineEvents([textEvent(lineUserId, `tok-${lineUserId}`, roomNumber)]));
+  const response = await postWebhook(lineEvents([textEvent(lineUserId, `tok-${lineUserId}`, `${roomNumber} 5678`)]));
   expect(response.status).toBe(200);
   expectReplied(fullName, roomNumber, "เชื่อม LINE");
 }
@@ -378,7 +435,7 @@ function queueIds(slips: QueueSlip[]): string[] {
 }
 
 async function listQueue(query = ""): Promise<QueueSlip[]> {
-  const response = await SELF.fetch(`${slipsUrl}${query}`);
+  const response = await SELF.fetch(`${slipsUrl}${query}`, withAuth(session));
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; slips: QueueSlip[] }>()).slips;
 }
@@ -389,14 +446,14 @@ function resolveSlip(id: string, payload: Record<string, unknown>): Promise<Resp
 
 async function linkOwner(lineUserId: string): Promise<void> {
   await env.DB.prepare(
-    "INSERT INTO settings (key, value, updated_at) VALUES ('owner_line_user_id', ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'owner_line_user_id', ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
   )
-    .bind(lineUserId)
+    .bind(session.familyId, lineUserId)
     .run();
 }
 
 async function unlinkOwner(): Promise<void> {
-  await env.DB.prepare("DELETE FROM settings WHERE key = 'owner_line_user_id'").run();
+  await env.DB.prepare("DELETE FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'").bind(session.familyId).run();
 }
 
 beforeEach(() => {
@@ -491,10 +548,13 @@ describe("POST /webhook/line image events", () => {
     expect(slip.image_key).not.toContain(tenant.id);
     expect(slip.image_key).not.toContain(bill.id);
 
-    const stored = await SELF.fetch(`${slipBaseUrl}/${slip.image_key}`);
+    const unauthenticated = await SELF.fetch(`${slipBaseUrl}/${slip.image_key}`);
+    expect(unauthenticated.status).toBe(401);
+
+    const stored = await SELF.fetch(`${slipBaseUrl}/${slip.image_key}`, withAuth(session));
     expect(stored.status).toBe(200);
     expect(stored.headers.get("content-type")).toBe("image/png");
-    expect(stored.headers.get("cache-control")).toBe("public, max-age=86400");
+    expect(stored.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await stored.arrayBuffer())).toEqual(slipImageBytes);
 
     const verifies = slipOkCalls();
@@ -509,7 +569,7 @@ describe("POST /webhook/line image events", () => {
     expect(image.name).toBe("slip.png");
     expect(image.type).toBe("image/png");
     expect(new Uint8Array(await image.arrayBuffer())).toEqual(slipImageBytes);
-    expect(form.get("log")).toBe("false");
+    expect(form.get("log")).toBe("true");
     expect(form.get("amount")).toBe("3550");
     expect([...form.keys()].sort()).toEqual(["amount", "files", "log"]);
 
@@ -701,7 +761,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    slipOkBody = { success: true, data: { date: "2026-09-03", time: "10:15", bank: "KBANK", sender: "สมชาย ใจดี" } };
+    slipOkBody = { success: true, data: { transDate: "20260903", transTime: "10:15:07", bank: "KBANK", sender: "สมชาย ใจดี" } };
 
     const response = await sendSlip("U-slip-6", "msg-slip-6");
     expect(response.status).toBe(200);
@@ -727,7 +787,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    slipOkBody = { status: 200, data: { amount: 3550, date: "2026-09-03", time: "10:15", bank: "KBANK", sender: "สมชาย ใจดี", transRef: "TR-0007" } };
+    slipOkBody = { status: 200, data: { amount: 3550, transDate: "20260903", transTime: "10:15:07", bank: "KBANK", sender: "สมชาย ใจดี", transRef: "TR-0007" } };
 
     const response = await sendSlip("U-slip-7", "msg-slip-7");
     expect(response.status).toBe(200);
@@ -751,7 +811,7 @@ describe("POST /webhook/line image events", () => {
 
     outboundCalls = [];
     slipOkStatus = 200;
-    slipOkBody = { success: false, code: 1007, message: "ไม่พบ QR ในรูปภาพ", data: { amount: 3550, date: "2026-09-03", time: "10:15" } };
+    slipOkBody = { success: false, code: 1007, message: "ไม่พบ QR ในรูปภาพ", data: { amount: 3550, transDate: "20260903", transTime: "10:15:07" } };
 
     const response = await sendSlip("U-slip-12", "msg-slip-12");
     expect(response.status).toBe(200);
@@ -810,7 +870,7 @@ describe("POST /webhook/line image events", () => {
       success: false,
       code: 1013,
       message: "ยอดเงินที่ส่งไปไม่ตรงกับสลิป",
-      data: { amount: 3500, date: "2026-09-03", time: "10:15", bank: "KBANK", sender: "สมศรี ผู้ให้บริการยอดไม่ตรง", transRef: "TR-3001" },
+      data: { amount: 3500, transDate: "20260903", transTime: "10:15:07", bank: "KBANK", sender: "สมศรี ผู้ให้บริการยอดไม่ตรง", transRef: "TR-3001" },
     };
 
     const response = await sendSlip("U-slip-22", "msg-slip-22");
@@ -900,7 +960,7 @@ describe("POST /webhook/line image events", () => {
 
     const form = await new Request(slipOkUrl, { method: "POST", body: first(slipOkCalls()).form }).formData();
     expect(form.has("amount")).toBe(false);
-    expect(form.get("log")).toBe("false");
+    expect(form.get("log")).toBe("true");
     expect(asFile(form.get("files")).name).toBe("slip.jpg");
     expect(asFile(form.get("files")).type).toBe("image/jpeg");
 
@@ -1018,7 +1078,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
-    slipOkBody = verifiedBody(3550, "TR-0013", "17/09/2026");
+    slipOkBody = verifiedBody(3550, "TR-0013", { transTimestamp: null, transDate: "17/09/2026", transTime: null });
 
     const response = await sendSlip("U-slip-13", "msg-slip-13");
     expect(response.status).toBe(200);
@@ -1166,6 +1226,147 @@ describe("POST /webhook/line image events", () => {
     const october = await billOf("2026-10", second.id);
     expect([september.status, october.status].filter((status) => status === "paid")).toHaveLength(1);
   });
+
+  it("processes a redelivered image event exactly once and calls SlipOK once", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S124", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย ส่งซ้ำเหตุการณ์");
+    await linkTenantByRoomNumber("S124", "U-slip-24", "สมชาย ส่งซ้ำเหตุการณ์");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-0024");
+
+    const body = lineEvents([imageEvent("U-slip-24", "tok-slip-24", "msg-slip-24")]);
+
+    expect((await postWebhook(body)).status).toBe(200);
+    expect((await postWebhook(body)).status).toBe(200);
+
+    const slips = await readSlipsFor("U-slip-24");
+    expect(slips).toHaveLength(1);
+    expect(slips[0]?.status).toBe("matched");
+    expect(slips[0]?.bill_id).toBe(bill.id);
+    expect(downloadCalls()).toHaveLength(1);
+    expect(slipOkCalls()).toHaveLength(1);
+
+    const paid = await billOf("2026-09", bill.id);
+    expect(paid.status).toBe("paid");
+  });
+
+  it("keeps a slip paid to another account in review and leaves the bill open", async () => {
+    await putRates(18, 7);
+    await putPayee("0812345678");
+    const room = await newRoom({ roomNumber: "S125", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหญิง โอนผิดบัญชี");
+    await linkTenantByRoomNumber("S125", "U-slip-25", "สมหญิง โอนผิดบัญชี");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-0025", {
+      receiver: {
+        displayName: "คนอื่น",
+        name: "SOMEONE ELSE",
+        proxy: { type: "MSISDN", value: "081xxx0000" },
+        account: { type: "BANKAC", value: "xxx-x-x0000-x" },
+      },
+    });
+
+    const response = await sendSlip("U-slip-25", "msg-slip-25");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-25");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slip.bill_total).toBe(3550);
+    expect(slip.trans_ref).toBe("TR-0025");
+    expect(slipResultOf(slip).reason).toBe("not_verified");
+
+    const unchanged = await billOf("2026-09", bill.id);
+    expect(unchanged.status).toBe("unpaid");
+    expect(unchanged.paidAt).toBeNull();
+
+    expectPushed("U-slip-25", "โอนเข้าบัญชีอื่น", "บัญชีรับเงินของหอ");
+    expect(pushTextFor("U-slip-25")).not.toContain("ปิดบิลเรียบร้อย");
+  });
+
+  it("keeps a slip the provider flags as the wrong receiver in review", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S126", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมปอง ผู้ให้บริการรู้ทัน");
+    await linkTenantByRoomNumber("S126", "U-slip-26", "สมปอง ผู้ให้บริการรู้ทัน");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkBody = { success: false, code: 1014, message: "บัญชีผู้รับไม่ตรงกับบัญชีหลักของร้าน" };
+
+    const response = await sendSlip("U-slip-26", "msg-slip-26");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-26");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slipResultOf(slip).reason).toBe("not_verified");
+    expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
+    expectPushed("U-slip-26", "โอนเข้าบัญชีอื่น");
+  });
+
+  it("still closes the bill when the receiver matches the configured payee", async () => {
+    await putRates(18, 7);
+    await putPayee("0812345678");
+    const room = await newRoom({ roomNumber: "S127", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย โอนถูกบัญชี");
+    await linkTenantByRoomNumber("S127", "U-slip-27", "สมชาย โอนถูกบัญชี");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-0027");
+
+    const response = await sendSlip("U-slip-27", "msg-slip-27");
+    expect(response.status).toBe(200);
+
+    expect((await readOneSlipFor("U-slip-27")).status).toBe("matched");
+    expect((await billOf("2026-09", bill.id)).status).toBe("paid");
+  });
+});
+
+describe("slip family isolation", () => {
+  it("keeps another family's slips out of the queue and out of reach", async () => {
+    const otherFamily = await createFamily("ครอบครัวอื่น");
+    const foreignSlipId = crypto.randomUUID();
+
+    await env.DB.prepare(
+      "INSERT INTO slips (id, family_id, line_user_id, image_key, status) VALUES (?, ?, 'U-foreign-slip', 'foreign.png', 'pending_review')",
+    )
+      .bind(foreignSlipId, otherFamily)
+      .run();
+
+    const queue = await listQueue();
+    expect(queueIds(queue)).not.toContain(foreignSlipId);
+
+    const rejected = await resolveSlip(foreignSlipId, { action: "reject" });
+    expect(rejected.status).toBe(404);
+    expect((await rejected.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const settled = await resolveSlip(foreignSlipId, { action: "settle" });
+    expect(settled.status).toBe(404);
+
+    const untouched = await env.DB.prepare("SELECT status FROM slips WHERE id = ?")
+      .bind(foreignSlipId)
+      .first<{ status: string }>();
+    expect(untouched?.status).toBe("pending_review");
+
+    const other = await signIn("owner", otherFamily);
+    const response = await SELF.fetch(slipsUrl, withAuth(other));
+    expect(response.status).toBe(200);
+    const foreignQueue = (await response.json<{ ok: boolean; slips: QueueSlip[] }>()).slips;
+    expect(queueIds(foreignQueue)).toEqual([foreignSlipId]);
+  });
 });
 
 describe("owner alert for slips that land in review", () => {
@@ -1310,7 +1511,7 @@ describe("GET /api/slips", () => {
     expect(queueIds(matched)).toContain(closedSlip.id);
     expect(queueIds(matched)).not.toContain(reviewSlip.id);
 
-    const invalid = await SELF.fetch(`${slipsUrl}?status=done`);
+    const invalid = await SELF.fetch(`${slipsUrl}?status=done`, withAuth(session));
     expect(invalid.status).toBe(400);
 
     const invalidBody = await invalid.json<ErrorBody>();
@@ -1604,8 +1805,13 @@ describe("POST /api/slips/:id/resolve", () => {
 });
 
 describe("GET /slips/:file", () => {
-  it("answers 404 for an unknown key", async () => {
+  it("refuses an unauthenticated request", async () => {
     const response = await SELF.fetch(`${slipBaseUrl}/00000000000000000000000000000000.png`);
+    expect(response.status).toBe(401);
+  });
+
+  it("answers 404 for an unknown key", async () => {
+    const response = await SELF.fetch(`${slipBaseUrl}/00000000000000000000000000000000.png`, withAuth(session));
     expect(response.status).toBe(404);
 
     const body = await response.json<ErrorBody>();
@@ -1614,8 +1820,29 @@ describe("GET /slips/:file", () => {
   });
 
   it("answers 404 for a file that is not a slip image", async () => {
-    const response = await SELF.fetch(`${slipBaseUrl}/slip.txt`);
+    const response = await SELF.fetch(`${slipBaseUrl}/slip.txt`, withAuth(session));
     expect(response.status).toBe(404);
     expect((await response.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+  });
+
+  it("hides another family's slip image even with the exact key", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S199", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย กันข้ามครอบครัว");
+    await linkTenantByRoomNumber("S199", "U-slip-cross", "สมชาย กันข้ามครอบครัว");
+    await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-CROSS");
+    await sendSlip("U-slip-cross", "msg-slip-cross");
+
+    const slip = await readOneSlipFor("U-slip-cross");
+
+    const other = await signIn("owner", await createFamily("หอของอีกครอบครัว"));
+    const response = await SELF.fetch(`${slipBaseUrl}/${slip.image_key}`, withAuth(other));
+    expect(response.status).toBe(404);
+
+    const mine = await SELF.fetch(`${slipBaseUrl}/${slip.image_key}`, withAuth(session));
+    expect(mine.status).toBe(200);
   });
 });

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import type { FamilyRole } from "./api";
 
 export interface PageProps {
   view: string;
@@ -60,7 +61,7 @@ export function Toolbar({ children, className }: ToolbarProps) {
   );
 }
 
-export type BadgeTone = "paid" | "unpaid" | "vacant" | "review" | "danger" | "neutral";
+export type BadgeTone = "paid" | "unpaid" | "vacant" | "review" | "unbilled" | "occupied" | "danger" | "neutral";
 
 export interface BadgeProps {
   tone: BadgeTone;
@@ -274,16 +275,18 @@ export interface ToastProps {
 }
 
 export function Toast({ message, open }: ToastProps) {
-  if (!open) {
-    return null;
-  }
-
+  // The live region stays mounted (and hidden via CSS) so assistive tech knows it
+  // before its contents change; only the message is swapped.
   return (
-    <div className="toast" role="status" aria-live="polite">
-      <span className="ms text-[18px]" aria-hidden="true">
-        info
-      </span>
-      {message}
+    <div className={open ? "toast" : "toast toast-off"} role="status" aria-live="polite" aria-atomic="true">
+      {open && (
+        <>
+          <span className="ms text-[18px]" aria-hidden="true">
+            info
+          </span>
+          {message}
+        </>
+      )}
     </div>
   );
 }
@@ -410,15 +413,16 @@ export interface DataTableProps<T> {
   getRowKey: (row: T) => string;
   emptyMessage?: string;
   minWidth?: number;
+  wrapClassName?: string;
 }
 
-export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = "ไม่พบข้อมูล", minWidth = 720 }: DataTableProps<T>) {
+export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = "ไม่พบข้อมูล", minWidth = 720, wrapClassName }: DataTableProps<T>) {
   if (rows.length === 0) {
     return <p className="px-3 py-8 text-center text-sm text-fog">{emptyMessage}</p>;
   }
 
   return (
-    <div className="table-wrap">
+    <div className={wrapClassName === undefined ? "table-wrap table-wrap-scroll" : `table-wrap table-wrap-scroll ${wrapClassName}`}>
       <table className="table" style={{ minWidth: `${minWidth}px` }}>
         <thead>
           <tr>
@@ -450,9 +454,10 @@ export interface StatBlockProps {
   value: string;
   supporting?: string;
   icon?: string;
+  valueClassName?: string;
 }
 
-export function StatBlock({ label, value, supporting, icon }: StatBlockProps) {
+export function StatBlock({ label, value, supporting, icon, valueClassName }: StatBlockProps) {
   return (
     <div>
       <div className="flex items-center gap-2">
@@ -463,8 +468,58 @@ export function StatBlock({ label, value, supporting, icon }: StatBlockProps) {
         )}
         <p className="text-xs text-fog">{label}</p>
       </div>
-      <p className="num mt-1 text-lg text-charcoal">{value}</p>
+      <p className={`num mt-1 text-lg leading-none ${valueClassName ?? "text-charcoal"}`}>{value}</p>
       {supporting !== undefined && <p className="mt-0.5 text-xs text-steel">{supporting}</p>}
     </div>
+  );
+}
+
+export interface HeroMoneyProps {
+  value: string;
+  unit?: string;
+  label?: string;
+}
+
+export function HeroMoney({ value, unit = " บาท", label }: HeroMoneyProps) {
+  return (
+    <div>
+      {label !== undefined && <p className="text-[13px] text-fog">{label}</p>}
+      <p className="num text-display font-medium leading-none tracking-[-0.02em] text-charcoal">
+        {value}
+        {unit}
+      </p>
+    </div>
+  );
+}
+
+export interface MonogramProps {
+  /** คลาสขนาด เช่น h-11 w-11 — ค่าเริ่มต้น h-9 w-9 */
+  className?: string;
+}
+
+/** ตราของหอ — ไล่สีแบบ conic เฉพาะที่นี่ และมีอักษรย่ออยู่กลาง */
+export function Monogram({ className }: MonogramProps) {
+  return (
+    <span
+      className={`grid ${className ?? "h-9 w-9"} shrink-0 place-items-center rounded-xl bg-[image:var(--gradient-conic-spectrum)] p-[2px]`}
+      aria-hidden="true"
+    >
+      <span className="grid h-full w-full place-items-center rounded-xl bg-canvas-white text-[13px] font-semibold text-charcoal">
+        วจ
+      </span>
+    </span>
+  );
+}
+
+/** สิทธิ์ในครอบครัว — โทนน้ำเงินสงวนให้เจ้าของเพราะเป็นการกระทำที่สูงกว่า */
+export function RoleBadge({ role }: { role: FamilyRole }) {
+  return role === "owner" ? (
+    <Badge tone="unpaid" icon="shield_person">
+      เจ้าของหอ
+    </Badge>
+  ) : (
+    <Badge tone="neutral" icon="person">
+      สมาชิก
+    </Badge>
   );
 }

@@ -11,7 +11,7 @@
   --color-graphite: #262626;
   --color-slate: #404040;
   --color-steel: #525252;
-  --color-fog: #737373;
+  --color-fog: #6b6b6b;
   --color-silver: #a3a3a3;
   --color-electric-blue: #2563eb;
   --color-deep-sapphire: #1e40af;
@@ -31,6 +31,10 @@
   --color-status-vacant-fg: #525252;
   --color-status-review-bg: #fff7e6;
   --color-status-review-fg: #b45309;
+  --color-status-unbilled-bg: #ede9fe;
+  --color-status-unbilled-fg: #6d28d9;
+  --color-status-occupied-bg: #dbeaff;
+  --color-status-occupied-fg: #1e40af;
 
   --gradient-conic-spectrum: conic-gradient(
     from -81deg,
@@ -50,6 +54,8 @@
 
   --shadow-subtle: rgba(0, 0, 0, 0.05) 0 1px 2px;
   --shadow-sm: rgba(0, 0, 0, 0.1) 0 4px 6px -1px, rgba(0, 0, 0, 0.1) 0 2px 4px -2px;
+
+  --text-display: 40px;
 
   --font-sans: Inter, "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
 }
@@ -219,7 +225,7 @@
 
   .btn-sm {
     min-height: 32px;
-    padding: 0 12px;
+    padding: 4px 12px;
     font-size: 13px;
   }
 
@@ -316,6 +322,16 @@
   .badge-review {
     background-color: var(--color-status-review-bg);
     color: var(--color-status-review-fg);
+  }
+
+  .badge-unbilled {
+    background-color: var(--color-status-unbilled-bg);
+    color: var(--color-status-unbilled-fg);
+  }
+
+  .badge-occupied {
+    background-color: var(--color-status-occupied-bg);
+    color: var(--color-status-occupied-fg);
   }
 
   .badge-danger {
@@ -442,6 +458,27 @@
     overflow-x: auto;
   }
 
+  /* Scroll affordance: an edge shadow that only appears while there is more table
+     off-screen, and fades out once that edge is reached. Apply next to `.table-wrap`
+     (DataTable does this itself and also accepts `wrapClassName`). */
+  .table-wrap-scroll {
+    background-image:
+      linear-gradient(to right, var(--color-canvas-white) 30%, rgba(255, 255, 255, 0)),
+      linear-gradient(to left, var(--color-canvas-white) 30%, rgba(255, 255, 255, 0)),
+      radial-gradient(farthest-side at 0 50%, rgba(10, 10, 10, 0.14), rgba(10, 10, 10, 0)),
+      radial-gradient(farthest-side at 100% 50%, rgba(10, 10, 10, 0.14), rgba(10, 10, 10, 0));
+    background-position: 0 0, 100% 0, 0 0, 100% 0;
+    background-repeat: no-repeat;
+    background-size: 32px 100%, 32px 100%, 12px 100%, 12px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
+
+  /* The header row is opaque white by default, which would cut the shadow off
+     above the first body row. */
+  .table-wrap-scroll .table th {
+    background-color: transparent;
+  }
+
   .table {
     width: 100%;
     border-collapse: separate;
@@ -513,13 +550,28 @@
     transform: translateX(-50%);
   }
 
+  /* Keeps the `role="status"` region mounted and out of the layout while closed,
+     so the live region exists before its contents change. */
+  .toast-off {
+    opacity: 0;
+    pointer-events: none;
+  }
+
   @media (min-width: 768px) {
     .toast {
       bottom: 24px;
     }
   }
 
+  /* Tailwind's Preflight zeroes `margin` on every element, which un-centres modal
+     dialogs: the UA stylesheet relies on `margin: auto` next to `position: fixed;
+     inset: 0` to centre them. `.drawer` and `.sheet` set their own inset/margin. */
   dialog {
+    position: fixed;
+    inset: 0;
+    width: fit-content;
+    height: fit-content;
+    margin: auto;
     border: 0;
     padding: 0;
     background-color: transparent;
@@ -596,20 +648,25 @@ dialog.sheet[open] {
   font-variant-numeric: tabular-nums;
 }
 
-.ms {
-  display: inline-block;
-  font-family: "Material Symbols Rounded";
-  font-variation-settings: "FILL" 0, "wght" 400;
-  font-weight: normal;
-  font-style: normal;
-  line-height: 1;
-  letter-spacing: normal;
-  text-transform: none;
-  white-space: nowrap;
-  word-wrap: normal;
-  user-select: none;
-}
+/* Keep inside @layer components: unlayered rules outrank @layer utilities, so a bare
+   `.ms { display: inline-block }` would beat Tailwind's `grid` and silently kill
+   `place-items-center` on the icon spans that centre a glyph in a sized box. */
+@layer components {
+  .ms {
+    display: inline-block;
+    font-family: "Material Symbols Rounded";
+    font-variation-settings: "FILL" 0, "wght" 400;
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: nowrap;
+    word-wrap: normal;
+    user-select: none;
+  }
 
-.ms.fill {
-  font-variation-settings: "FILL" 1, "wght" 400;
+  .ms.fill {
+    font-variation-settings: "FILL" 1, "wght" 400;
+  }
 }

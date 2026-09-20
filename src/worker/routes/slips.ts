@@ -1,11 +1,19 @@
 import { Hono } from "hono";
+import type { AppEnv } from "../lib/auth";
+import { familyId, requireAuth } from "../lib/auth";
 import { errorBody } from "./shared";
 
-export const slipsRoute = new Hono<{ Bindings: Env }>();
+export const slipsRoute = new Hono<AppEnv>();
 
 const filePattern = /^[A-Za-z0-9_-]+\.(png|jpg|jpeg)$/;
 
-slipsRoute.get("/:file", async (c) => {
+/**
+ * รูปสลิปมีเลขบัญชี ชื่อ และยอดโอนของผู้เช่า จึงต้องล็อกอินก่อนดูเสมอ และ
+ * ต้องเป็นรูปของครอบครัวตัวเองเท่านั้น — คีย์สุ่ม 128-bit เดาไม่ได้ก็จริง แต่
+ * เดาไม่ได้ไม่เท่ากับปลอดภัย ถ้าลิงก์รั่วออกไป (แชร์ผิด, log, proxy) ใครถือ
+ * ลิงก์ก็ดูรูปได้ตลอดกาลโดยไม่ต้องล็อกอิน จึงเปลี่ยนมาบังคับ session ด้วย
+ */
+slipsRoute.get("/:file", requireAuth, async (c) => {
   const file = c.req.param("file");
 
   if (!filePattern.test(file)) {
@@ -13,6 +21,16 @@ slipsRoute.get("/:file", async (c) => {
   }
 
   try {
+    const owned = await c.env.DB.prepare(
+      "SELECT 1 AS one FROM slips WHERE family_id = ? AND image_key = ?",
+    )
+      .bind(familyId(c), file)
+      .first<{ one: number }>();
+
+    if (owned === null) {
+      return c.json(errorBody("NOT_FOUND", "ไม่พบรูปสลิปที่ต้องการ"), 404);
+    }
+
     const object = await c.env.SLIPS.get(file);
 
     if (object === null) {
@@ -21,7 +39,7 @@ slipsRoute.get("/:file", async (c) => {
 
     return c.body(object.body, 200, {
       "content-type": object.httpMetadata?.contentType ?? "image/png",
-      "cache-control": "public, max-age=86400",
+      "cache-control": "private, no-store",
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

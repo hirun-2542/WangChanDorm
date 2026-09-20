@@ -1,6 +1,7 @@
 import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import app from "../src/worker/index";
+import { type TestSession, configurePayout, createFamily, signIn, withAuth } from "./auth-helper";
 import { flexText } from "./flex";
 
 const webhookUrl = "https://dorm.test/webhook/line";
@@ -133,21 +134,38 @@ function lineEvents(events: unknown[]): string {
   return JSON.stringify({ events });
 }
 
-function followEvent(userId: string, replyToken: string): Record<string, unknown> {
-  return { type: "follow", replyToken, timestamp: 0, mode: "active", source: { type: "user", userId } };
+let eventSeq = 0;
+
+/** LINE ส่ง webhookEventId มาเสมอ ใช้ค่าที่ไม่ซ้ำเพื่อไม่ให้เหตุการณ์ข้ามเทสต์ถูกกันซ้ำ */
+function uniqueEventId(): string {
+  eventSeq += 1;
+  return `evt-${String(eventSeq)}-${Math.random().toString(16).slice(2)}`;
 }
 
-function textEvent(userId: string, replyToken: string, text: string): Record<string, unknown> {
+function followEvent(userId: string, replyToken: string, eventId = uniqueEventId()): Record<string, unknown> {
+  return {
+    type: "follow",
+    replyToken,
+    timestamp: 0,
+    mode: "active",
+    webhookEventId: eventId,
+    source: { type: "user", userId },
+  };
+}
+
+function textEvent(userId: string, replyToken: string, text: string, eventId = uniqueEventId()): Record<string, unknown> {
   return {
     type: "message",
     replyToken,
     timestamp: 0,
     mode: "active",
+    webhookEventId: eventId,
     source: { type: "user", userId },
     message: { type: "text", id: "msg-1", text },
   };
 }
 
+let session: TestSession;
 let outboundCalls: OutboundCall[] = [];
 let profileDisplayName = "ผู้ใช้ LINE ทดสอบ";
 let replyFails = false;
@@ -160,13 +178,19 @@ function replyMessages(): Record<string, unknown>[] {
   return replyCalls().map((call) => (JSON.parse(call.body) as ReplyBody).messages[0] ?? {});
 }
 
+/** ข้อความแจ้งเตือนบางอย่างเป็นข้อความธรรมดา ไม่ใช่การ์ด Flex */
+function expectTextMessage(message: unknown, needle: string): void {
+  expect((message as { type?: unknown }).type).toBe("text");
+  expect(flexText(message)).toContain(needle);
+}
+
 function expectFlexMessage(message: unknown): void {
   expect((message as { type?: unknown }).type).toBe("flex");
   expect(typeof (message as { altText?: unknown }).altText).toBe("string");
 }
 
 async function readPending(): Promise<PendingLink[]> {
-  const response = await SELF.fetch(pendingUrl);
+  const response = await SELF.fetch(pendingUrl, withAuth(session));
   expect(response.status).toBe(200);
   return (await response.json<PendingBody>()).pending;
 }
@@ -176,33 +200,39 @@ async function pendingFor(lineUserId: string): Promise<PendingLink | undefined> 
 }
 
 async function readSettings(): Promise<SettingsPayload> {
-  const response = await SELF.fetch(settingsUrl);
+  const response = await SELF.fetch(settingsUrl, withAuth(session));
   expect(response.status).toBe(200);
   return (await response.json<SettingsBody>()).settings;
 }
 
 async function newRoom(roomNumber: string): Promise<RoomPayload> {
-  const response = await SELF.fetch(roomsUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ roomNumber, rent: 3500 }),
-  });
+  const response = await SELF.fetch(
+    roomsUrl,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomNumber, rent: 3500 }),
+    }),
+  );
   expect(response.status).toBe(201);
   return (await response.json<{ ok: boolean; room: RoomPayload }>()).room;
 }
 
 async function newTenant(roomId: string, fullName: string): Promise<TenantPayload> {
-  const response = await SELF.fetch(tenantsUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ fullName, phone: "081-234-5678", roomId, checkInDate: "2025-03-01" }),
-  });
+  const response = await SELF.fetch(
+    tenantsUrl,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ fullName, phone: "081-234-5678", roomId, checkInDate: "2025-03-01" }),
+    }),
+  );
   expect(response.status).toBe(201);
   return (await response.json<{ ok: boolean; tenant: TenantPayload }>()).tenant;
 }
 
 async function tenantById(tenantId: string): Promise<TenantPayload> {
-  const body = await (await SELF.fetch(tenantsUrl)).json<TenantListBody>();
+  const body = await (await SELF.fetch(tenantsUrl, withAuth(session))).json<TenantListBody>();
   const found = body.tenants.find((tenant) => tenant.id === tenantId);
 
   if (found === undefined) {
@@ -213,40 +243,55 @@ async function tenantById(tenantId: string): Promise<TenantPayload> {
 }
 
 function checkoutTenant(tenantId: string, checkOutDate: string): Promise<Response> {
-  return SELF.fetch(`${tenantsUrl}/${tenantId}/checkout`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ checkOutDate }),
-  });
+  return SELF.fetch(
+    `${tenantsUrl}/${tenantId}/checkout`,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ checkOutDate }),
+    }),
+  );
 }
 
 function linkPending(lineUserId: string, tenantId: string): Promise<Response> {
-  return SELF.fetch(`${pendingUrl}/${encodeURIComponent(lineUserId)}/link`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ tenantId }),
-  });
+  return SELF.fetch(
+    `${pendingUrl}/${encodeURIComponent(lineUserId)}/link`,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId }),
+    }),
+  );
 }
 
 function putSettings(payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(settingsUrl, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  return SELF.fetch(
+    settingsUrl,
+    withAuth(session, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
+/** เบอร์ที่ลงทะเบียนในเทสต์คือ 081-234-5678 เลขท้าย 4 ตัวจึงเป็น 5678 */
 async function linkRoom(lineUserId: string, roomNumber: string): Promise<void> {
-  const response = await postWebhook(lineEvents([textEvent(lineUserId, `tok-link-${lineUserId}`, roomNumber)]));
+  const response = await postWebhook(lineEvents([textEvent(lineUserId, `tok-link-${lineUserId}`, `${roomNumber} 5678`)]));
   expect(response.status).toBe(200);
+  expectFlexMessage(replyMessages()[0]);
+  expect(flexText(replyMessages()[0])).toContain("เชื่อม LINE");
 }
 
 async function generateBill(roomId: string, period: string): Promise<BillPayload> {
-  const response = await SELF.fetch(`${billsUrl}/generate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ period, entries: [{ roomId, waterCurrent: 0, electricCurrent: 0 }] }),
-  });
+  const response = await SELF.fetch(
+    `${billsUrl}/generate`,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ period, entries: [{ roomId, waterCurrent: 0, electricCurrent: 0 }] }),
+    }),
+  );
   expect(response.status).toBe(201);
 
   const bill = (await response.json<{ ok: boolean; bills: BillPayload[] }>()).bills[0];
@@ -259,20 +304,29 @@ async function generateBill(roomId: string, period: string): Promise<BillPayload
 }
 
 async function markBillPaid(billId: string): Promise<void> {
-  const response = await SELF.fetch(`${billsUrl}/${encodeURIComponent(billId)}/mark-paid`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method: "transfer" }),
-  });
+  const response = await SELF.fetch(
+    `${billsUrl}/${encodeURIComponent(billId)}/mark-paid`,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "transfer" }),
+    }),
+  );
   expect(response.status).toBe(200);
 }
 
 beforeAll(async () => {
-  const response = await SELF.fetch(settingsUrl, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ dormName }),
-  });
+  session = await signIn();
+  await configurePayout();
+
+  const response = await SELF.fetch(
+    settingsUrl,
+    withAuth(session, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dormName }),
+    }),
+  );
   expect(response.status).toBe(200);
 });
 
@@ -396,19 +450,20 @@ describe("POST /webhook/line events", () => {
     expect(row?.lastMessage).toBe("สวัสดี");
   });
 
-  it("acknowledges a failing event with 200 and logs the failure instead of answering 500", async () => {
+  it("answers 500 and releases the event so a retry succeeds once the failure clears", async () => {
     await env.DB.prepare(
       "CREATE TRIGGER fail_pending_insert BEFORE INSERT ON line_pending BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
     ).run();
 
     const errorSpy = vi.spyOn(console, "error");
+    const body = lineEvents([followEvent("U-db-fail", "tok-db-fail")]);
 
     try {
-      const response = await postWebhook(lineEvents([followEvent("U-db-fail", "tok-db-fail")]));
-      expect(response.status).toBe(200);
+      const response = await postWebhook(body);
+      expect(response.status).toBe(500);
 
-      const body = await response.json<{ ok: boolean }>();
-      expect(body).toEqual({ ok: true });
+      const failed = await response.json<{ ok: boolean }>();
+      expect(failed.ok).toBe(false);
       expect(await pendingFor("U-db-fail")).toBeUndefined();
 
       const failures = errorSpy.mock.calls
@@ -421,6 +476,14 @@ describe("POST /webhook/line events", () => {
       errorSpy.mockRestore();
       await env.DB.prepare("DROP TRIGGER IF EXISTS fail_pending_insert").run();
     }
+
+    // ส่ง event ตัวเดิม (webhookEventId เดิม) อีกครั้งหลังลบสาเหตุที่ทำให้ล้มเหลว
+    // ต้องประมวลผลได้จริง ไม่ถูกมองว่า "เคยทำไปแล้ว" จากความล้มเหลวครั้งก่อน
+    outboundCalls.length = 0;
+    const retried = await postWebhook(body);
+    expect(retried.status).toBe(200);
+    expect(replyCalls()).toHaveLength(1);
+    expect(await pendingFor("U-db-fail")).toBeDefined();
   });
 
   it("answers 200 and applies the link when the outbound reply fails", async () => {
@@ -429,7 +492,7 @@ describe("POST /webhook/line events", () => {
 
     replyFails = true;
 
-    const response = await postWebhook(lineEvents([textEvent("U-reply-fail", "tok-reply-fail", "L208")]));
+    const response = await postWebhook(lineEvents([textEvent("U-reply-fail", "tok-reply-fail", "L208 5678")]));
     expect(response.status).toBe(200);
 
     expect(replyCalls()).toHaveLength(1);
@@ -446,7 +509,7 @@ describe("POST /webhook/line events", () => {
     expect(await pendingFor("U-link")).toBeDefined();
 
     outboundCalls.length = 0;
-    const linked = await postWebhook(lineEvents([textEvent("U-link", "tok-room-2", "l201")]));
+    const linked = await postWebhook(lineEvents([textEvent("U-link", "tok-room-2", "l201 5678")]));
     expect(linked.status).toBe(200);
 
     expect((await tenantById(tenant.id)).lineUserId).toBe("U-link");
@@ -481,7 +544,7 @@ describe("POST /webhook/line events", () => {
     expect((await pendingFor("U-unknown"))?.lastMessage).toBe("Z902");
   });
 
-  it("links the owner when the text is the current owner code", async () => {
+  it("links the owner with the current code, consumes it, and refuses to reuse it", async () => {
     const before = await readSettings();
     expect(before.ownerLinkCode).toMatch(/^\d{6}$/);
 
@@ -490,17 +553,94 @@ describe("POST /webhook/line events", () => {
 
     const after = await readSettings();
     expect(after.ownerLineConnected).toBe(true);
-    expect(after.ownerLinkCode).toBe(before.ownerLinkCode);
     const [owner] = replyMessages();
     expectFlexMessage(owner);
     expect(flexText(owner)).toContain("เชื่อม LINE เจ้าของ");
     expect(flexText(owner)).toContain("แจ้งเตือน");
     expect(await pendingFor("U-owner")).toBeUndefined();
+
+    const ownerRow = await env.DB.prepare("SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(session.familyId)
+      .first<{ value: string }>();
+    expect(ownerRow?.value).toBe("U-owner");
+
+    const consumed = await env.DB.prepare(
+      "SELECT key, value FROM settings WHERE family_id = ? AND key IN ('owner_link_code', 'owner_link_code_expires_at')",
+    )
+      .bind(session.familyId)
+      .all<{ key: string; value: string }>();
+    expect(consumed.results.map((row) => row.value)).toEqual(["", ""]);
+
+    outboundCalls.length = 0;
+    const reused = await postWebhook(lineEvents([textEvent("U-owner-thief", "tok-owner-thief", before.ownerLinkCode)]));
+    expect(reused.status).toBe(200);
+
+    const stillOwner = await env.DB.prepare("SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(session.familyId)
+      .first<{ value: string }>();
+    expect(stillOwner?.value).toBe("U-owner");
+    expect(flexText(replyMessages()[0])).toContain("ไม่พบห้อง");
+  });
+
+  it("lets only one of two concurrent claimants win the same owner code", async () => {
+    // ล้างสถานะเดิมและออกรหัสใหม่เอง ไม่พึ่งรหัสจากเทสต์ก่อนหน้า เพราะเทสต์
+    // ก่อนหน้าอาจผูกเจ้าของไปแล้ว ทำให้ไม่มีรหัสให้แข่งกันเลย
+    await env.DB.prepare("DELETE FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(session.familyId)
+      .run();
+    const regenerated = await SELF.fetch(`${settingsUrl}/owner-code`, withAuth(session, { method: "POST" }));
+    expect(regenerated.status).toBe(200);
+    const { ownerLinkCode: code } = await regenerated.json<{ ok: boolean; ownerLinkCode: string }>();
+    expect(code).toMatch(/^\d{6}$/);
+
+    const [first, second] = await Promise.all([
+      postWebhook(lineEvents([textEvent("U-owner-race-a", "tok-owner-race-a", code)])),
+      postWebhook(lineEvents([textEvent("U-owner-race-b", "tok-owner-race-b", code)])),
+    ]);
+
+    // ทั้งสองฝ่ายได้ 200 เสมอ (ฝ่ายแพ้ตกไปตอบแบบ "ไม่ตรง" อย่างสุภาพ ไม่ใช่ error)
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    const ownerRow = await env.DB.prepare(
+      "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+    )
+      .bind(session.familyId)
+      .first<{ value: string }>();
+
+    // ต้องมีผู้ชนะเพียงคนเดียว ไม่ใช่ค่าว่างหรือถูกเขียนทับจนไม่รู้ว่าใครชนะ
+    expect(["U-owner-race-a", "U-owner-race-b"]).toContain(ownerRow?.value);
+
+    const consumed = await env.DB.prepare(
+      "SELECT key, value FROM settings WHERE family_id = ? AND key IN ('owner_link_code', 'owner_link_code_expires_at')",
+    )
+      .bind(session.familyId)
+      .all<{ key: string; value: string }>();
+    expect(consumed.results.map((row) => row.value)).toEqual(["", ""]);
+  });
+
+  it("refuses an owner code whose expiry has passed", async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'").bind(session.familyId).run();
+    const code = (await readSettings()).ownerLinkCode;
+    await env.DB.prepare(
+      "UPDATE settings SET value = ? WHERE family_id = ? AND key = 'owner_link_code_expires_at'",
+    )
+      .bind("2020-01-01T00:00:00.000Z", session.familyId)
+      .run();
+
+    const response = await postWebhook(lineEvents([textEvent("U-owner-expired", "tok-owner-expired", code)]));
+    expect(response.status).toBe(200);
+    expect(flexText(replyMessages()[0])).toContain("ไม่พบห้อง");
+
+    const connected = await env.DB.prepare("SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(session.familyId)
+      .first<{ value: string }>();
+    expect(connected).toBeNull();
   });
 
   it("stops accepting an owner code that was replaced", async () => {
     const before = await readSettings();
-    const regenerated = await SELF.fetch(`${settingsUrl}/owner-code`, { method: "POST" });
+    const regenerated = await SELF.fetch(`${settingsUrl}/owner-code`, withAuth(session, { method: "POST" }));
     expect(regenerated.status).toBe(200);
 
     const next = await regenerated.json<{ ok: boolean; ownerLinkCode: string }>();
@@ -519,7 +659,7 @@ describe("POST /webhook/line events", () => {
     const room = await newRoom("L203");
     const tenant = await newTenant(room.id, "มาลี ศรีสุข");
 
-    await postWebhook(lineEvents([textEvent("U-linked", "tok-1", "L203")]));
+    await postWebhook(lineEvents([textEvent("U-linked", "tok-1", "L203 5678")]));
     expect((await tenantById(tenant.id)).lineUserId).toBe("U-linked");
     expect(replyMessages()).toHaveLength(1);
 
@@ -540,6 +680,159 @@ describe("POST /webhook/line events", () => {
     expect(response.status).toBe(200);
     expect(outboundCalls).toEqual([]);
     expect(await readPending()).toEqual(before);
+  });
+
+  it("processes a redelivered event only once", async () => {
+    const body = lineEvents([followEvent("U-redelivered", "tok-redelivered")]);
+
+    const first = await postWebhook(body);
+    expect(first.status).toBe(200);
+    expect(replyCalls()).toHaveLength(1);
+
+    outboundCalls.length = 0;
+    const second = await postWebhook(body);
+    expect(second.status).toBe(200);
+    expect(replyCalls()).toEqual([]);
+  });
+
+  it("prunes event ids older than a day and keeps the fresh ones", async () => {
+    await env.DB.prepare("INSERT INTO line_events (id, received_at) VALUES ('evt-stale', datetime('now', '-2 days'))").run();
+
+    const response = await postWebhook(lineEvents([followEvent("U-prune", "tok-prune")]));
+    expect(response.status).toBe(200);
+
+    const stale = await env.DB.prepare("SELECT id FROM line_events WHERE id = 'evt-stale'").first();
+    expect(stale).toBeNull();
+
+    const fresh = await env.DB.prepare("SELECT COUNT(*) AS total FROM line_events").first<{ total: number }>();
+    expect(fresh?.total).toBeGreaterThan(0);
+  });
+});
+
+interface ForeignFamilySeed {
+  familyId: string;
+  tenantId: string;
+  lineUserId: string;
+  roomNumber: string;
+}
+
+/** ข้อมูลของครอบครัวอื่น ใช้พิสูจน์ว่ามองไม่เห็นกัน */
+async function seedForeignFamily(): Promise<ForeignFamilySeed> {
+  const family = await createFamily("ครอบครัวอื่น");
+  const roomId = crypto.randomUUID();
+  const tenantId = crypto.randomUUID();
+  const lineUserId = `U-foreign-${crypto.randomUUID()}`;
+  const roomNumber = `X9${String(Math.floor(Math.random() * 90) + 10)}`;
+
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO rooms (id, family_id, room_number, rent, water_meter_init, electric_meter_init, status) VALUES (?, ?, ?, 3500, 0, 0, 'occupied')",
+    ).bind(roomId, family, roomNumber),
+    env.DB.prepare(
+      "INSERT INTO tenants (id, family_id, full_name, phone, room_id, check_in_date, status) VALUES (?, ?, 'ผู้เช่าครอบครัวอื่น', '0899999999', ?, '2025-01-01', 'current')",
+    ).bind(tenantId, family, roomId),
+    env.DB.prepare(
+      "INSERT INTO line_pending (line_user_id, family_id, display_name, last_message, last_seen_at) VALUES (?, ?, 'ต่างครอบครัว', ?, datetime('now'))",
+    ).bind(lineUserId, family, roomNumber),
+  ]);
+
+  return { familyId: family, tenantId, lineUserId, roomNumber };
+}
+
+describe("tenant linking needs a second factor", () => {
+  it("refuses a bare room number and asks for the phone tail instead of linking", async () => {
+    const room = await newRoom("L301");
+    const tenant = await newTenant(room.id, "สมชาย สองชั้น");
+
+    const response = await postWebhook(lineEvents([textEvent("U-bare", "tok-bare", "L301")]));
+    expect(response.status).toBe(200);
+
+    expect((await tenantById(tenant.id)).lineUserId).toBeNull();
+    const [prompt] = replyMessages();
+    expectTextMessage(prompt, "เลขท้าย 4 ตัว");
+    expect(flexText(prompt)).toContain("302 1234");
+    expect(flexText(prompt)).not.toContain("สมชาย สองชั้น");
+    expect((await pendingFor("U-bare"))?.lastMessage).toBe("L301");
+  });
+
+  it("refuses a room number with a phone tail that does not match the tenant", async () => {
+    const room = await newRoom("L302");
+    const tenant = await newTenant(room.id, "สมหญิง ผิดเบอร์");
+
+    const response = await postWebhook(lineEvents([textEvent("U-wrong-phone", "tok-wrong-phone", "L302 0000")]));
+    expect(response.status).toBe(200);
+
+    expect((await tenantById(tenant.id)).lineUserId).toBeNull();
+    const [refusal] = replyMessages();
+    expectTextMessage(refusal, "เลขท้าย 4 ตัวไม่ตรงกับเบอร์ที่ลงทะเบียนไว้");
+    expect(flexText(refusal)).not.toContain("สมหญิง ผิดเบอร์");
+    expect((await pendingFor("U-wrong-phone"))?.lastMessage).toBe("L302 0000");
+  });
+
+  it("links when the room number and the registered phone tail both match", async () => {
+    const room = await newRoom("L303");
+    const tenant = await newTenant(room.id, "สมปอง ถูกเบอร์");
+
+    const response = await postWebhook(lineEvents([textEvent("U-both", "tok-both", "l303 5678")]));
+    expect(response.status).toBe(200);
+
+    expect((await tenantById(tenant.id)).lineUserId).toBe("U-both");
+    const [linked] = replyMessages();
+    expect(flexText(linked)).toContain("สมปอง ถูกเบอร์");
+    expect(flexText(linked)).toContain("L303");
+    expect(await pendingFor("U-both")).toBeUndefined();
+  });
+
+  it("refuses to take over a room whose tenant is already linked to someone else", async () => {
+    const room = await newRoom("L304");
+    const tenant = await newTenant(room.id, "วีระ มีเจ้าของแล้ว");
+    await linkRoom("U-first-owner", "L304");
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-imposter", "tok-imposter", "L304 5678")]));
+    expect(response.status).toBe(200);
+
+    expect((await tenantById(tenant.id)).lineUserId).toBe("U-first-owner");
+    const [refusal] = replyMessages();
+    expectTextMessage(refusal, "ห้องนี้เชื่อม LINE ไว้แล้ว");
+    expect(await pendingFor("U-imposter")).toBeUndefined();
+  });
+});
+
+describe("LINE family isolation", () => {
+  it("keeps another family's pending rows and tenants out of reach", async () => {
+    const foreign = await seedForeignFamily();
+
+    const own = await readPending();
+    expect(own.some((item) => item.lineUserId === foreign.lineUserId)).toBe(false);
+
+    const other = await signIn("owner", foreign.familyId);
+    const otherResponse = await SELF.fetch(pendingUrl, withAuth(other));
+    expect(otherResponse.status).toBe(200);
+    const otherPending = (await otherResponse.json<PendingBody>()).pending;
+    expect(otherPending.map((item) => item.lineUserId)).toEqual([foreign.lineUserId]);
+
+    const linked = await linkPending(foreign.lineUserId, foreign.tenantId);
+    expect(linked.status).toBe(404);
+    expect((await linked.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const tenantRow = await env.DB.prepare("SELECT line_user_id FROM tenants WHERE id = ?")
+      .bind(foreign.tenantId)
+      .first<{ line_user_id: string | null }>();
+    expect(tenantRow?.line_user_id).toBeNull();
+  });
+
+  it("never links a tenant of another family through the LINE channel", async () => {
+    const foreign = await seedForeignFamily();
+
+    const response = await postWebhook(lineEvents([textEvent("U-cross", "tok-cross", `${foreign.roomNumber} 9999`)]));
+    expect(response.status).toBe(200);
+
+    const tenantRow = await env.DB.prepare("SELECT line_user_id FROM tenants WHERE id = ?")
+      .bind(foreign.tenantId)
+      .first<{ line_user_id: string | null }>();
+    expect(tenantRow?.line_user_id).toBeNull();
+    expect((await pendingFor("U-cross"))?.lastMessage).toBe(`${foreign.roomNumber} 9999`);
   });
 });
 
@@ -842,7 +1135,7 @@ interface LineMessagesBody {
 }
 
 async function readLineMessages(): Promise<LineMessagesBody> {
-  const response = await SELF.fetch(lineMessagesUrl);
+  const response = await SELF.fetch(lineMessagesUrl, withAuth(session));
   expect(response.status).toBe(200);
   return response.json<LineMessagesBody>();
 }

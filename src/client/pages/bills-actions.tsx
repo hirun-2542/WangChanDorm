@@ -10,9 +10,20 @@ import {
   type BillUpdate,
 } from "../api";
 import { Button, Dialog, Drawer, Field, IconButton, Select } from "../ui";
-import { baht, chargesTotal as sumCharges, periodLabel, todayIso } from "./bills-shared";
+import {
+  baht,
+  chargeDrafts,
+  chargesTotal as sumCharges,
+  isEmptyDraft,
+  newChargeDraft,
+  parseChargeAmount,
+  periodLabel,
+  todayIso,
+  type ChargeDraft,
+} from "./bills-shared";
 
-type Reading = { ok: true; value: number } | { ok: false; reason: "empty" | "invalid" };
+type Reading =
+  { ok: true; value: number } | { ok: false; reason: "empty" | "invalid" };
 
 function parseReading(value: string): Reading {
   const trimmed = value.trim();
@@ -30,29 +41,18 @@ function parseReading(value: string): Reading {
   return { ok: true, value: parsed };
 }
 
-function parseAmount(value: string): number | null {
-  const trimmed = value.trim();
-
-  if (trimmed === "") {
-    return null;
-  }
-
-  const parsed = Number(trimmed);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-}
-
-function readingHint(reading: Reading, previous: number, label: string): string | null {
+function readingHint(
+  reading: Reading,
+  previous: number,
+  label: string,
+): string | null {
   if (reading.ok) {
     return reading.value < previous ? `น้อยกว่าครั้งก่อน ${previous}` : null;
   }
 
-  return reading.reason === "empty" ? `กรอก${label}ครั้งนี้` : "กรอกตัวเลขไม่ติดลบ";
-}
-
-interface ChargeDraft {
-  id: string;
-  name: string;
-  amount: string;
+  return reading.reason === "empty"
+    ? `กรอก${label}ครั้งนี้`
+    : "กรอกตัวเลขไม่ติดลบ";
 }
 
 interface BillEditForm {
@@ -62,19 +62,12 @@ interface BillEditForm {
   charges: ChargeDraft[];
 }
 
-let chargeDraftSequence = 0;
-
-function newChargeDraft(name = "", amount = ""): ChargeDraft {
-  chargeDraftSequence += 1;
-  return { id: `charge-draft-${chargeDraftSequence}`, name, amount };
-}
-
 function billEditForm(bill: Bill): BillEditForm {
   return {
     waterCurrent: String(bill.waterCurrent),
     electricCurrent: String(bill.electricCurrent),
     flatAmount: bill.electricMode === "flat" ? String(bill.electricAmount) : "",
-    charges: bill.charges.map((charge) => newChargeDraft(charge.name, String(charge.amount))),
+    charges: chargeDrafts(bill.charges),
   };
 }
 
@@ -101,14 +94,29 @@ function computeEdit(bill: Bill, form: BillEditForm): EditCalc {
   const isFlat = bill.electricMode === "flat";
   const water = parseReading(form.waterCurrent);
   const waterHint = readingHint(water, bill.waterPrevious, "เลขมิเตอร์น้ำ");
-  const waterUnits = water.ok && waterHint === null ? water.value - bill.waterPrevious : null;
-  const waterAmount = waterUnits === null ? 0 : Math.round(waterUnits * bill.waterRate);
+  const waterUnits =
+    water.ok && waterHint === null ? water.value - bill.waterPrevious : null;
+  const waterAmount =
+    waterUnits === null ? 0 : Math.round(waterUnits * bill.waterRate);
 
   const electric = parseReading(form.electricCurrent);
-  const electricHint = readingHint(electric, bill.electricPrevious, "เลขมิเตอร์ไฟ");
+  const electricHint = readingHint(
+    electric,
+    bill.electricPrevious,
+    "เลขมิเตอร์ไฟ",
+  );
   const flat = parseReading(form.flatAmount);
-  const flatHint = !isFlat ? null : flat.ok ? null : flat.reason === "empty" ? "กรอกยอดค่าไฟเหมาจ่าย" : "กรอกตัวเลขไม่ติดลบ";
-  const electricUnits = isFlat || !electric.ok || electric.value < bill.electricPrevious ? null : electric.value - bill.electricPrevious;
+  const flatHint = !isFlat
+    ? null
+    : flat.ok
+      ? null
+      : flat.reason === "empty"
+        ? "กรอกยอดค่าไฟเหมาจ่าย"
+        : "กรอกตัวเลขไม่ติดลบ";
+  const electricUnits =
+    isFlat || !electric.ok || electric.value < bill.electricPrevious
+      ? null
+      : electric.value - bill.electricPrevious;
   const electricRate = isFlat ? null : (bill.electricRate ?? 0);
   const electricAmount = isFlat
     ? flat.ok
@@ -118,17 +126,27 @@ function computeEdit(bill: Bill, form: BillEditForm): EditCalc {
       ? 0
       : Math.round(electricUnits * (bill.electricRate ?? 0));
 
-  const resolved = form.charges.map((charge) => {
-    const name = charge.name.trim();
-    const amount = parseAmount(charge.amount);
+  const resolved = form.charges
+    .filter(
+      (charge) => !(charge.name.trim() === "" && charge.amount.trim() === ""),
+    )
+    .map((charge) => {
+      const name = charge.name.trim();
+      const amount = parseChargeAmount(charge.amount);
 
-    return name === "" || amount === null ? null : { name, amount };
-  });
-  const charges = resolved.filter((charge): charge is BillCharge => charge !== null);
+      return name === "" || amount === null ? null : { name, amount };
+    });
+  const charges = resolved.filter(
+    (charge): charge is BillCharge => charge !== null,
+  );
   const chargesTotal = sumCharges(charges);
   const chargesInvalid = resolved.some((charge) => charge === null);
   const total = bill.rent + waterAmount + electricAmount + chargesTotal;
-  const canSave = waterHint === null && electricHint === null && flatHint === null && !chargesInvalid;
+  const canSave =
+    waterHint === null &&
+    electricHint === null &&
+    flatHint === null &&
+    !chargesInvalid;
 
   return {
     water,
@@ -162,7 +180,12 @@ export interface BillEditDrawerProps {
   onSaved: (bill: Bill) => void;
 }
 
-export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerProps) {
+export function BillEditDrawer({
+  open,
+  bill,
+  onClose,
+  onSaved,
+}: BillEditDrawerProps) {
   const [form, setForm] = useState<BillEditForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<FieldError | null>(null);
@@ -186,11 +209,19 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
     setForm((prev) => (prev === null ? prev : { ...prev, ...patch }));
   };
 
-  const updateCharge = (id: string, patch: Partial<Pick<ChargeDraft, "name" | "amount">>) => {
+  const updateCharge = (
+    id: string,
+    patch: Partial<Pick<ChargeDraft, "name" | "amount">>,
+  ) => {
     setForm((prev) =>
       prev === null
         ? prev
-        : { ...prev, charges: prev.charges.map((charge) => (charge.id === id ? { ...charge, ...patch } : charge)) },
+        : {
+            ...prev,
+            charges: prev.charges.map((charge) =>
+              charge.id === id ? { ...charge, ...patch } : charge,
+            ),
+          },
     );
   };
 
@@ -201,7 +232,9 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
 
     const payload: BillUpdate = {
       waterCurrent: calc.water.ok ? calc.water.value : bill.waterCurrent,
-      electricCurrent: calc.electric.ok ? calc.electric.value : bill.electricCurrent,
+      electricCurrent: calc.electric.ok
+        ? calc.electric.value
+        : bill.electricCurrent,
       charges: calc.charges,
     };
 
@@ -242,7 +275,12 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
           <Button variant="ghost" onClick={onClose}>
             ยกเลิก
           </Button>
-          <Button variant="primary" icon="save" disabled={calc === null || !calc.canSave || saving} onClick={save}>
+          <Button
+            variant="primary"
+            icon="save"
+            disabled={calc === null || !calc.canSave || saving}
+            onClick={save}
+          >
             {saving ? "กำลังบันทึก" : "บันทึกบิล"}
           </Button>
         </>
@@ -252,7 +290,9 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
         <div className="grid gap-4">
           <div className="panel-muted">
             <p className="text-xs text-fog">ยอดรวมหลังบันทึก</p>
-            <p className="num mt-1 text-lg text-charcoal">{baht(calc.total)} บาท</p>
+            <p className="num mt-1 text-lg text-charcoal">
+              {baht(calc.total)} บาท
+            </p>
             <p className="mt-1 text-[11px] text-fog">
               {`ค่าเช่า ${baht(bill.rent)} · ค่าน้ำ ${baht(calc.waterAmount)} · ค่าไฟ ${baht(calc.electricAmount)} · ค่าใช้จ่ายเพิ่มเติม ${baht(calc.chargesTotal)}`}
             </p>
@@ -273,7 +313,11 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
               label="เลขมิเตอร์ไฟครั้งนี้"
               value={form.electricCurrent}
               inputMode="numeric"
-              helper={isFlat ? `ครั้งก่อน ${bill.electricPrevious}` : `ครั้งก่อน ${bill.electricPrevious} · ${bill.electricRate ?? 0} บาท/หน่วย`}
+              helper={
+                isFlat
+                  ? `ครั้งก่อน ${bill.electricPrevious}`
+                  : `ครั้งก่อน ${bill.electricPrevious} · ${bill.electricRate ?? 0} บาท/หน่วย`
+              }
               error={calc.electricHint ?? fieldError("electricCurrent")}
               onChange={(value) => {
                 update({ electricCurrent: value });
@@ -297,7 +341,9 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
           <div className="border-t border-ash pt-4">
             <h3 className="text-sm text-charcoal">ค่าใช้จ่ายเพิ่มเติม</h3>
             {form.charges.length === 0 ? (
-              <p className="mt-1.5 text-xs text-fog">บิลนี้ยังไม่มีค่าใช้จ่ายเพิ่มเติม</p>
+              <p className="mt-1.5 text-xs text-fog">
+                บิลนี้ยังไม่มีค่าใช้จ่ายเพิ่มเติม
+              </p>
             ) : (
               <div className="mt-3 grid gap-3">
                 {form.charges.map((charge) => (
@@ -306,7 +352,11 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
                       <Field
                         label="ชื่อรายการ"
                         value={charge.name}
-                        error={charge.name.trim() === "" ? "กรอกชื่อรายการ" : undefined}
+                        error={
+                          !isEmptyDraft(charge) && charge.name.trim() === ""
+                            ? "กรอกชื่อรายการ"
+                            : undefined
+                        }
                         onChange={(value) => {
                           updateCharge(charge.id, { name: value });
                         }}
@@ -317,7 +367,12 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
                         label="จำนวนเงิน"
                         value={charge.amount}
                         inputMode="numeric"
-                        error={parseAmount(charge.amount) === null ? "กรอกจำนวนเงินเป็นจำนวนเต็ม" : undefined}
+                        error={
+                          !isEmptyDraft(charge) &&
+                          parseChargeAmount(charge.amount) === null
+                            ? "กรอกจำนวนเงินเป็นจำนวนเต็ม"
+                            : undefined
+                        }
                         onChange={(value) => {
                           updateCharge(charge.id, { amount: value });
                         }}
@@ -328,7 +383,14 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
                       label={`ลบ ${charge.name === "" ? "รายการนี้" : charge.name}`}
                       onClick={() => {
                         setForm((prev) =>
-                          prev === null ? prev : { ...prev, charges: prev.charges.filter((item) => item.id !== charge.id) },
+                          prev === null
+                            ? prev
+                            : {
+                                ...prev,
+                                charges: prev.charges.filter(
+                                  (item) => item.id !== charge.id,
+                                ),
+                              },
                         );
                       }}
                     />
@@ -336,20 +398,31 @@ export function BillEditDrawer({ open, bill, onClose, onSaved }: BillEditDrawerP
                 ))}
               </div>
             )}
-            {calc.chargesInvalid && <p className="mt-2 text-xs text-danger">{fieldError("charges") ?? "ตรวจสอบค่าใช้จ่ายเพิ่มเติมให้ครบก่อนบันทึก"}</p>}
+            {calc.chargesInvalid && (
+              <p className="mt-2 text-xs text-danger">
+                {fieldError("charges") ??
+                  "ตรวจสอบค่าใช้จ่ายเพิ่มเติมให้ครบก่อนบันทึก"}
+              </p>
+            )}
             <Button
               variant="ghost"
               icon="add"
               className="mt-3"
               onClick={() => {
-                setForm((prev) => (prev === null ? prev : { ...prev, charges: [...prev.charges, newChargeDraft()] }));
+                setForm((prev) =>
+                  prev === null
+                    ? prev
+                    : { ...prev, charges: [...prev.charges, newChargeDraft()] },
+                );
               }}
             >
-              เพิ่มค่าใช้จ่ายเพิ่มเติม
+              เพิ่มรายการ
             </Button>
           </div>
 
-          {error !== null && error.field === undefined && <p className="text-xs text-danger">{error.message}</p>}
+          {error !== null && error.field === undefined && (
+            <p className="text-xs text-danger">{error.message}</p>
+          )}
         </div>
       )}
     </Drawer>
@@ -363,7 +436,12 @@ export interface MarkPaidDialogProps {
   onPaid: (bill: Bill) => void;
 }
 
-export function MarkPaidDialog({ open, bill, onClose, onPaid }: MarkPaidDialogProps) {
+export function MarkPaidDialog({
+  open,
+  bill,
+  onClose,
+  onPaid,
+}: MarkPaidDialogProps) {
   const [method, setMethod] = useState<BillPaidMethod>("transfer");
   const [paidAt, setPaidAt] = useState<string>(() => todayIso());
   const [saving, setSaving] = useState(false);
@@ -394,7 +472,9 @@ export function MarkPaidDialog({ open, bill, onClose, onPaid }: MarkPaidDialogPr
         onPaid(updated);
       })
       .catch((paidError: unknown) => {
-        setError(paidError instanceof ApiError ? paidError.message : "ปิดบิลไม่สำเร็จ");
+        setError(
+          paidError instanceof ApiError ? paidError.message : "ปิดบิลไม่สำเร็จ",
+        );
       })
       .finally(() => {
         setSaving(false);
@@ -405,13 +485,22 @@ export function MarkPaidDialog({ open, bill, onClose, onPaid }: MarkPaidDialogPr
     <Dialog
       open={open}
       onClose={onClose}
-      title={bill === null ? "ปิดบิลด้วยมือ" : `ปิดบิลด้วยมือ ห้อง ${bill.roomNumber}`}
+      title={
+        bill === null
+          ? "ปิดบิลด้วยมือ"
+          : `ปิดบิลด้วยมือ ห้อง ${bill.roomNumber}`
+      }
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
             ยกเลิก
           </Button>
-          <Button variant="primary" icon="check_circle" disabled={!canConfirm} onClick={confirm}>
+          <Button
+            variant="primary"
+            icon="check_circle"
+            disabled={!canConfirm}
+            onClick={confirm}
+          >
             {saving ? "กำลังปิดบิล" : "ยืนยันปิดบิล"}
           </Button>
         </>
@@ -421,7 +510,9 @@ export function MarkPaidDialog({ open, bill, onClose, onPaid }: MarkPaidDialogPr
         <div className="grid gap-4">
           <div className="flex items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2">
             <span className="text-sm text-steel">ยอดที่รับชำระ</span>
-            <span className="num text-base text-charcoal">{baht(bill.total)} บาท</span>
+            <span className="num text-base text-charcoal">
+              {baht(bill.total)} บาท
+            </span>
           </div>
 
           <Select
@@ -446,7 +537,9 @@ export function MarkPaidDialog({ open, bill, onClose, onPaid }: MarkPaidDialogPr
             onChange={setPaidAt}
           />
 
-          <p className="text-xs text-fog">หลังยืนยัน บิลนี้จะปิดทันทีและแก้ไขหรือลบไม่ได้อีก</p>
+          <p className="text-xs text-fog">
+            หลังยืนยัน บิลนี้จะปิดทันทีและแก้ไขหรือลบไม่ได้อีก
+          </p>
 
           {error !== null && <p className="text-xs text-danger">{error}</p>}
         </div>
@@ -462,7 +555,12 @@ export interface DeleteBillDialogProps {
   onDeleted: () => void;
 }
 
-export function DeleteBillDialog({ open, bill, onClose, onDeleted }: DeleteBillDialogProps) {
+export function DeleteBillDialog({
+  open,
+  bill,
+  onClose,
+  onDeleted,
+}: DeleteBillDialogProps) {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -486,7 +584,11 @@ export function DeleteBillDialog({ open, bill, onClose, onDeleted }: DeleteBillD
         onDeleted();
       })
       .catch((removeError: unknown) => {
-        setError(removeError instanceof ApiError ? removeError.message : "ลบบิลไม่สำเร็จ");
+        setError(
+          removeError instanceof ApiError
+            ? removeError.message
+            : "ลบบิลไม่สำเร็จ",
+        );
       })
       .finally(() => {
         setDeleting(false);
@@ -503,7 +605,12 @@ export function DeleteBillDialog({ open, bill, onClose, onDeleted }: DeleteBillD
           <Button variant="ghost" onClick={onClose}>
             ยกเลิก
           </Button>
-          <Button variant="danger-soft" icon="delete" disabled={bill === null || deleting} onClick={confirm}>
+          <Button
+            variant="danger-soft"
+            icon="delete"
+            disabled={bill === null || deleting}
+            onClick={confirm}
+          >
             {deleting ? "กำลังลบ" : "ลบบิล"}
           </Button>
         </>
@@ -512,9 +619,13 @@ export function DeleteBillDialog({ open, bill, onClose, onDeleted }: DeleteBillD
       {bill !== null && (
         <div className="grid gap-3">
           <p className="text-sm text-steel">
-            ลบบิลห้อง {bill.roomNumber} ของ {periodLabel(bill.period)} ยอด {baht(bill.total)} บาท พร้อมค่าใช้จ่ายเพิ่มเติมทั้งหมด
+            ลบบิลห้อง {bill.roomNumber} ของ {periodLabel(bill.period)} ยอด{" "}
+            {baht(bill.total)} บาท พร้อมค่าใช้จ่ายเพิ่มเติมทั้งหมด
           </p>
-          <p className="text-xs text-fog">ลบบิลได้เฉพาะบิลที่ยังไม่จ่าย หลังลบแล้วห้องนี้จะกลับไปออกบิลใหม่ในเดือนนี้ได้</p>
+          <p className="text-xs text-fog">
+            ลบบิลได้เฉพาะบิลที่ยังไม่จ่าย
+            หลังลบแล้วห้องนี้จะกลับไปออกบิลใหม่ในเดือนนี้ได้
+          </p>
           {error !== null && <p className="text-xs text-danger">{error}</p>}
         </div>
       )}

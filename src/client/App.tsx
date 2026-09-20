@@ -1,14 +1,17 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { AccountButton } from "./account";
 import { fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
+import { ErrorBoundary } from "./error-boundary";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
+import { FamilyPage } from "./pages/family";
 import { LinePage } from "./pages/line";
 import { ReviewPage } from "./pages/review";
 import { RoomsPage } from "./pages/rooms";
 import { SettingsPage } from "./pages/settings";
 import { TenantsPage } from "./pages/tenants";
 import { SearchProvider, useSearch } from "./search";
-import type { PageProps } from "./ui";
+import { Monogram, type PageProps } from "./ui";
 
 const routeList = [
   { id: "dashboard", label: "แดชบอร์ด", icon: "space_dashboard" },
@@ -17,6 +20,7 @@ const routeList = [
   { id: "bills", label: "บิล", icon: "receipt_long" },
   { id: "review", label: "รอตรวจ", icon: "fact_check" },
   { id: "line", label: "ข้อความ LINE", icon: "chat_bubble" },
+  { id: "family", label: "ครอบครัว", icon: "groups" },
   { id: "settings", label: "ตั้งค่า", icon: "settings" },
 ] as const;
 
@@ -29,6 +33,7 @@ const pages: Record<RouteId, (props: PageProps) => ReactNode> = {
   bills: BillsPage,
   review: ReviewPage,
   line: LinePage,
+  family: FamilyPage,
   settings: SettingsPage,
 };
 
@@ -42,10 +47,11 @@ const mobileTabs = [
 const moreItems = [
   { route: "review", label: "รอตรวจ", icon: "fact_check" },
   { route: "line", label: "ข้อความ LINE", icon: "chat_bubble" },
+  { route: "family", label: "ครอบครัว", icon: "groups" },
   { route: "settings", label: "ตั้งค่า", icon: "settings" },
 ] as const;
 
-const moreRoutes: RouteId[] = ["review", "line", "settings"];
+const moreRoutes: RouteId[] = ["review", "line", "family", "settings"];
 
 interface ParsedRoute {
   route: RouteId;
@@ -76,6 +82,33 @@ function routeTitle(parsed: ParsedRoute) {
   return findRoute(parsed.route).label;
 }
 
+const desktopSearchQuery = "(min-width: 768px)";
+
+function useDesktopSearch(): boolean {
+  const [available, setAvailable] = useState<boolean>(() =>
+    typeof window === "undefined" ? true : window.matchMedia(desktopSearchQuery).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(desktopSearchQuery);
+    const update = () => {
+      setAvailable(media.matches);
+    };
+
+    media.addEventListener("change", update);
+
+    return () => {
+      media.removeEventListener("change", update);
+    };
+  }, []);
+
+  return available;
+}
+
+function searchOptionId(index: number): string {
+  return `topbar-search-option-${index}`;
+}
+
 function useHashRoute(): ParsedRoute {
   const [parsed, setParsed] = useState<ParsedRoute>(() => parseRoute(window.location.hash));
 
@@ -97,14 +130,6 @@ function useHashRoute(): ParsedRoute {
   }, [parsed]);
 
   return parsed;
-}
-
-function Monogram() {
-  return (
-    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[image:var(--gradient-conic-spectrum)] p-[2px]">
-      <span className="grid h-full w-full place-items-center rounded-xl bg-canvas-white text-[13px] font-semibold text-charcoal">วจ</span>
-    </span>
-  );
 }
 
 interface NavLinkProps {
@@ -159,31 +184,31 @@ function PendingLink({ className, badge, label }: { className: string; badge: nu
 function Shell() {
   const parsed = useHashRoute();
   const { query, setQuery } = useSearch();
+  const desktopSearch = useDesktopSearch();
   const searchRef = useRef<HTMLInputElement>(null);
   const moreRef = useRef<HTMLDialogElement>(null);
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [jumpRooms, setJumpRooms] = useState<Room[]>([]);
   const [jumpTenants, setJumpTenants] = useState<Tenant[]>([]);
   const [panelDismissed, setPanelDismissed] = useState(false);
+  const [activeResult, setActiveResult] = useState(0);
 
-  useEffect(() => {
-    let active = true;
-
+  /**
+   * ดัชนีสำหรับค้นหาด่วน — โหลดซ้ำทุกครั้งที่โฟกัสช่องค้นหา
+   * เพราะห้องและผู้เช่าแก้ได้จากหน้าอื่นโดยไม่เปลี่ยนเส้นทาง
+   */
+  const loadJumpIndex = useCallback(() => {
     void Promise.all([fetchRooms(), fetchTenants()])
       .then(([rooms, tenants]) => {
-        if (!active) {
-          return;
-        }
-
         setJumpRooms(rooms);
         setJumpTenants(tenants);
       })
       .catch(() => undefined);
-
-    return () => {
-      active = false;
-    };
   }, []);
+
+  useEffect(() => {
+    loadJumpIndex();
+  }, [loadJumpIndex]);
 
   useEffect(() => {
     let active = true;
@@ -208,6 +233,10 @@ function Shell() {
   }, [parsed.route]);
 
   useEffect(() => {
+    if (!desktopSearch) {
+      return;
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -220,7 +249,7 @@ function Shell() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, []);
+  }, [desktopSearch]);
 
   useEffect(() => {
     setQuery("");
@@ -235,7 +264,6 @@ function Shell() {
   };
 
   const Page = pages[parsed.route];
-  const title = routeTitle(parsed);
   const moreActive = moreRoutes.includes(parsed.route);
 
   const needle = query.trim().toLowerCase();
@@ -270,6 +298,7 @@ function Shell() {
             })),
         ].slice(0, 6);
   const searchPanelOpen = needle !== "" && !panelDismissed;
+  const activeIndex = jumpResults.length === 0 ? -1 : Math.min(activeResult, jumpResults.length - 1);
 
   const openResult = (hash: string) => {
     setQuery("");
@@ -338,6 +367,7 @@ function Shell() {
               aria-expanded={searchPanelOpen}
               aria-controls="topbar-search-results"
               aria-autocomplete="list"
+              aria-activedescendant={searchPanelOpen && activeIndex >= 0 ? searchOptionId(activeIndex) : undefined}
               className="input h-11 pl-10 pr-20"
               placeholder="ค้นหาห้อง, ผู้เช่า, เบอร์โทร..."
               aria-label="ค้นหาห้อง, ผู้เช่า, เบอร์โทร"
@@ -345,25 +375,50 @@ function Shell() {
               onChange={(event) => {
                 setQuery(event.target.value);
                 setPanelDismissed(false);
+                setActiveResult(0);
               }}
+              onFocus={loadJumpIndex}
               onKeyDown={(event) => {
-                if (event.key === "Escape" && searchPanelOpen) {
+                if (event.key === "Escape") {
+                  if (searchPanelOpen) {
+                    event.preventDefault();
+                    setPanelDismissed(true);
+                  }
+
+                  return;
+                }
+
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  if (jumpResults.length === 0) {
+                    return;
+                  }
+
                   event.preventDefault();
-                  setPanelDismissed(true);
+
+                  if (!searchPanelOpen) {
+                    setPanelDismissed(false);
+                    setActiveResult(event.key === "ArrowDown" ? 0 : jumpResults.length - 1);
+                    return;
+                  }
+
+                  const step = event.key === "ArrowDown" ? 1 : -1;
+                  setActiveResult((activeIndex + step + jumpResults.length) % jumpResults.length);
                   return;
                 }
 
                 if (event.key === "Enter" && searchPanelOpen) {
-                  const first = jumpResults[0];
+                  const choice = jumpResults[activeIndex];
 
-                  if (first !== undefined) {
+                  if (choice !== undefined) {
                     event.preventDefault();
-                    openResult(first.hash);
+                    openResult(choice.hash);
                   }
                 }
               }}
             />
-            <span className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">Ctrl K</span>
+            {desktopSearch && (
+              <span className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">Ctrl K</span>
+            )}
 
             {searchPanelOpen && (
               <div
@@ -377,10 +432,17 @@ function Shell() {
                     {jumpResults.map((result, index) => (
                       <button
                         key={result.key}
+                        id={searchOptionId(index)}
                         type="button"
                         role="option"
-                        aria-selected={index === 0}
-                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-paper-mist"
+                        tabIndex={-1}
+                        aria-selected={index === activeIndex}
+                        className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors ${
+                          index === activeIndex ? "bg-paper-mist" : "hover:bg-paper-mist"
+                        }`}
+                        onMouseEnter={() => {
+                          setActiveResult(index);
+                        }}
                         onClick={() => {
                           openResult(result.hash);
                         }}
@@ -400,24 +462,20 @@ function Shell() {
 
           <div className="ml-auto flex items-center gap-3">
             <PendingLink className="icon-btn" badge={pendingReviewCount} label="รอตรวจสลิป" />
-            <div className="flex items-center gap-2.5">
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-paper-mist text-[13px] font-semibold text-charcoal">จ</span>
-              <span className="hidden lg:block">
-                <span className="block text-[13px] font-semibold text-charcoal">เจ้าของหอพัก</span>
-                <span className="block text-[11px] text-fog">ผู้ดูแลระบบ</span>
-              </span>
-            </div>
+            <AccountButton variant="full" />
           </div>
         </header>
 
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2.5 border-b border-ash bg-canvas-white px-4 md:hidden">
           <Monogram />
-          <strong className="truncate text-sm font-semibold text-charcoal">{title}</strong>
           <PendingLink className="icon-btn ml-auto h-11 w-11" badge={pendingReviewCount} label="รอตรวจสลิป" />
+          <AccountButton variant="icon" />
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] px-4 pb-28 pt-5 md:px-6 md:pb-12 md:pt-6">
-          <Page view={parsed.view} />
+          <ErrorBoundary resetKey={`${parsed.route}/${parsed.view}`}>
+            <Page view={parsed.view} />
+          </ErrorBoundary>
         </main>
       </div>
 

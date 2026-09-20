@@ -3,6 +3,7 @@ import {
   ApiError,
   checkoutTenant,
   createTenant,
+  fetchBillPeriods,
   fetchBills,
   fetchPendingLinks,
   fetchRooms,
@@ -33,7 +34,7 @@ import {
   type DataTableColumn,
 } from "../ui";
 import type { Tenant as PinnedTenant } from "../mock-data";
-import { baht, monthCount, periodLabel, recentPeriods, todayIso } from "./bills-shared";
+import { baht, periodLabel, periodOptions, todayIso } from "./bills-shared";
 import { PairingSurface, type PairingResult } from "./tenants-pairing";
 
 const thaiMonthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
@@ -139,7 +140,7 @@ function TenantsTabs({ value, onChange }: { value: TenantStatus; onChange: (next
             aria-selected={active}
             aria-controls="tenants-panel"
             tabIndex={active ? 0 : -1}
-            className={`btn ${active ? "bg-paper-mist text-charcoal" : "text-steel"}`}
+            className={`btn ${active ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel"}`}
             onClick={() => {
               onChange(option.id);
             }}
@@ -359,7 +360,7 @@ export function TenantsPage() {
   const [tab, setTab] = useState<TenantStatus>("current");
   const [pairingOpen, setPairingOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [billPeriods] = useState<string[]>(() => recentPeriods(monthCount));
+  const [billPeriods, setBillPeriods] = useState<string[]>(() => periodOptions([]));
   const [tenantBills, setTenantBills] = useState<Bill[]>([]);
   const [billsLoading, setBillsLoading] = useState(false);
   const [billsError, setBillsError] = useState<string | null>(null);
@@ -380,10 +381,16 @@ export function TenantsPage() {
     setError(null);
 
     try {
-      const [tenants, rooms, pending] = await Promise.all([fetchTenants(), fetchRooms(), fetchPendingLinks()]);
+      const [tenants, rooms, pending, billed] = await Promise.all([
+        fetchTenants(),
+        fetchRooms(),
+        fetchPendingLinks(),
+        fetchBillPeriods(),
+      ]);
       setTenantList(tenants);
       setRoomList(rooms);
       setPendingLinks(pending);
+      setBillPeriods(periodOptions(billed));
     } catch (loadError) {
       setError(loadError instanceof ApiError ? loadError.message : "โหลดข้อมูลผู้เช่าไม่สำเร็จ");
     } finally {
@@ -848,7 +855,7 @@ export function TenantsPage() {
             </div>
 
             <div>
-              <CardHeader title="บิลของผู้เช่า" description={`บิลของห้องนี้จากรอบบิลล่าสุด ${billPeriods.length} เดือน`} />
+              <CardHeader title="บิลของผู้เช่า" description={`บิลของห้องนี้จากรอบบิลล่าสุด ${billPeriods.length} รอบ`} />
               {billsLoading ? (
                 <p className="text-sm text-fog">กำลังโหลดบิล</p>
               ) : billsError !== null ? (

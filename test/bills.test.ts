@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { billsFocusHash, billsFocusOf, billsFocusTarget } from "../src/client/api";
+import { configurePayout, createFamily, signIn, withAuth, type TestSession } from "./auth-helper";
 import { flexText } from "./flex";
 
 interface RoomPayload {
@@ -14,6 +15,9 @@ interface RoomPayload {
   electricMeterInit: number;
   status: "vacant" | "occupied";
   lastElectricPeriod: string | null;
+  charges: ChargePayload[];
+  excludedDormChargeIds: string[];
+  ownCharges: ChargePayload[];
 }
 
 interface TenantPayload {
@@ -82,8 +86,20 @@ const tenantsUrl = "https://dorm.test/api/tenants";
 const billsUrl = "https://dorm.test/api/bills";
 const settingsUrl = "https://dorm.test/api/settings";
 
+let session: TestSession;
+
+/** ยิง API ด้วยเซสชันของครอบครัวที่เทสต์นี้ล็อกอินไว้ */
+function api(url: string, init: RequestInit = {}): Promise<Response> {
+  return SELF.fetch(url, withAuth(session, init));
+}
+
+beforeEach(async () => {
+  session = await signIn();
+  await configurePayout();
+});
+
 function post(url: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(url, {
+  return api(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
@@ -111,7 +127,7 @@ function pick<T>(items: T[], predicate: (item: T) => boolean): T {
 }
 
 async function putRates(water: number, electric: number): Promise<void> {
-  const response = await SELF.fetch(settingsUrl, {
+  const response = await api(settingsUrl, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ defaultWaterRate: water, defaultElectricRate: electric }),
@@ -127,14 +143,14 @@ async function newRoom(payload: Record<string, unknown>): Promise<RoomPayload> {
 }
 
 async function roomsList(): Promise<RoomPayload[]> {
-  return (await (await SELF.fetch(roomsUrl)).json<{ ok: boolean; rooms: RoomPayload[] }>()).rooms;
+  return (await (await api(roomsUrl)).json<{ ok: boolean; rooms: RoomPayload[] }>()).rooms;
 }
 
-async function setRoomCharges(roomId: string, charges: ChargePayload[]): Promise<void> {
-  const response = await SELF.fetch(`${roomsUrl}/${roomId}`, {
+async function setOwnCharges(roomId: string, ownCharges: ChargePayload[]): Promise<void> {
+  const response = await api(`${roomsUrl}/${roomId}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ charges }),
+    body: JSON.stringify({ ownCharges }),
   });
 
   expect(response.status).toBe(200);
@@ -157,19 +173,19 @@ function generate(payload: Record<string, unknown>): Promise<Response> {
 }
 
 async function listBills(period: string): Promise<BillPayload[]> {
-  const response = await SELF.fetch(`${billsUrl}?period=${period}`);
+  const response = await api(`${billsUrl}?period=${period}`);
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; period: string; bills: BillPayload[] }>()).bills;
 }
 
 async function meterSheet(period: string): Promise<MeterRowPayload[]> {
-  const response = await SELF.fetch(`${billsUrl}/meter-sheet?period=${period}`);
+  const response = await api(`${billsUrl}/meter-sheet?period=${period}`);
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; period: string; rows: MeterRowPayload[] }>()).rows;
 }
 
 function patchBill(id: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(`${billsUrl}/${id}`, {
+  return api(`${billsUrl}/${id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
@@ -177,7 +193,7 @@ function patchBill(id: string, payload: Record<string, unknown>): Promise<Respon
 }
 
 function deleteBill(id: string): Promise<Response> {
-  return SELF.fetch(`${billsUrl}/${id}`, { method: "DELETE" });
+  return api(`${billsUrl}/${id}`, { method: "DELETE" });
 }
 
 function markPaid(id: string, payload: Record<string, unknown>): Promise<Response> {
@@ -513,7 +529,7 @@ describe("monthly bill generation", () => {
 
     await putRates(25, 9);
 
-    const patched = await SELF.fetch(`${roomsUrl}/${room.id}`, {
+    const patched = await api(`${roomsUrl}/${room.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ waterRate: 40, electricMode: "flat", electricRate: 11 }),
@@ -619,15 +635,15 @@ describe("monthly bill generation", () => {
   it("rejects a malformed period and an empty entry list", async () => {
     await putRates(18, 7);
 
-    const badPeriod = await SELF.fetch(`${billsUrl}?period=2026-13`);
+    const badPeriod = await api(`${billsUrl}?period=2026-13`);
     expect(badPeriod.status).toBe(400);
     expect((await badPeriod.json<ErrorBody>()).error.field).toBe("period");
 
-    const missingPeriod = await SELF.fetch(billsUrl);
+    const missingPeriod = await api(billsUrl);
     expect(missingPeriod.status).toBe(400);
     expect((await missingPeriod.json<ErrorBody>()).error.field).toBe("period");
 
-    const badSheet = await SELF.fetch(`${billsUrl}/meter-sheet?period=กันยายน-2569`);
+    const badSheet = await api(`${billsUrl}/meter-sheet?period=กันยายน-2569`);
     expect(badSheet.status).toBe(400);
     expect((await badSheet.json<ErrorBody>()).error.field).toBe("period");
 
@@ -744,6 +760,42 @@ describe("bill management", () => {
     expect(listed.total).toBe(4610);
   });
 
+  it("rejects a corrected reading that would double-bill the units of the next month's bill", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B243", { waterMeterInit: 100, electricMeterInit: 200 });
+    const september = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const october = await generate({
+      period: "2026-10",
+      entries: [{ roomId: room.id, waterCurrent: 120, electricCurrent: 225 }],
+    });
+    expect(october.status).toBe(201);
+
+    const waterOverlap = await patchBill(september.id, { waterCurrent: 120 });
+    expect(waterOverlap.status).toBe(400);
+
+    const waterBody = await waterOverlap.json<ErrorBody>();
+    expect(waterBody.ok).toBe(false);
+    expect(waterBody.error.code).toBe("VALIDATION");
+    expect(waterBody.error.field).toBe("waterCurrent");
+    expect(waterBody.error.message).toContain("B243");
+
+    const electricOverlap = await patchBill(september.id, { electricCurrent: 230 });
+    expect(electricOverlap.status).toBe(400);
+    expect((await electricOverlap.json<ErrorBody>()).error.field).toBe("electricCurrent");
+
+    expect(await findBill("2026-09", september.id)).toEqual(september);
+
+    // ยังแก้ได้ตราบใดที่ไม่ก้าวล่วงเข้าไปในเดือนถัดไป
+    const allowed = await patchBill(september.id, { waterCurrent: 105, electricCurrent: 210 });
+    expect(allowed.status).toBe(200);
+
+    const patched = (await allowed.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    expect(patched.waterUnits).toBeCloseTo(5);
+    expect(patched.electricUnits).toBeCloseTo(10);
+    expect(await findBill("2026-09", september.id)).toEqual(patched);
+  });
+
   it("rejects a corrected reading below the bill's previous one and changes nothing", async () => {
     await putRates(18, 7);
     const room = await occupiedRoom("B233", { waterMeterInit: 100, electricMeterInit: 200 });
@@ -837,6 +889,33 @@ describe("bill management", () => {
     const again = await markPaid(bill.id, { method: "cash" });
     expect(again.status).toBe(409);
     expect((await again.json<ErrorBody>()).error.code).toBe("CONFLICT");
+
+    // คำขอที่สองต้องไม่เขียนทับเวลาที่ปิดบิลไปแล้ว
+    const afterRepeat = await findBill("2026-09", bill.id);
+    expect(afterRepeat.paidAt).toBe(paid.paidAt);
+    expect(afterRepeat.paidMethod).toBe("transfer");
+  });
+
+  it("lets only one of two simultaneous mark-paid calls rewrite the bill", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B244", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+    const responses = await Promise.all([
+      markPaid(bill.id, { method: "cash", paidAt: "2026-09-30" }),
+      markPaid(bill.id, { method: "transfer", paidAt: "2026-10-01" }),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+
+    const winner = first(responses.filter((response) => response.status === 200));
+    const winnerBill = (await winner.json<{ ok: boolean; bill: BillPayload }>()).bill;
+    const stored = await findBill("2026-09", bill.id);
+
+    expect(stored.paidAt).toBe(winnerBill.paidAt);
+    expect(stored.paidMethod).toBe(winnerBill.paidMethod);
+    expect(["2026-09-30", "2026-10-01"]).toContain(stored.paidAt);
+    expect(stored.paidAt).toBe(stored.paidMethod === "cash" ? "2026-09-30" : "2026-10-01");
   });
 
   it("stores the given paid date and rejects a malformed one", async () => {
@@ -953,7 +1032,7 @@ describe("room recurring charges", () => {
     const room = await occupiedRoom("H301", { waterMeterInit: 10, electricMeterInit: 20 });
     const plain = await occupiedRoom("H302", { waterMeterInit: 10, electricMeterInit: 20 });
 
-    await setRoomCharges(room.id, [
+    await setOwnCharges(room.id, [
       { name: "ค่าบริการ", amount: 10 },
       { name: "ค่าขยะ", amount: 20 },
       { name: "ค่าไวไฟ", amount: 100 },
@@ -966,12 +1045,25 @@ describe("room recurring charges", () => {
       { name: "ค่าไวไฟ", amount: 100 },
     ]);
     expect(pick(rows, (row) => row.roomId === plain.id).charges).toEqual([]);
+
+    const roomRow = pick(await roomsList(), (item) => item.id === room.id);
+    expect(roomRow.excludedDormChargeIds).toEqual([]);
+    expect(roomRow.ownCharges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
+    expect(roomRow.charges).toEqual([
+      { name: "ค่าบริการ", amount: 10 },
+      { name: "ค่าขยะ", amount: 20 },
+      { name: "ค่าไวไฟ", amount: 100 },
+    ]);
   });
 
   it("stores the meter sheet's charges on the generated bill and counts them in the total", async () => {
     await putRates(18, 7);
     const room = await occupiedRoom("H303", { rent: 4200, waterMeterInit: 50, electricMeterInit: 60 });
-    await setRoomCharges(room.id, [
+    await setOwnCharges(room.id, [
       { name: "ค่าบริการ", amount: 10 },
       { name: "ค่าขยะ", amount: 20 },
       { name: "ค่าไวไฟ", amount: 100 },
@@ -1004,14 +1096,14 @@ describe("room recurring charges", () => {
   it("leaves an existing bill untouched when a room's recurring defaults change", async () => {
     await putRates(18, 7);
     const room = await occupiedRoom("H304", { rent: 4000, waterMeterInit: 100, electricMeterInit: 200 });
-    await setRoomCharges(room.id, [{ name: "ค่าขยะ", amount: 20 }]);
+    await setOwnCharges(room.id, [{ name: "ค่าขยะ", amount: 20 }]);
 
     const sheetRow = pick(await meterSheet("2026-09"), (row) => row.roomId === room.id);
     const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215, charges: sheetRow.charges });
     expect(bill.charges).toEqual([{ name: "ค่าขยะ", amount: 20 }]);
     expect(bill.total).toBe(4000 + 180 + 105 + 20);
 
-    await setRoomCharges(room.id, [
+    await setOwnCharges(room.id, [
       { name: "ค่าบริการ", amount: 10 },
       { name: "ค่าไวไฟ", amount: 100 },
     ]);
@@ -1052,9 +1144,9 @@ describe("owner send summary", () => {
 
   async function linkOwner(): Promise<void> {
     await env.DB.prepare(
-      "INSERT INTO settings (key, value, updated_at) VALUES ('owner_line_user_id', ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'owner_line_user_id', ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value",
     )
-      .bind(ownerUserId)
+      .bind(session.familyId, ownerUserId)
       .run();
   }
 
@@ -1080,7 +1172,11 @@ describe("owner send summary", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    await env.DB.prepare("DELETE FROM settings WHERE key = 'owner_line_user_id'").run();
+    await env.DB.prepare(
+      "DELETE FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+    )
+      .bind(session.familyId)
+      .run();
   });
 
   it("pushes the owner one success card carrying the real outcome of a clean send", async () => {
@@ -1225,5 +1321,76 @@ describe("room-scoped ดูบิล link", () => {
     expect(billsFocusOf("#bills")).toBeNull();
     expect(billsFocusOf("#bills?period=2026-08")).toBeNull();
     expect(billsFocusOf("#tenants?room=108&period=2026-08")).toBeNull();
+  });
+});
+
+describe("family isolation", () => {
+  it("hides another family's bills and refuses to touch them", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("F701", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+    expect((await listBills("2026-09")).filter((item) => item.roomId === room.id)).toHaveLength(1);
+
+    const other = await signIn("owner", await createFamily("หอของอีกครอบครัว"));
+    await configurePayout(other.familyId);
+
+    function asOther(url: string, init: RequestInit = {}): Promise<Response> {
+      return SELF.fetch(url, withAuth(other, init));
+    }
+
+    const json = { "content-type": "application/json" };
+
+    const listed = await asOther(`${billsUrl}?period=2026-09`);
+    expect(listed.status).toBe(200);
+    expect((await listed.json<{ ok: boolean; bills: BillPayload[] }>()).bills).toEqual([]);
+
+    const periods = await asOther(`${billsUrl}/periods`);
+    expect(periods.status).toBe(200);
+    expect((await periods.json<{ ok: boolean; periods: string[] }>()).periods).toEqual([]);
+
+    const sheet = await asOther(`${billsUrl}/meter-sheet?period=2026-09`);
+    expect(sheet.status).toBe(200);
+    expect((await sheet.json<{ ok: boolean; rows: MeterRowPayload[] }>()).rows).toEqual([]);
+
+    const patch = await asOther(`${billsUrl}/${bill.id}`, {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ waterCurrent: 900 }),
+    });
+    expect(patch.status).toBe(404);
+    expect((await patch.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const removed = await asOther(`${billsUrl}/${bill.id}`, { method: "DELETE" });
+    expect(removed.status).toBe(404);
+    expect((await removed.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const paid = await asOther(`${billsUrl}/${bill.id}/mark-paid`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ method: "cash" }),
+    });
+    expect(paid.status).toBe(404);
+    expect((await paid.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+
+    const sent = await asOther(`${billsUrl}/${bill.id}/send`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({}),
+    });
+    expect(sent.status).toBe(404);
+
+    // ออกบิลให้ห้องของครอบครัวอื่นก็ไม่ได้ ห้องนั้นไม่รู้จักในครอบครัวนี้
+    const generated = await asOther(`${billsUrl}/generate`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({
+        period: "2026-09",
+        entries: [{ roomId: room.id, waterCurrent: 120, electricCurrent: 220 }],
+      }),
+    });
+    expect(generated.status).toBe(400);
+    expect((await generated.json<ErrorBody>()).error.field).toBe("entries");
+
+    expect(await findBill("2026-09", bill.id)).toEqual(bill);
   });
 });

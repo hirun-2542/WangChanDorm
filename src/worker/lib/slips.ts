@@ -1,5 +1,5 @@
 import { failureDetail, fetchMessageContent, logLineFailure, pushMessage, replyMessage } from "../line/api";
-import { type SlipOkResult, verifySlip } from "../line/slipok";
+import { type SlipOkResult, type SlipPayee, compareReceiver, verifySlip } from "../line/slipok";
 import {
   ownerSlipPendingMessage,
   slipDownloadFailedMessage,
@@ -32,13 +32,24 @@ const emptySlipResult: StoredSlipResult = {
   raw: null,
 };
 
-const insertSlipSql = "INSERT INTO slips (id, line_user_id, image_key, status) VALUES (?, ?, ?, 'pending_review')";
+const insertSlipSql =
+  "INSERT INTO slips (id, family_id, line_user_id, image_key, status) VALUES (?, ?, ?, ?, 'pending_review')";
 
-const updateSlipSql = "UPDATE slips SET status = ?, bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, verify_result = ? WHERE id = ?";
+const updateSlipSql =
+  "UPDATE slips SET status = ?, bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, verify_result = ? WHERE id = ? AND family_id = ? AND status = 'pending_review'";
 
-const closeBillSql = "UPDATE bills SET status = 'paid', paid_at = ?, paid_method = 'transfer' WHERE id = ? AND status = 'unpaid'";
+/**
+ * ปิดบิลและผูกสลิปต้องเกิดใน transaction เดียวกัน (DB.batch)
+ *
+ * คำสั่งแรกผูกสลิปได้เฉพาะเมื่อบิลยังไม่ถูกปิด คำสั่งที่สองปิดบิลได้เฉพาะเมื่อ
+ * สลิปถูกผูกกับบิลใบนั้นจริง ๆ สองเงื่อนไขนี้ตัดกันเอง จึงไม่มีทางที่สลิปจะถูก
+ * ทำเครื่องหมายว่าปิดบิลทั้งที่บิลยังเปิดอยู่ แม้ Worker จะล้มกลางทาง
+ */
+const matchSlipSql =
+  "UPDATE slips SET status = 'matched', bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, verify_result = ? WHERE id = ? AND family_id = ? AND status = 'pending_review' AND EXISTS (SELECT 1 FROM bills WHERE id = ? AND family_id = ? AND status = 'unpaid') AND NOT EXISTS (SELECT 1 FROM slips WHERE family_id = ? AND trans_ref = ? AND status = 'matched' AND id <> ?)";
 
-const matchSlipSql = "UPDATE slips SET status = 'matched', bill_id = ?, bill_total = ?, amount = ?, trans_ref = ?, verify_result = ? WHERE id = ?";
+const closeBillSql =
+  "UPDATE bills SET status = 'paid', paid_at = ?, paid_method = 'transfer' WHERE id = ? AND family_id = ? AND status = 'unpaid' AND EXISTS (SELECT 1 FROM slips WHERE id = ? AND family_id = ? AND bill_id = bills.id AND status = 'matched')";
 
 interface SlipSenderRow {
   id: string;
@@ -51,6 +62,9 @@ interface UnpaidBillRow {
   id: string;
   period: string;
   total: number;
+  payee_promptpay_type: string;
+  payee_promptpay_id: string;
+  payee_bank_account_number: string;
 }
 
 interface SlipOwnerAlert {
@@ -59,6 +73,10 @@ interface SlipOwnerAlert {
   slipAmount: number | null;
   billTotal: number | null;
 }
+
+/** ข้อความถึงผู้เช่าเมื่อสลิปโอนเข้าบัญชีที่ไม่ใช่บัญชีรับเงินของหอ */
+const slipReceiverMismatchMessage =
+  "สลิปนี้โอนเข้าบัญชีอื่น ไม่ใช่บัญชีรับเงินของหอ จึงยังปิดบิลให้ไม่ได้ กรุณาส่งสลิปที่โอนเข้าบัญชีของหอ หรือรอเจ้าของหอตรวจสอบ";
 
 function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -169,9 +187,11 @@ function slipResultJson(result: SlipOkResult, reason: SlipReason | null): string
   return JSON.stringify(payload);
 }
 
-async function notifyOwnerOfSlipInReview(env: Env, slipId: string, alert: SlipOwnerAlert): Promise<void> {
+async function notifyOwnerOfSlipInReview(env: Env, familyId: string, slipId: string, alert: SlipOwnerAlert): Promise<void> {
   try {
-    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'owner_line_user_id'").first<{ value: string }>();
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(familyId)
+      .first<{ value: string }>();
     const ownerId = (row?.value ?? "").trim();
 
     if (ownerId === "") {
@@ -191,20 +211,34 @@ async function notifyOwnerOfSlipInReview(env: Env, slipId: string, alert: SlipOw
 
 async function keepSlipForReview(
   env: Env,
+  familyId: string,
   slipId: string,
   result: SlipOkResult,
   lineUserId: string,
   reason: SlipReason,
   bill: UnpaidBillRow | null,
   sender: SlipSenderRow,
+  receiverMismatch = false,
 ): Promise<void> {
   await env.DB.prepare(updateSlipSql)
-    .bind("pending_review", bill?.id ?? null, bill?.total ?? null, result.amount, result.transRef, slipResultJson(result, reason), slipId)
+    .bind(
+      "pending_review",
+      bill?.id ?? null,
+      bill?.total ?? null,
+      result.amount,
+      result.transRef,
+      slipResultJson(result, reason),
+      slipId,
+      familyId,
+    )
     .run();
 
-  console.log(JSON.stringify({ message: "slip kept for review", slipId, lineUserId, verified: result.verified, reason }));
-  await pushMessage(env, lineUserId, [slipPendingReviewMessage()]);
-  await notifyOwnerOfSlipInReview(env, slipId, {
+  console.log(JSON.stringify({ message: "slip kept for review", slipId, lineUserId, verified: result.verified, reason, receiverMismatch }));
+
+  await pushMessage(env, lineUserId, [
+    receiverMismatch ? { type: "text", text: slipReceiverMismatchMessage } : slipPendingReviewMessage(),
+  ]);
+  await notifyOwnerOfSlipInReview(env, familyId, slipId, {
     roomNumber: sender.room_number,
     tenantName: sender.full_name,
     slipAmount: result.amount,
@@ -214,24 +248,60 @@ async function keepSlipForReview(
 
 async function rejectDuplicateSlip(
   env: Env,
+  familyId: string,
   slipId: string,
   result: SlipOkResult,
   lineUserId: string,
   usedSlipId: string | null,
 ): Promise<void> {
   await env.DB.prepare(updateSlipSql)
-    .bind("rejected", null, null, result.amount, result.transRef, slipResultJson(result, "duplicate_slip"), slipId)
+    .bind("rejected", null, null, result.amount, result.transRef, slipResultJson(result, "duplicate_slip"), slipId, familyId)
     .run();
 
   console.log(JSON.stringify({ message: "slip rejected as a duplicate transfer reference", slipId, lineUserId, usedSlipId }));
   await pushMessage(env, lineUserId, [slipDuplicateMessage()]);
 }
 
-export async function handleSlipImage(env: Env, origin: string, userId: string, replyToken: string, messageId: string): Promise<void> {
+/**
+ * บัญชีรับเงินที่ต้องใช้เทียบกับสลิปนี้ — มาจาก snapshot ในบิลที่กำลังจะปิด
+ * ไม่ใช่ตั้งค่าปัจจุบันของหอ
+ *
+ * ถ้าเจ้าของหอเปลี่ยนพร้อมเพย์หรือบัญชีธนาคารหลังจากออกบิลไปแล้ว ผู้เช่าที่
+ * โอนเข้าบัญชีเดิมตามที่ระบุในบิลของตัวเองต้องไม่ถูกตีว่าโอนผิดบัญชี และ
+ * สลิปที่โอนเข้าบัญชีใหม่ (ที่ยังไม่มีในบิลเก่าใบนี้) ก็ต้องไม่ปิดบิลเก่าได้
+ * เช่นกัน — ไม่มีบิลให้เทียบ (bill เป็น null) ถือว่ายังไม่รู้ ปล่อยผ่านไปให้
+ * ขั้นถัดไปตัดสินด้วยเหตุผลอื่น (ไม่มีบิลค้างชำระ)
+ */
+function payeeFromBill(bill: UnpaidBillRow | null): SlipPayee | null {
+  if (bill === null) {
+    return null;
+  }
+
+  const proxyId = bill.payee_promptpay_id.trim();
+  const accountNumber = bill.payee_bank_account_number.trim();
+
+  if (proxyId === "" && accountNumber === "") {
+    return null;
+  }
+
+  return {
+    proxyType: bill.payee_promptpay_type === "citizen-id" ? "NATID" : "MSISDN",
+    proxyId,
+    accountNumber,
+  };
+}
+
+export async function handleSlipImage(
+  env: Env,
+  familyId: string,
+  userId: string,
+  replyToken: string,
+  messageId: string,
+): Promise<void> {
   const sender = await env.DB.prepare(
-    "SELECT t.id, t.room_id, t.full_name, r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.line_user_id = ?",
+    "SELECT t.id, t.room_id, t.full_name, r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.family_id = ? AND r.family_id = ? AND t.line_user_id = ?",
   )
-    .bind(userId)
+    .bind(familyId, familyId, userId)
     .first<SlipSenderRow>();
 
   if (sender === null) {
@@ -250,12 +320,12 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
   const slipId = crypto.randomUUID();
 
   await env.SLIPS.put(imageKey, content.bytes, { httpMetadata: { contentType: content.contentType } });
-  await env.DB.prepare(insertSlipSql).bind(slipId, userId, imageKey).run();
+  await env.DB.prepare(insertSlipSql).bind(slipId, familyId, userId, imageKey).run();
 
   const bill = await env.DB.prepare(
-    "SELECT id, period, total FROM bills WHERE room_id = ? AND tenant_id = ? AND status = 'unpaid' ORDER BY period DESC LIMIT 1",
+    "SELECT id, period, total, payee_promptpay_type, payee_promptpay_id, payee_bank_account_number FROM bills WHERE family_id = ? AND room_id = ? AND tenant_id = ? AND status = 'unpaid' ORDER BY period DESC LIMIT 1",
   )
-    .bind(sender.room_id, sender.id)
+    .bind(familyId, sender.room_id, sender.id)
     .first<UnpaidBillRow>();
 
   const result = await verifySlip(env, content.bytes, content.contentType, bill?.total ?? null);
@@ -265,47 +335,96 @@ export async function handleSlipImage(env: Env, origin: string, userId: string, 
   if (result.duplicate) {
     const used = transRef === null
       ? null
-      : await env.DB.prepare("SELECT id FROM slips WHERE trans_ref = ? AND status <> 'rejected' LIMIT 1")
-          .bind(transRef)
+      : await env.DB.prepare("SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status <> 'rejected' LIMIT 1")
+          .bind(familyId, transRef)
           .first<{ id: string }>();
-    await rejectDuplicateSlip(env, slipId, result, userId, used?.id ?? null);
+    await rejectDuplicateSlip(env, familyId, slipId, result, userId, used?.id ?? null);
+    return;
+  }
+
+  const payee = payeeFromBill(bill);
+  const receiverVerdict = result.receiverMismatch
+    ? "mismatch"
+    : payee === null
+      ? "unknown"
+      : compareReceiver(result.receiver, payee);
+
+  if (receiverVerdict === "mismatch") {
+    console.log(
+      JSON.stringify({
+        message: "slip receiver does not match the dorm payee",
+        slipId,
+        lineUserId: userId,
+        providerReported: result.receiverMismatch,
+      }),
+    );
+    await keepSlipForReview(env, familyId, slipId, result, userId, "not_verified", bill, sender, true);
     return;
   }
 
   if (!result.verified || amount === null || bill === null || toSatang(amount) !== toSatang(bill.total)) {
     const reason: SlipReason = bill === null ? "no_unpaid_bill" : !result.verified || amount === null ? "not_verified" : "mismatch";
-    await keepSlipForReview(env, slipId, result, userId, reason, bill, sender);
+    await keepSlipForReview(env, familyId, slipId, result, userId, reason, bill, sender);
     return;
   }
 
   if (transRef !== null) {
-    const used = await env.DB.prepare("SELECT id FROM slips WHERE trans_ref = ? AND status <> 'rejected' LIMIT 1")
-      .bind(transRef)
+    const used = await env.DB.prepare("SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status <> 'rejected' LIMIT 1")
+      .bind(familyId, transRef)
       .first<{ id: string }>();
 
     if (used !== null) {
-      await rejectDuplicateSlip(env, slipId, result, userId, used.id);
+      await rejectDuplicateSlip(env, familyId, slipId, result, userId, used.id);
       return;
     }
   }
 
-  try {
-    const results = await env.DB.batch([
-      env.DB.prepare(closeBillSql).bind(canonicalPaidAt(result.date), bill.id),
-      env.DB.prepare(matchSlipSql).bind(bill.id, bill.total, amount, transRef, slipResultJson(result, null), slipId),
-    ]);
+  let results: D1Result[];
 
-    if ((results[0]?.meta.changes ?? 0) === 0) {
-      await keepSlipForReview(env, slipId, result, userId, "no_unpaid_bill", null, sender);
-      return;
-    }
+  try {
+    results = await env.DB.batch([
+      env.DB.prepare(matchSlipSql).bind(
+        bill.id,
+        bill.total,
+        amount,
+        transRef,
+        slipResultJson(result, null),
+        slipId,
+        familyId,
+        bill.id,
+        familyId,
+        familyId,
+        transRef,
+        slipId,
+      ),
+      env.DB.prepare(closeBillSql).bind(canonicalPaidAt(result.date), bill.id, familyId, slipId, familyId),
+    ]);
   } catch (error) {
     if (isUniqueViolation(error)) {
-      await rejectDuplicateSlip(env, slipId, result, userId, null);
+      await rejectDuplicateSlip(env, familyId, slipId, result, userId, null);
       return;
     }
 
     throw error;
+  }
+
+  if ((results[0]?.meta.changes ?? 0) === 0 || (results[1]?.meta.changes ?? 0) === 0) {
+    // ไม่มีอะไรถูกเขียนเลย: หรือบิลถูกปิดไปก่อนแล้ว หรือเลขอ้างอิงนี้ถูกใช้ปิดบิลไปแล้ว
+    const used = transRef === null
+      ? null
+      : await env.DB.prepare(
+          "SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status = 'matched' AND id <> ? LIMIT 1",
+        )
+          .bind(familyId, transRef, slipId)
+          .first<{ id: string }>();
+
+    if (used !== null) {
+      await rejectDuplicateSlip(env, familyId, slipId, result, userId, used.id);
+      return;
+    }
+
+    await keepSlipForReview(env, familyId, slipId, result, userId, "no_unpaid_bill", null, sender);
+    return;
   }
 
   console.log(JSON.stringify({ message: "slip closed a bill", slipId, lineUserId: userId, billId: bill.id }));

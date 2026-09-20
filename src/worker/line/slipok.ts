@@ -1,7 +1,14 @@
-import { failureDetail, logLineFailure } from "./api";
+import { failureDetail, lineUploadTimeoutMs, logLineFailure } from "./api";
 import { asRecord } from "../routes/shared";
 
 const slipOkEndpointBase = "https://api.slipok.com/api/line/apikey";
+
+/** บัญชีผู้รับที่ผู้ให้บริการอ่านได้จากสลิป ค่าที่ได้ถูกปิดบางส่วนตามรูปแบบของแต่ละธนาคาร */
+export interface SlipReceiver {
+  proxyType: string | null;
+  proxyValue: string | null;
+  accountValue: string | null;
+}
 
 export interface SlipOkResult {
   verified: boolean;
@@ -9,11 +16,22 @@ export interface SlipOkResult {
   transRef: string | null;
   date: string | null;
   duplicate: boolean;
+  receiverMismatch: boolean;
+  receiver: SlipReceiver | null;
   raw: unknown;
 }
 
 function notVerified(raw: unknown = null, duplicate = false): SlipOkResult {
-  return { verified: false, amount: null, transRef: null, date: null, duplicate, raw };
+  return {
+    verified: false,
+    amount: null,
+    transRef: null,
+    date: null,
+    duplicate,
+    receiverMismatch: false,
+    receiver: null,
+    raw,
+  };
 }
 
 function credential(value: string | undefined): string {
@@ -71,37 +89,85 @@ function readTransRef(data: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * SlipOK ส่งเวลาของสลิปมาเป็น transTimestamp (ISO 8601) หรือ transDate
+ * (yyyyMMdd) คู่กับ transTime (HH:mm:ss) ตามเวลาประเทศไทย
+ */
 function readTimestamp(data: Record<string, unknown>): string | null {
-  const date = readText(data.date);
+  const timestamp = readText(data.transTimestamp);
 
-  if (date === null || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (timestamp !== null) {
+    const parsed = new Date(timestamp);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+
+  const date = readText(data.transDate);
+
+  if (date === null || !/^\d{8}$/.test(date)) {
     return null;
   }
 
-  if (Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())) {
+  const isoDate = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+
+  if (Number.isNaN(new Date(`${isoDate}T00:00:00+07:00`).getTime())) {
     return null;
   }
 
-  const time = readText(data.time);
+  const time = readText(data.transTime);
 
   if (time === null || !/^\d{2}:\d{2}(:\d{2})?$/.test(time)) {
-    return date;
+    return isoDate;
   }
 
-  const combined = `${date}T${time.length === 5 ? `${time}:00` : time}+07:00`;
-  return Number.isNaN(new Date(combined).getTime()) ? date : combined;
+  const combined = `${isoDate}T${time.length === 5 ? `${time}:00` : time}+07:00`;
+  return Number.isNaN(new Date(combined).getTime()) ? isoDate : combined;
 }
 
-function amountMismatch(payload: unknown, root: Record<string, unknown>): SlipOkResult {
-  const data = asRecord(root.data) ?? {};
+function readReceiver(data: Record<string, unknown>): SlipReceiver | null {
+  const receiver = asRecord(data.receiver);
 
+  if (receiver === null) {
+    return null;
+  }
+
+  const proxy = asRecord(receiver.proxy);
+  const account = asRecord(receiver.account);
+  const parsed: SlipReceiver = {
+    proxyType: proxy === null ? null : readText(proxy.type),
+    proxyValue: proxy === null ? null : readText(proxy.value),
+    accountValue: account === null ? null : readText(account.value),
+  };
+
+  return parsed.proxyValue === null && parsed.accountValue === null ? null : parsed;
+}
+
+function verifiedResult(payload: unknown, data: Record<string, unknown>): SlipOkResult {
   return {
     verified: true,
-    amount: readAmount(data.amount) ?? readAmount(root.amount),
+    amount: readAmount(data.amount),
     transRef: readTransRef(data),
     date: readTimestamp(data),
     duplicate: false,
+    receiverMismatch: false,
+    receiver: readReceiver(data),
     raw: payload,
+  };
+}
+
+function amountMismatch(payload: unknown, root: Record<string, unknown>): SlipOkResult {
+  const result = verifiedResult(payload, asRecord(root.data) ?? {});
+
+  return { ...result, amount: result.amount ?? readAmount(root.amount) };
+}
+
+/** รหัส 1014 คือสลิปจริงแต่โอนเข้าบัญชีที่ไม่ใช่บัญชีรับเงินที่ผูกกับสาขา */
+function receiverMismatch(payload: unknown, root: Record<string, unknown>): SlipOkResult {
+  const data = asRecord(root.data) ?? {};
+
+  return {
+    ...verifiedResult(payload, data),
+    verified: false,
+    receiverMismatch: true,
   };
 }
 
@@ -123,12 +189,16 @@ function normalise(payload: unknown): SlipOkResult {
       return amountMismatch(payload, root);
     }
 
+    if (code === 1014) {
+      return receiverMismatch(payload, root);
+    }
+
     return notVerified(payload);
   }
 
   const data = asRecord(root.data);
 
-  if (data === null) {
+  if (data === null || data.success === false) {
     return notVerified(payload);
   }
 
@@ -138,14 +208,70 @@ function normalise(payload: unknown): SlipOkResult {
     return notVerified(payload);
   }
 
-  return {
-    verified: true,
-    amount,
-    transRef: readTransRef(data),
-    date: readTimestamp(data),
-    duplicate: false,
-    raw: payload,
-  };
+  return verifiedResult(payload, data);
+}
+
+/** บัญชีรับเงินของหอตามที่ตั้งไว้ในหน้าตั้งค่า */
+export interface SlipPayee {
+  proxyType: "MSISDN" | "NATID";
+  proxyId: string;
+  accountNumber: string;
+}
+
+export type ReceiverVerdict = "match" | "mismatch" | "unknown";
+
+function digitsOnly(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+/**
+ * ค่าบัญชีผู้รับจากสลิปถูกปิดบางส่วนเสมอ จึงเทียบได้เต็มรูปแบบเฉพาะเมื่อ
+ * ไม่มีตัวปิด ถ้ามีตัวปิดจะเทียบเฉพาะเลขท้าย 4 ตัวซึ่งธนาคารเปิดไว้
+ */
+function maskedOrExactMatch(received: string, expected: string): boolean {
+  const receivedDigits = digitsOnly(received);
+  const expectedDigits = digitsOnly(expected);
+
+  if (receivedDigits === "" || expectedDigits === "") {
+    return false;
+  }
+
+  if (receivedDigits === expectedDigits) {
+    return true;
+  }
+
+  if (!/[x*]/i.test(received)) {
+    return false;
+  }
+
+  const tail = Math.min(4, receivedDigits.length, expectedDigits.length);
+  return receivedDigits.slice(-tail) === expectedDigits.slice(-tail);
+}
+
+/**
+ * เทียบผู้รับเงินบนสลิปกับบัญชีที่หอตั้งไว้
+ *
+ * "unknown" แปลว่าเทียบไม่ได้เลย (ไม่มีข้อมูลฝั่งใดฝั่งหนึ่ง) ซึ่งต่างจาก
+ * "mismatch" ที่พิสูจน์ได้ว่าโอนเข้าบัญชีอื่น
+ */
+export function compareReceiver(receiver: SlipReceiver | null, payee: SlipPayee): ReceiverVerdict {
+  const pairs: Array<[string, string]> = [];
+  const proxyId = digitsOnly(payee.proxyId);
+  const accountNumber = digitsOnly(payee.accountNumber);
+
+  if (proxyId !== "" && receiver !== null && receiver.proxyValue !== null && receiver.proxyType === payee.proxyType) {
+    pairs.push([receiver.proxyValue, proxyId]);
+  }
+
+  if (accountNumber !== "" && receiver !== null && receiver.accountValue !== null) {
+    pairs.push([receiver.accountValue, accountNumber]);
+  }
+
+  if (pairs.length === 0) {
+    return "unknown";
+  }
+
+  return pairs.some(([received, expected]) => maskedOrExactMatch(received, expected)) ? "match" : "mismatch";
 }
 
 export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType: string, expectedAmount: number | null): Promise<SlipOkResult> {
@@ -169,7 +295,10 @@ export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType:
 
   const body = new FormData();
   body.append("files", new Blob([imageBytes], { type: contentType }), `slip.${imageExtension(contentType)}`);
-  body.append("log", "false");
+
+  // log=true คือให้ผู้ให้บริการเทียบบัญชีผู้รับกับบัญชีที่ผูกกับสาขาและกันสลิปซ้ำ
+  // ถ้าปิดค่านี้ สลิปที่โอนเข้าบัญชีอื่นจะผ่านเข้ามาปิดบิลได้
+  body.append("log", "true");
 
   if (expectedAmount !== null) {
     body.append("amount", String(expectedAmount));
@@ -180,6 +309,7 @@ export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType:
       method: "POST",
       headers: { "x-authorization": key },
       body,
+      signal: AbortSignal.timeout(lineUploadTimeoutMs),
     });
 
     let payload: unknown;
@@ -207,6 +337,10 @@ export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType:
       const code = readCode(asRecord(payload)?.code);
       const message = readText(asRecord(payload)?.message);
       logLineFailure("slipok verify rejected", `code ${code === null ? "unknown" : String(code)}${message === null ? "" : `: ${message}`}`);
+    }
+
+    if (result.receiverMismatch) {
+      logLineFailure("slipok verify receiver mismatch", "the provider reports the receiver is not this branch's account");
     }
 
     return result;

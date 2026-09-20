@@ -1,7 +1,9 @@
 import { Hono } from "hono";
+import type { AppEnv } from "../lib/auth";
+import { familyId } from "../lib/auth";
 import { errorBody, roomNumberOrder } from "./shared";
 
-const stats = new Hono<{ Bindings: Env }>();
+const stats = new Hono<AppEnv>();
 
 type RoomBillStatus = "paid" | "unpaid" | "unbilled" | "vacant";
 
@@ -74,19 +76,21 @@ interface RoomStat {
   behindPeriods: number;
 }
 
-const lastBilledPeriodSql = "(SELECT b2.period FROM bills b2 WHERE b2.room_id = r.id ORDER BY b2.period DESC LIMIT 1)";
+const lastBilledPeriodSql =
+  "(SELECT b2.period FROM bills b2 WHERE b2.family_id = r.family_id AND b2.room_id = r.id ORDER BY b2.period DESC LIMIT 1)";
 
-const roomsSql = `SELECT r.id, r.room_number, t.id AS tenant_id, b.id AS bill_id, b.status AS bill_status, ${lastBilledPeriodSql} AS last_billed_period FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.status = 'current' LEFT JOIN bills b ON b.room_id = r.id AND b.period = ? ORDER BY ${roomNumberOrder("r.room_number")}`;
+const roomsSql = `SELECT r.id, r.room_number, t.id AS tenant_id, b.id AS bill_id, b.status AS bill_status, ${lastBilledPeriodSql} AS last_billed_period FROM rooms r LEFT JOIN tenants t ON t.room_id = r.id AND t.family_id = r.family_id AND t.status = 'current' LEFT JOIN bills b ON b.room_id = r.id AND b.family_id = r.family_id AND b.period = ? WHERE r.family_id = ? ORDER BY ${roomNumberOrder("r.room_number")}`;
 
-const latestBilledPeriodSql = "SELECT period FROM bills ORDER BY period DESC LIMIT 1";
+const latestBilledPeriodSql =
+  "SELECT period FROM bills WHERE family_id = ? ORDER BY period DESC LIMIT 1";
 
-const billsSql = `SELECT b.id, r.room_number, t.full_name AS tenant_name, b.status, b.total, b.sent_at, b.created_at FROM bills b JOIN rooms r ON r.id = b.room_id JOIN tenants t ON t.id = b.tenant_id WHERE b.period = ? ORDER BY b.created_at ASC, ${roomNumberOrder("r.room_number")}`;
+const billsSql = `SELECT b.id, r.room_number, t.full_name AS tenant_name, b.status, b.total, b.sent_at, b.created_at FROM bills b JOIN rooms r ON r.id = b.room_id AND r.family_id = b.family_id JOIN tenants t ON t.id = b.tenant_id AND t.family_id = b.family_id WHERE b.family_id = ? AND b.period = ? ORDER BY b.created_at ASC, ${roomNumberOrder("r.room_number")}`;
 
 const pendingSlipsSql =
-  "SELECT s.bill_id FROM slips s JOIN bills b ON b.id = s.bill_id WHERE s.status = 'pending_review' AND b.period = ?";
+  "SELECT s.bill_id FROM slips s JOIN bills b ON b.id = s.bill_id AND b.family_id = s.family_id WHERE s.family_id = ? AND s.status = 'pending_review' AND b.period = ?";
 
 const revenueSql =
-  "SELECT b.period AS period, SUM(b.total) AS amount FROM bills b WHERE b.status = 'paid' AND b.period >= ? AND b.period <= ? GROUP BY b.period";
+  "SELECT b.period AS period, SUM(b.total) AS amount FROM bills b WHERE b.family_id = ? AND b.status = 'paid' AND b.period >= ? AND b.period <= ? GROUP BY b.period";
 
 function isPeriod(value: unknown): value is string {
   return typeof value === "string" && periodPattern.test(value);
@@ -117,14 +121,15 @@ stats.get("/dashboard", async (c) => {
   }
 
   try {
+    const family = familyId(c);
     const revenueStart = shiftPeriod(period, -(revenueMonths - 1));
 
     const [roomResult, billResult, slipResult, revenueResult, latestResult] = await Promise.all([
-      c.env.DB.prepare(roomsSql).bind(period).all<RoomStatsRow>(),
-      c.env.DB.prepare(billsSql).bind(period).all<BillStatsRow>(),
-      c.env.DB.prepare(pendingSlipsSql).bind(period).all<PendingSlipRow>(),
-      c.env.DB.prepare(revenueSql).bind(revenueStart, period).all<RevenueRow>(),
-      c.env.DB.prepare(latestBilledPeriodSql).all<{ period: string }>(),
+      c.env.DB.prepare(roomsSql).bind(period, family).all<RoomStatsRow>(),
+      c.env.DB.prepare(billsSql).bind(family, period).all<BillStatsRow>(),
+      c.env.DB.prepare(pendingSlipsSql).bind(family, period).all<PendingSlipRow>(),
+      c.env.DB.prepare(revenueSql).bind(family, revenueStart, period).all<RevenueRow>(),
+      c.env.DB.prepare(latestBilledPeriodSql).bind(family).all<{ period: string }>(),
     ]);
 
     const latestBilledPeriod = latestResult.results[0]?.period ?? null;

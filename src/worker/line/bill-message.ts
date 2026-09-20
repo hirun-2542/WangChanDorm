@@ -1,30 +1,22 @@
-import { buildInvoiceRows, formatBaht, thaiDateLabel, thaiPeriodLabel, type InvoiceRow } from "../lib/invoice";
+import {
+  buildInvoiceDocument,
+  type InvoiceBill,
+  type InvoiceDocument,
+  type InvoiceRow,
+} from "../lib/invoice";
 
-export interface BillMessageCharge {
-  name: string;
-  amount: number;
-}
-
-export interface BillMessageBill {
+export interface BillMessageBill extends InvoiceBill {
   id: string;
-  roomNumber: string;
-  tenantName: string;
-  period: string;
-  rent: number;
-  waterUnits: number;
-  waterRate: number;
-  waterAmount: number;
-  electricMode: "meter" | "flat";
-  electricUnits: number | null;
-  electricRate: number | null;
-  electricAmount: number;
-  charges: BillMessageCharge[];
-  total: number;
-  createdAt: string;
 }
 
-export interface BillMessageIssuer {
+/** ข้อมูลช่องทางรับเงิน — ว่างได้ถ้ายังไม่ได้ตั้งค่าในหน้าตั้งค่า */
+export interface BillMessagePayee {
+  promptpayId: string;
   promptpayName: string;
+  /** ชื่อธนาคารภาษาไทยที่ resolve แล้ว ไม่ใช่รหัส */
+  bankName: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
 }
 
 export type FlexContent = Record<string, unknown>;
@@ -35,97 +27,255 @@ export type BillFlexMessage = {
   contents: FlexContent;
 };
 
+/** สีเดียวกับ token ฝั่งแอป — charcoal / steel / fog / ash */
+const ink = "#171717";
+const steel = "#525252";
+const fog = "#6b6b6b";
+const ash = "#e5e5e5";
+const onInk = "#ffffff";
+
+function label(text: string, options: FlexContent = {}): FlexContent {
+  return {
+    type: "text",
+    text,
+    wrap: true,
+    color: steel,
+    size: "sm",
+    flex: 1,
+    ...options,
+  };
+}
+
+function value(text: string, options: FlexContent = {}): FlexContent {
+  return {
+    type: "text",
+    text,
+    wrap: true,
+    color: ink,
+    size: "sm",
+    align: "end",
+    flex: 0,
+    ...options,
+  };
+}
+
+function pairRow(
+  left: string,
+  right: string,
+  leftOptions: FlexContent = {},
+  rightOptions: FlexContent = {},
+): FlexContent {
+  return {
+    type: "box",
+    layout: "horizontal",
+    spacing: "md",
+    contents: [label(left, leftOptions), value(right, rightOptions)],
+  };
+}
+
+function note(text: string, options: FlexContent = {}): FlexContent {
+  return { type: "text", text, wrap: true, color: fog, size: "xs", ...options };
+}
+
+function separator(margin: string): FlexContent {
+  return { type: "separator", margin, color: ash };
+}
+
+function formatAmount(value: number): string {
+  return Math.round(value).toLocaleString("en-US");
+}
+
 function amountRow(row: InvoiceRow): FlexContent {
-  const contents: FlexContent[] = [
-    {
-      type: "box",
-      layout: "horizontal",
-      contents: [
-        { type: "text", text: row.label, size: "sm", color: "#3f3f46", flex: 1, wrap: true },
-        { type: "text", text: `${formatBaht(row.amount)} บาท`, size: "sm", color: "#27272a", align: "end", flex: 0 },
-      ],
-    },
-  ];
-
-  if (row.detail !== "") {
-    contents.push({ type: "text", text: row.detail, size: "xs", color: "#a1a1aa", wrap: true });
-  }
-
-  return { type: "box", layout: "vertical", spacing: "xs", contents };
+  return pairRow(row.label, `${formatAmount(row.amount)} บาท`);
 }
 
-function issuedRow(createdAt: string): FlexContent {
+function header(document: InvoiceDocument): FlexContent {
   return {
-    type: "box",
-    layout: "horizontal",
-    contents: [
-      { type: "text", text: "ออกบิลเมื่อ", size: "xs", color: "#71717a", flex: 1 },
-      { type: "text", text: thaiDateLabel(createdAt), size: "xs", color: "#71717a", align: "end" },
-    ],
-  };
-}
-
-function totalRow(total: number): FlexContent {
-  return {
-    type: "box",
-    layout: "horizontal",
-    contents: [
-      { type: "text", text: "ยอดรวมทั้งสิ้น", size: "sm", weight: "bold", color: "#27272a", flex: 1 },
-      { type: "text", text: `${formatBaht(total)} บาท`, size: "lg", weight: "bold", color: "#dc2626", align: "end" },
-    ],
-  };
-}
-
-export function buildBillFlexMessage(bill: BillMessageBill, issuer: BillMessageIssuer, baseUrl: string): BillFlexMessage {
-  const origin = baseUrl.replace(/\/+$/, "");
-  const periodLabel = thaiPeriodLabel(bill.period);
-  const qrUrl = `${origin}/qr/${encodeURIComponent(bill.id)}.png`;
-  const pdfUrl = `${origin}/invoices/${encodeURIComponent(bill.id)}.pdf`;
-  const totalLabel = `${formatBaht(bill.total)} บาท`;
-  const payer = issuer.promptpayName.trim();
-  const slipLine = payer === "" ? "โอนเงินแล้วส่งสลิปกลับในแชทนี้" : `โอนเข้าพร้อมเพย์ ${payer} แล้วส่งสลิปกลับในแชทนี้`;
-
-  const header: FlexContent = {
     type: "box",
     layout: "vertical",
-    backgroundColor: "#2563eb",
+    backgroundColor: ink,
     paddingAll: "16px",
     spacing: "xs",
     contents: [
-      { type: "text", text: "ใบแจ้งหนี้ / INVOICE", size: "lg", weight: "bold", color: "#ffffff", wrap: true },
-      { type: "text", text: `ห้อง ${bill.roomNumber} | ประจำเดือน ${periodLabel}`, size: "sm", color: "#ffffff", wrap: true },
+      {
+        type: "text",
+        text: "ใบแจ้งหนี้ / INVOICE",
+        wrap: true,
+        size: "lg",
+        weight: "bold",
+        color: onInk,
+      },
+      {
+        type: "text",
+        text: `ห้อง ${document.roomNumber} | ประจำเดือน ${document.periodLabel}`,
+        wrap: true,
+        size: "sm",
+        color: onInk,
+      },
     ],
   };
+}
 
-  const body: FlexContent = {
+function body(document: InvoiceDocument): FlexContent {
+  return {
     type: "box",
     layout: "vertical",
     spacing: "md",
     paddingAll: "16px",
     contents: [
-      { type: "text", text: `ผู้เช่า ${bill.tenantName}`, size: "sm", color: "#52525b", wrap: true },
-      issuedRow(bill.createdAt),
-      ...buildInvoiceRows(bill).map(amountRow),
-      { type: "separator", margin: "lg" },
-      totalRow(bill.total),
+      pairRow("ผู้เช่า", document.tenantName),
+      separator("md"),
+      ...document.rows.map(amountRow),
+      separator("lg"),
+      pairRow(
+        "ยอดรวม",
+        `${formatAmount(document.total)} บาท`,
+        { size: "md", color: steel },
+        { size: "xl", weight: "bold", color: ink },
+      ),
     ],
   };
+}
 
-  const footer: FlexContent = {
+/** แถวคัดลอกเลขพร้อมเพย์ — ผู้เช่ากดแล้วได้เลขไปวางในแอปธนาคารได้เลย */
+function promptpayRow(payee: BillMessagePayee): FlexContent[] {
+  const account = payee.promptpayId.trim();
+
+  if (account === "") {
+    return [];
+  }
+
+  return [
+    separator("md"),
+    {
+      type: "box",
+      layout: "horizontal",
+      spacing: "md",
+      contents: [
+        {
+          type: "box",
+          layout: "vertical",
+          flex: 1,
+          contents: [
+            note("พร้อมเพย์ / PromptPay"),
+            {
+              type: "text",
+              text: account,
+              wrap: true,
+              size: "md",
+              weight: "bold",
+              color: ink,
+            },
+          ],
+        },
+        {
+          type: "button",
+          style: "secondary",
+          height: "sm",
+          flex: 0,
+          action: {
+            type: "clipboard",
+            label: "คัดลอก",
+            clipboardText: account,
+          },
+        },
+      ],
+    },
+    ...(payee.promptpayName.trim() === ""
+      ? []
+      : [note(`ชื่อบัญชี ${payee.promptpayName.trim()}`)]),
+  ];
+}
+
+/** แถวบัญชีธนาคาร — ทางเลือกแทนหรือคู่กับพร้อมเพย์ ก็คัดลอกเลขบัญชีได้เช่นกัน */
+function bankRow(payee: BillMessagePayee): FlexContent[] {
+  const accountNumber = payee.bankAccountNumber.trim();
+
+  if (accountNumber === "") {
+    return [];
+  }
+
+  const bankLabel = payee.bankName.trim() === "" ? "บัญชีธนาคาร" : payee.bankName.trim();
+
+  return [
+    separator("md"),
+    {
+      type: "box",
+      layout: "horizontal",
+      spacing: "md",
+      contents: [
+        {
+          type: "box",
+          layout: "vertical",
+          flex: 1,
+          contents: [
+            note(bankLabel),
+            {
+              type: "text",
+              text: accountNumber,
+              wrap: true,
+              size: "md",
+              weight: "bold",
+              color: ink,
+            },
+          ],
+        },
+        {
+          type: "button",
+          style: "secondary",
+          height: "sm",
+          flex: 0,
+          action: {
+            type: "clipboard",
+            label: "คัดลอก",
+            clipboardText: accountNumber,
+          },
+        },
+      ],
+    },
+    ...(payee.bankAccountName.trim() === ""
+      ? []
+      : [note(`ชื่อบัญชี ${payee.bankAccountName.trim()}`)]),
+  ];
+}
+
+function footer(pdfUrl: string, payee: BillMessagePayee): FlexContent {
+  return {
     type: "box",
     layout: "vertical",
-    spacing: "md",
+    spacing: "sm",
     paddingAll: "16px",
     contents: [
-      { type: "image", url: qrUrl, size: "lg", aspectRatio: "1:1", aspectMode: "fit", align: "center" },
-      { type: "button", style: "primary", color: "#2563eb", action: { type: "uri", label: "เปิดใบแจ้งหนี้ PDF", uri: pdfUrl } },
-      { type: "text", text: slipLine, size: "xs", color: "#a1a1aa", align: "center", wrap: true },
+      {
+        type: "button",
+        style: "primary",
+        color: ink,
+        action: { type: "uri", label: "เปิดใบแจ้งหนี้ PDF", uri: pdfUrl },
+      },
+      ...promptpayRow(payee),
+      ...bankRow(payee),
+      note("กรุณาตรวจสอบรายละเอียดในไฟล์ PDF", { align: "center" }),
     ],
   };
+}
+
+export function buildBillFlexMessage(
+  bill: BillMessageBill,
+  payee: BillMessagePayee,
+  baseUrl: string,
+): BillFlexMessage {
+  const origin = baseUrl.replace(/\/+$/, "");
+  const document = buildInvoiceDocument(bill);
+  const pdfUrl = `${origin}/invoices/${encodeURIComponent(bill.id)}.pdf`;
 
   return {
     type: "flex",
-    altText: `ใบแจ้งหนี้ห้อง ${bill.roomNumber} ประจำเดือน ${periodLabel} ยอด ${totalLabel}`,
-    contents: { type: "bubble", header, body, footer },
+    altText: `ใบแจ้งหนี้ห้อง ${document.roomNumber} ประจำเดือน ${document.periodLabel} ยอด ${formatAmount(document.total)} บาท`,
+    contents: {
+      type: "bubble",
+      header: header(document),
+      body: body(document),
+      footer: footer(pdfUrl, payee),
+    },
   };
 }

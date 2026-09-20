@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { type TestSession, createFamily, signIn, withAuth } from "./auth-helper";
 
 const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
@@ -7,9 +8,20 @@ const registerRoomsUrl = "https://dorm.test/api/register/rooms";
 const registerUrl = "https://dorm.test/api/register";
 const registerPageUrl = "https://dorm.test/register";
 const lineProfileUrl = "https://api.line.me/v2/profile";
+const lineVerifyUrl = "https://api.line.me/oauth2/v2.1/verify";
 const linePushUrl = "https://api.line.me/v2/bot/message/push";
 
+const appChannelId = "2010453783";
+const appLiffId = `${appChannelId}-KryBOXrc`;
+
 const tokenPrefix = "valid-liff-token-";
+
+let session: TestSession;
+let tokenChannelId = appChannelId;
+
+beforeAll(async () => {
+  session = await signIn();
+});
 
 function liffToken(label: string): string {
   return `${tokenPrefix}${label}`;
@@ -86,11 +98,14 @@ function pick<T>(items: T[], predicate: (item: T) => boolean): T {
 }
 
 function post(url: string, payload: Record<string, unknown>): Promise<Response> {
-  return SELF.fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  return SELF.fetch(
+    url,
+    withAuth(session, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
 async function newRoom(payload: Record<string, unknown>): Promise<RoomPayload> {
@@ -106,13 +121,13 @@ async function newTenant(roomId: string, fullName: string): Promise<TenantPayloa
 }
 
 async function listTenants(): Promise<TenantPayload[]> {
-  const response = await SELF.fetch(tenantsUrl);
+  const response = await SELF.fetch(tenantsUrl, withAuth(session));
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; tenants: TenantPayload[] }>()).tenants;
 }
 
 async function listRooms(): Promise<RoomPayload[]> {
-  const response = await SELF.fetch(roomsUrl);
+  const response = await SELF.fetch(roomsUrl, withAuth(session));
   expect(response.status).toBe(200);
   return (await response.json<{ ok: boolean; rooms: RoomPayload[] }>()).rooms;
 }
@@ -129,17 +144,17 @@ async function roomStatus(roomId: string): Promise<string> {
 
 async function linkOwner(lineUserId: string): Promise<void> {
   await env.DB.prepare(
-    "INSERT INTO settings (key, value, updated_at) VALUES ('owner_line_user_id', ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'owner_line_user_id', ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value",
   )
-    .bind(lineUserId)
+    .bind(session.familyId, lineUserId)
     .run();
 }
 
 async function seedPending(lineUserId: string): Promise<void> {
   await env.DB.prepare(
-    "INSERT INTO line_pending (line_user_id, display_name, last_message, last_seen_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(line_user_id) DO UPDATE SET last_message = excluded.last_message",
+    "INSERT INTO line_pending (line_user_id, family_id, display_name, last_message, last_seen_at) VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT(line_user_id) DO UPDATE SET last_message = excluded.last_message",
   )
-    .bind(lineUserId, "รอเชื่อม", "hello")
+    .bind(lineUserId, session.familyId, "รอเชื่อม", "hello")
     .run();
 }
 
@@ -150,6 +165,10 @@ async function pendingExists(lineUserId: string): Promise<boolean> {
 
 function profileCalls(): OutboundCall[] {
   return outboundCalls.filter((call) => call.url === lineProfileUrl);
+}
+
+function verifyCalls(): OutboundCall[] {
+  return outboundCalls.filter((call) => call.url.startsWith(lineVerifyUrl));
 }
 
 function pushBodies(): PushBody[] {
@@ -178,7 +197,9 @@ function setLiffId(value: string): void {
 
 beforeEach(() => {
   outboundCalls = [];
+  tokenChannelId = appChannelId;
   env.LINE_CHANNEL_ACCESS_TOKEN = "test-channel-access-token";
+  setLiffId(appLiffId);
 
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -190,6 +211,16 @@ beforeEach(() => {
 
     const json = (payload: unknown, status: number): Response =>
       new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+
+    if (url.startsWith(lineVerifyUrl)) {
+      const token = new URL(url).searchParams.get("access_token") ?? "";
+      const valid = token.startsWith(tokenPrefix);
+      return Promise.resolve(
+        valid
+          ? json({ client_id: tokenChannelId, expires_in: 2_592_000, scope: "profile openid" }, 200)
+          : json({ error: "invalid_request", error_description: "Invalid access token" }, 400),
+      );
+    }
 
     if (url === lineProfileUrl) {
       const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
@@ -275,10 +306,64 @@ describe("POST /api/register", () => {
     expect(body.ok).toBe(false);
     expect(body.error.message).toBe("ลิงก์ยืนยันตัวตนไม่ถูกต้อง กรุณาเปิดฟอร์มจาก LINE อีกครั้ง");
 
-    expect(profileCalls()).toHaveLength(1);
+    expect(verifyCalls()).toHaveLength(1);
+    expect(profileCalls()).toEqual([]);
     expect(pushBodies()).toEqual([]);
     expect(await roomStatus(room.id)).toBe("vacant");
     expect((await listTenants()).some((tenant) => tenant.roomNumber === "RG111")).toBe(false);
+  });
+
+  it("answers 401 for a token issued for another LINE channel and creates nothing", async () => {
+    const room = await newRoom({ roomNumber: "RG112", rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    tokenChannelId = "9999999999";
+
+    const response = await post(registerUrl, { name: "สมชาย ใจดี", phone: "0812345678", roomId: room.id, accessToken: liffToken("foreign") });
+    expect(response.status).toBe(401);
+    expect((await response.json<ErrorBody>()).error.message).toBe("ลิงก์ยืนยันตัวตนไม่ถูกต้อง กรุณาเปิดฟอร์มจาก LINE อีกครั้ง");
+
+    expect(verifyCalls()).toHaveLength(1);
+    expect(profileCalls()).toEqual([]);
+    expect(pushBodies()).toEqual([]);
+    expect(await roomStatus(room.id)).toBe("vacant");
+    expect((await listTenants()).some((tenant) => tenant.roomNumber === "RG112")).toBe(false);
+  });
+
+  it("answers 401 and never calls LINE when this app's channel is unknown", async () => {
+    const room = await newRoom({ roomNumber: "RG113", rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    setLiffId("");
+
+    const response = await post(registerUrl, { name: "สมชาย ใจดี", phone: "0812345678", roomId: room.id, accessToken: liffToken("no-channel") });
+    expect(response.status).toBe(401);
+
+    expect(outboundCalls).toEqual([]);
+    expect(await roomStatus(room.id)).toBe("vacant");
+    expect((await listTenants()).some((tenant) => tenant.roomNumber === "RG113")).toBe(false);
+  });
+
+  it("keeps rooms of another family out of the public registration list", async () => {
+    const otherFamily = await createFamily("ครอบครัวอื่น");
+    const room = await newRoom({ roomNumber: "RG151", rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+    const foreignRoomId = crypto.randomUUID();
+
+    await env.DB.prepare(
+      "INSERT INTO rooms (id, family_id, room_number, rent, water_meter_init, electric_meter_init, status) VALUES (?, ?, 'RG999', 3500, 0, 0, 'vacant')",
+    )
+      .bind(foreignRoomId, otherFamily)
+      .run();
+
+    const listed = await listRegisterRooms();
+    expect(listed.rooms.map((item) => item.roomNumber)).toContain("RG151");
+    expect(listed.rooms.map((item) => item.roomNumber)).not.toContain("RG999");
+
+    const response = await post(registerUrl, {
+      name: "สมชาย ข้ามครอบครัว",
+      phone: "0812345678",
+      roomId: foreignRoomId,
+      accessToken: liffToken("cross-family"),
+    });
+    expect(response.status).toBe(404);
+    expect((await response.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+    expect(await roomStatus(room.id)).toBe("vacant");
   });
 
   it("answers 409 naming the room when the LINE user is already registered", async () => {

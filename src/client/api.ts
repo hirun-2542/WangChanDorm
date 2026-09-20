@@ -15,7 +15,24 @@ export interface Room {
   occupiedBy: string | null;
   lastElectricAmount: number | null;
   lastElectricPeriod: string | null;
+  /** ชุดที่มีผลจริงของห้องนี้ = ค่าใช้จ่ายของหอ − ที่ปิดไว้ + ของห้องเอง (อ่านอย่างเดียว) */
   charges: BillCharge[];
+  /** id ของค่าใช้จ่ายระดับหอที่ห้องนี้ปิดไว้ */
+  excludedDormChargeIds: string[];
+  /** ค่าใช้จ่ายที่เป็นของห้องนี้เอง ไม่ได้มาจากหอ */
+  ownCharges: BillCharge[];
+}
+
+export interface DormCharge {
+  id: string;
+  name: string;
+  amount: number;
+}
+
+export interface DormChargeInput {
+  id?: string;
+  name: string;
+  amount: number;
 }
 
 export interface RoomInput {
@@ -26,7 +43,8 @@ export interface RoomInput {
   electricRate: number | null;
   waterMeterInit: number;
   electricMeterInit: number;
-  charges?: BillCharge[];
+  excludedDormChargeIds?: string[];
+  ownCharges?: BillCharge[];
 }
 
 export interface Tenant {
@@ -149,6 +167,9 @@ export interface Settings {
   promptpayType: PromptpayType;
   promptpayId: string;
   promptpayName: string;
+  bankName: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
   integrations: SettingsIntegrations;
@@ -163,6 +184,9 @@ export interface SettingsUpdate {
   promptpayType?: PromptpayType;
   promptpayId?: string;
   promptpayName?: string;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
 }
 
 interface ErrorPayload {
@@ -174,12 +198,15 @@ interface ErrorPayload {
 export class ApiError extends Error {
   readonly code: string;
   readonly field?: string;
+  /** สถานะ HTTP ที่เซิร์ฟเวอร์ตอบกลับ · 0 = คำขอไม่ถึงเซิร์ฟเวอร์ */
+  readonly status: number;
 
-  constructor(message: string, code: string, field?: string) {
+  constructor(message: string, code: string, field?: string, status = 0) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.field = field;
+    this.status = status;
   }
 }
 
@@ -205,23 +232,79 @@ function errorPayloadOf(body: unknown): ErrorPayload | null {
 
   const field = fields.field;
 
-  return typeof field === "string" ? { code, message, field } : { code, message };
+  return typeof field === "string"
+    ? { code, message, field }
+    : { code, message };
+}
+
+/** เพดานเวลาต่อคำขอ กันหน้าจอค้างตลอดไปเมื่อเซิร์ฟเวอร์ไม่ตอบ */
+const requestTimeoutMs = 20_000;
+
+/**
+ * 401 จากเส้นทางเหล่านี้เป็นเรื่องปกติของหน้าเข้าสู่ระบบ (ยังไม่ล็อกอิน หรือรหัสผ่านผิด)
+ * หน้าจอที่เรียกจึงจัดการเอง ไม่ต้องพาผู้ใช้ออกจากสิ่งที่กำลังทำอยู่
+ */
+const selfHandledAuthPaths = [
+  "/api/auth/me",
+  "/api/auth/login",
+  "/api/auth/bootstrap",
+  "/api/auth/accept-invite",
+];
+
+let unauthorizedHandler: (() => void) | null = null;
+
+/** ให้ AuthProvider ลงทะเบียนผู้รับเหตุ 401 เพื่อพากลับหน้าเข้าสู่ระบบ */
+export function onUnauthorized(handler: () => void): () => void {
+  unauthorizedHandler = handler;
+
+  return () => {
+    if (unauthorizedHandler === handler) {
+      unauthorizedHandler = null;
+    }
+  };
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;
 
+  // ไฟล์นี้ถูก import จากทั้งฝั่ง client (lib.dom RequestInit มี credentials)
+  // และจากชุดทดสอบฝั่ง worker (workers-types RequestInit ไม่มี credentials)
+  // ประกาศชนิดเป็น intersection เอง เพื่อให้คอมไพล์ผ่านทั้งสองฝั่งโดยไม่ใช้ any
+  const requestInit: RequestInit & { credentials?: string } = {
+    ...init,
+    credentials: "same-origin",
+    signal: init.signal ?? AbortSignal.timeout(requestTimeoutMs),
+  };
+
   try {
-    response = await fetch(path, init);
-  } catch {
+    response = await fetch(path, requestInit);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new ApiError("เซิร์ฟเวอร์ไม่ตอบสนอง กรุณาลองใหม่", "TIMEOUT");
+    }
+
     throw new ApiError("เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ", "NETWORK");
   }
 
   const body: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
+    if (
+      response.status === 401 &&
+      !selfHandledAuthPaths.some((known) => path.startsWith(known))
+    ) {
+      unauthorizedHandler?.();
+    }
+
     const payload = errorPayloadOf(body);
-    throw payload === null ? new ApiError("ทำรายการไม่สำเร็จ", "UNKNOWN") : new ApiError(payload.message, payload.code, payload.field);
+    throw payload === null
+      ? new ApiError("ทำรายการไม่สำเร็จ", "UNKNOWN", undefined, response.status)
+      : new ApiError(
+          payload.message,
+          payload.code,
+          payload.field,
+          response.status,
+        );
   }
 
   return body as T;
@@ -270,7 +353,10 @@ export async function createRoom(input: RoomInput): Promise<Room> {
 }
 
 export async function updateRoom(id: string, input: RoomInput): Promise<Room> {
-  const body = await apiPatch<{ ok: true; room: Room }>(`/api/rooms/${encodeURIComponent(id)}`, input);
+  const body = await apiPatch<{ ok: true; room: Room }>(
+    `/api/rooms/${encodeURIComponent(id)}`,
+    input,
+  );
   return body.room;
 }
 
@@ -280,17 +366,32 @@ export async function fetchTenants(): Promise<Tenant[]> {
 }
 
 export async function createTenant(input: TenantInput): Promise<Tenant> {
-  const body = await apiPost<{ ok: true; tenant: Tenant }>("/api/tenants", input);
+  const body = await apiPost<{ ok: true; tenant: Tenant }>(
+    "/api/tenants",
+    input,
+  );
   return body.tenant;
 }
 
-export async function updateTenant(id: string, input: TenantUpdate): Promise<Tenant> {
-  const body = await apiPatch<{ ok: true; tenant: Tenant }>(`/api/tenants/${encodeURIComponent(id)}`, input);
+export async function updateTenant(
+  id: string,
+  input: TenantUpdate,
+): Promise<Tenant> {
+  const body = await apiPatch<{ ok: true; tenant: Tenant }>(
+    `/api/tenants/${encodeURIComponent(id)}`,
+    input,
+  );
   return body.tenant;
 }
 
-export async function checkoutTenant(id: string, checkOutDate: string): Promise<Tenant> {
-  const body = await apiPost<{ ok: true; tenant: Tenant }>(`/api/tenants/${encodeURIComponent(id)}/checkout`, { checkOutDate });
+export async function checkoutTenant(
+  id: string,
+  checkOutDate: string,
+): Promise<Tenant> {
+  const body = await apiPost<{ ok: true; tenant: Tenant }>(
+    `/api/tenants/${encodeURIComponent(id)}/checkout`,
+    { checkOutDate },
+  );
   return body.tenant;
 }
 
@@ -299,13 +400,38 @@ export async function fetchSettings(): Promise<Settings> {
   return body.settings;
 }
 
+export async function fetchDormCharges(): Promise<DormCharge[]> {
+  const body = await apiGet<{ ok: true; charges: DormCharge[] }>(
+    "/api/settings/charges",
+  );
+  return body.charges;
+}
+
+export async function saveDormCharges(
+  charges: DormChargeInput[],
+): Promise<DormCharge[]> {
+  const body = await apiPut<{ ok: true; charges: DormCharge[] }>(
+    "/api/settings/charges",
+    { charges },
+  );
+  return body.charges;
+}
+
 export async function fetchPendingLinks(): Promise<PendingLink[]> {
-  const body = await apiGet<{ ok: true; pending: PendingLink[] }>("/api/line/pending");
+  const body = await apiGet<{ ok: true; pending: PendingLink[] }>(
+    "/api/line/pending",
+  );
   return body.pending;
 }
 
-export async function linkPendingUser(lineUserId: string, tenantId: string): Promise<void> {
-  await apiPost<{ ok: true }>(`/api/line/pending/${encodeURIComponent(lineUserId)}/link`, { tenantId });
+export async function linkPendingUser(
+  lineUserId: string,
+  tenantId: string,
+): Promise<void> {
+  await apiPost<{ ok: true }>(
+    `/api/line/pending/${encodeURIComponent(lineUserId)}/link`,
+    { tenantId },
+  );
 }
 
 export type LineMessageAudience = "tenant" | "owner";
@@ -336,23 +462,42 @@ export interface LineMessagesResult {
 }
 
 export async function fetchLineMessages(): Promise<LineMessagesResult> {
-  const body = await apiGet<{ ok: true; source: LineMessageSource | null; messages: LineMessageKind[] }>("/api/line/messages");
+  const body = await apiGet<{
+    ok: true;
+    source: LineMessageSource | null;
+    messages: LineMessageKind[];
+  }>("/api/line/messages");
   return { source: body.source, messages: body.messages };
 }
 
 export async function updateSettings(input: SettingsUpdate): Promise<Settings> {
-  const body = await apiPut<{ ok: true; settings: Settings }>("/api/settings", input);
+  const body = await apiPut<{ ok: true; settings: Settings }>(
+    "/api/settings",
+    input,
+  );
   return body.settings;
 }
 
 export async function regenerateOwnerCode(): Promise<string> {
-  const body = await apiPost<{ ok: true; ownerLinkCode: string }>("/api/settings/owner-code", {});
+  const body = await apiPost<{ ok: true; ownerLinkCode: string }>(
+    "/api/settings/owner-code",
+    {},
+  );
   return body.ownerLinkCode;
 }
 
 export async function fetchBills(period: string): Promise<Bill[]> {
-  const body = await apiGet<{ ok: true; period: string; bills: Bill[] }>(`/api/bills?period=${encodeURIComponent(period)}`);
+  const body = await apiGet<{ ok: true; period: string; bills: Bill[] }>(
+    `/api/bills?period=${encodeURIComponent(period)}`,
+  );
   return body.bills;
+}
+
+export async function fetchBillPeriods(): Promise<string[]> {
+  const body = await apiGet<{ ok: true; periods: string[] }>(
+    "/api/bills/periods",
+  );
+  return body.periods;
 }
 
 export interface BillsFocus {
@@ -364,7 +509,10 @@ export function billsFocusTarget(
   room: { roomNumber: string; lastElectricPeriod: string | null },
   fallbackPeriod: string | null,
 ): BillsFocus {
-  return { roomNumber: room.roomNumber, period: room.lastElectricPeriod ?? fallbackPeriod ?? "" };
+  return {
+    roomNumber: room.roomNumber,
+    period: room.lastElectricPeriod ?? fallbackPeriod ?? "",
+  };
 }
 
 export function billsFocusHash(focus: BillsFocus): string {
@@ -395,20 +543,33 @@ export function billsFocusOf(hash: string): BillsFocus | null {
   return { roomNumber, period: params.get("period") ?? "" };
 }
 
-export async function fetchMeterSheet(period: string): Promise<MeterSheetRow[]> {
-  const body = await apiGet<{ ok: true; period: string; rows: MeterSheetRow[] }>(
-    `/api/bills/meter-sheet?period=${encodeURIComponent(period)}`,
-  );
+export async function fetchMeterSheet(
+  period: string,
+): Promise<MeterSheetRow[]> {
+  const body = await apiGet<{
+    ok: true;
+    period: string;
+    rows: MeterSheetRow[];
+  }>(`/api/bills/meter-sheet?period=${encodeURIComponent(period)}`);
   return body.rows;
 }
 
-export async function generateBills(period: string, entries: BillEntryInput[]): Promise<Bill[]> {
-  const body = await apiPost<{ ok: true; bills: Bill[] }>("/api/bills/generate", { period, entries });
+export async function generateBills(
+  period: string,
+  entries: BillEntryInput[],
+): Promise<Bill[]> {
+  const body = await apiPost<{ ok: true; bills: Bill[] }>(
+    "/api/bills/generate",
+    { period, entries },
+  );
   return body.bills;
 }
 
 export async function updateBill(id: string, input: BillUpdate): Promise<Bill> {
-  const body = await apiPatch<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}`, input);
+  const body = await apiPatch<{ ok: true; bill: Bill }>(
+    `/api/bills/${encodeURIComponent(id)}`,
+    input,
+  );
   return body.bill;
 }
 
@@ -416,8 +577,14 @@ export async function deleteBill(id: string): Promise<void> {
   await apiDelete<{ ok: true }>(`/api/bills/${encodeURIComponent(id)}`);
 }
 
-export async function markBillPaid(id: string, input: BillPaidInput): Promise<Bill> {
-  const body = await apiPost<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}/mark-paid`, input);
+export async function markBillPaid(
+  id: string,
+  input: BillPaidInput,
+): Promise<Bill> {
+  const body = await apiPost<{ ok: true; bill: Bill }>(
+    `/api/bills/${encodeURIComponent(id)}/mark-paid`,
+    input,
+  );
   return body.bill;
 }
 
@@ -435,22 +602,42 @@ export interface SendAllResult {
 }
 
 export async function sendBill(id: string): Promise<Bill> {
-  const body = await apiPost<{ ok: true; bill: Bill }>(`/api/bills/${encodeURIComponent(id)}/send`, {});
+  const body = await apiPost<{ ok: true; bill: Bill }>(
+    `/api/bills/${encodeURIComponent(id)}/send`,
+    {},
+  );
   return body.bill;
 }
 
-export async function sendBills(period: string, billIds?: string[]): Promise<SendAllResult> {
-  const body = await apiPost<{ ok: true; period: string; sent: number; failed: number; failedIds: string[]; skipped: SkippedBill[] }>(
+export async function sendBills(
+  period: string,
+  billIds?: string[],
+): Promise<SendAllResult> {
+  const body = await apiPost<{
+    ok: true;
+    period: string;
+    sent: number;
+    failed: number;
+    failedIds: string[];
+    skipped: SkippedBill[];
+  }>(
     "/api/bills/send-all",
     billIds === undefined ? { period } : { period, billIds },
   );
 
-  return { period: body.period, sent: body.sent, failed: body.failed, failedIds: body.failedIds, skipped: body.skipped };
+  return {
+    period: body.period,
+    sent: body.sent,
+    failed: body.failed,
+    failedIds: body.failedIds,
+    skipped: body.skipped,
+  };
 }
 
 export type SlipStatus = "pending_review" | "matched" | "rejected";
 
-export type SlipReason = "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip";
+export type SlipReason =
+  "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip";
 
 export type SlipResolveAction = "settle" | "reject";
 
@@ -493,14 +680,24 @@ export async function fetchSlips(query: SlipQuery = {}): Promise<Slip[]> {
   }
 
   const search = params.toString();
-  const body = await apiGet<{ ok: true; slips: Slip[] }>(`/api/slips${search === "" ? "" : `?${search}`}`);
+  const body = await apiGet<{ ok: true; slips: Slip[] }>(
+    `/api/slips${search === "" ? "" : `?${search}`}`,
+  );
 
   return body.slips;
 }
 
-export async function resolveSlip(id: string, action: SlipResolveAction, billId?: string): Promise<Slip> {
-  const payload: { action: SlipResolveAction; billId?: string } = billId === undefined ? { action } : { action, billId };
-  const body = await apiPost<{ ok: true; slip: Slip }>(`/api/slips/${encodeURIComponent(id)}/resolve`, payload);
+export async function resolveSlip(
+  id: string,
+  action: SlipResolveAction,
+  billId?: string,
+): Promise<Slip> {
+  const payload: { action: SlipResolveAction; billId?: string } =
+    billId === undefined ? { action } : { action, billId };
+  const body = await apiPost<{ ok: true; slip: Slip }>(
+    `/api/slips/${encodeURIComponent(id)}/resolve`,
+    payload,
+  );
 
   return body.slip;
 }
@@ -510,6 +707,14 @@ export const reviewQueueChangedEvent = "wangchan:review-queue-changed";
 export function announceReviewQueueChanged(): void {
   const target = globalThis as unknown as EventTarget;
   target.dispatchEvent(new Event(reviewQueueChangedEvent));
+}
+
+export const billsChangedEvent = "wangchan:bills-changed";
+
+/** บอกหน้ารายการบิลว่าชุดบิลเปลี่ยนแล้ว (สร้าง/ส่ง/แก้/ลบ) ให้โหลดใหม่ */
+export function announceBillsChanged(): void {
+  const target = globalThis as unknown as EventTarget;
+  target.dispatchEvent(new Event(billsChangedEvent));
 }
 
 export interface DashboardKpis {
@@ -560,7 +765,9 @@ export interface DashboardStats {
   rooms: DashboardRoom[];
 }
 
-export async function fetchDashboardStats(period: string): Promise<DashboardStats> {
+export async function fetchDashboardStats(
+  period: string,
+): Promise<DashboardStats> {
   const body = await apiGet<{ ok: true } & DashboardStats>(
     `/api/stats/dashboard?period=${encodeURIComponent(period)}`,
   );
@@ -573,4 +780,159 @@ export async function fetchDashboardStats(period: string): Promise<DashboardStat
     unpaidBills: body.unpaidBills,
     rooms: body.rooms,
   };
+}
+
+export type FamilyRole = "owner" | "member";
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+  role: FamilyRole;
+  familyId: string;
+}
+
+export async function fetchMe(): Promise<AuthUser> {
+  const body = await apiGet<{ ok: true; user: AuthUser }>("/api/auth/me");
+  return body.user;
+}
+
+export async function login(email: string, password: string): Promise<void> {
+  await apiPost<{ ok: true }>("/api/auth/login", { email, password });
+}
+
+export async function logout(): Promise<void> {
+  await apiPost<{ ok: true }>("/api/auth/logout", {});
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await apiPost<{ ok: true }>("/api/auth/password", {
+    currentPassword,
+    newPassword,
+  });
+}
+
+export interface BootstrapInput {
+  secret: string;
+  email: string;
+  displayName: string;
+  password: string;
+  /** เว้นว่างได้เมื่อระบบยังไม่มีเจ้าของ และจะรับช่วงข้อมูลหอเดิม */
+  familyName?: string;
+}
+
+export interface BootstrapResult {
+  user: AuthUser;
+  /** true = รับช่วงข้อมูลหอเดิม false = สร้างครอบครัวใหม่ที่เริ่มจากข้อมูลว่าง */
+  claimedExistingData: boolean;
+}
+
+export async function bootstrap(input: BootstrapInput): Promise<BootstrapResult> {
+  const body = await apiPost<{
+    ok: true;
+    claimedExistingData: boolean;
+    user: AuthUser;
+  }>("/api/auth/bootstrap", input);
+
+  return { user: body.user, claimedExistingData: body.claimedExistingData };
+}
+
+export async function acceptInvite(input: {
+  token: string;
+  displayName: string;
+  password: string;
+}): Promise<void> {
+  await apiPost<{ ok: true }>("/api/auth/accept-invite", input);
+}
+
+export interface FamilyInfo {
+  id: string;
+  name: string;
+}
+
+export interface FamilyMember {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: FamilyRole;
+  joinedAt: string;
+}
+
+export interface FamilyInvite {
+  id: string;
+  email: string;
+  role: FamilyRole;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface FamilyOverview {
+  family: FamilyInfo;
+  members: FamilyMember[];
+  invites: FamilyInvite[];
+}
+
+export interface CreatedInvite {
+  email: string;
+  role: FamilyRole;
+  expiresAt: string;
+  /** คืนมาเต็มครั้งเดียวตอนออกคำเชิญเท่านั้น ฐานข้อมูลเก็บแค่ค่าแฮช */
+  token: string;
+  url: string;
+}
+
+export async function fetchFamily(): Promise<FamilyOverview> {
+  const body = await apiGet<{ ok: true } & FamilyOverview>("/api/family");
+
+  return {
+    family: body.family,
+    members: body.members,
+    invites: body.invites,
+  };
+}
+
+export async function renameFamily(name: string): Promise<FamilyInfo> {
+  const body = await apiPatch<{ ok: true; family: FamilyInfo }>(
+    "/api/family",
+    { name },
+  );
+
+  return body.family;
+}
+
+export async function createFamilyInvite(
+  email: string,
+  role: FamilyRole,
+): Promise<CreatedInvite> {
+  const body = await apiPost<{ ok: true; invite: CreatedInvite }>(
+    "/api/family/invites",
+    { email, role },
+  );
+
+  return body.invite;
+}
+
+export async function revokeFamilyInvite(id: string): Promise<void> {
+  await apiDelete<{ ok: true }>(
+    `/api/family/invites/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function setFamilyMemberRole(
+  userId: string,
+  role: FamilyRole,
+): Promise<void> {
+  await apiPatch<{ ok: true }>(
+    `/api/family/members/${encodeURIComponent(userId)}`,
+    { role },
+  );
+}
+
+export async function removeFamilyMember(userId: string): Promise<void> {
+  await apiDelete<{ ok: true }>(
+    `/api/family/members/${encodeURIComponent(userId)}`,
+  );
 }
