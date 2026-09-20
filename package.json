@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n wrangler,vite \"wrangler dev\" \"vite dev\"",
+    "dev": "concurrently --kill-others-on-fail -n wrangler,vite \"wrangler dev\" \"vite dev\"",
     "predev": "npm run build",
     "build": "vite build",
     "types": "wrangler types",

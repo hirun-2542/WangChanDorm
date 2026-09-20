@@ -27,6 +27,16 @@ export default defineConfig({
     outDir: "dist/client",
   },
   server: {
+    /**
+     * ห้าม vite เลื่อนไปพอร์ตอื่น (5174, 5175, …) โดยเด็ดขาด
+     *
+     * redirect URI ของ Google ผูกกับพอร์ต: Worker สร้างมันจาก Host ที่เบราว์เซอร์
+     * ส่งมา ซึ่งก็คือพอร์ตของ vite ถ้า 5173 ไม่ว่างแล้ว vite แอบไป 5174 หน้าเว็บ
+     * จะเปิดได้และปุ่มอื่นทำงานปกติ แต่กด Google แล้ว Google จะตอบ
+     * redirect_uri_mismatch ทันที — พังแบบเงียบ หาสาเหตุยาก
+     * จึงให้ล้มตั้งแต่ตอนสตาร์ทแทน: "Port 5173 is already in use"
+     */
+    strictPort: true,
     proxy: {
       "/api": apiProxy,
       "/health": apiProxy,
