@@ -16,6 +16,7 @@ import slips from "./routes/slips";
 import slipsAdmin from "./routes/slips-admin";
 import stats from "./routes/stats";
 import tenants from "./routes/tenants";
+import welcome from "./routes/welcome";
 
 const app = new Hono<AppEnv>();
 
@@ -56,6 +57,7 @@ app.route("/api/stats", stats);
 app.route("/api/tenants", tenants);
 app.route("/webhook/line", line);
 app.route("/register", registerPage);
+app.route("/welcome", welcome);
 app.route("/qr", qrRoute);
 app.route("/slips", slips);
 app.route("/invoices", invoiceRoute);

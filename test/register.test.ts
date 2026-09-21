@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type TestSession, createFamily, signIn, withAuth } from "./auth-helper";
+import { contrastRatio, fontSizePx, hexToken, ruleDeclarations, styleBlock } from "./html-style";
 
 const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
@@ -468,44 +469,6 @@ describe("GET /register", () => {
     expect(html).not.toContain('id="register-form"');
   });
 });
-
-function styleBlock(html: string): string {
-  const match = html.match(/<style>([\s\S]*?)<\/style>/);
-  return match?.[1] ?? "";
-}
-
-function ruleDeclarations(styles: string, selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = styles.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
-  return match?.[1] ?? "";
-}
-
-function fontSizePx(declarations: string): number {
-  const match = declarations.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
-  return match === null ? 0 : Number(match[1]);
-}
-
-function hexToken(styles: string, name: string): string {
-  const match = styles.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
-  return match?.[1] ?? "";
-}
-
-function relativeLuminance(hex: string): number {
-  const channels = [1, 3, 5].map((index) => {
-    const value = Number.parseInt(hex.slice(index, index + 2), 16) / 255;
-    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-  });
-  const [red, green, blue] = channels;
-
-  return 0.2126 * (red ?? 0) + 0.7152 * (green ?? 0) + 0.0722 * (blue ?? 0);
-}
-
-function contrastRatio(foreground: string, background: string): number {
-  const high = Math.max(relativeLuminance(foreground), relativeLuminance(background));
-  const low = Math.min(relativeLuminance(foreground), relativeLuminance(background));
-
-  return (high + 0.05) / (low + 0.05);
-}
 
 describe("GET /register composition", () => {
   it("centres the whole stack in the viewport on a full-height grid with a dvh fallback", async () => {
