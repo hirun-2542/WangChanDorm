@@ -515,7 +515,7 @@ function BillList({
               label="ค้นหาห้องหรือผู้เช่า"
               value={query}
               onChange={setQuery}
-              placeholder="เช่น 108/7 หรือ นงลักษณ์"
+              placeholder="เช่น A105 หรือ สมชาย"
             />
           </Card>
 

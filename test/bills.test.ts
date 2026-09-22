@@ -241,10 +241,10 @@ describe("monthly bill generation", () => {
 
   it("orders the meter sheet and the bill list by room number naturally", async () => {
     await putRates(18, 7);
-    const naturalOrder = ["101", "108", "108/1", "108/2", "108/10"];
+    const naturalOrder = ["201", "208", "208/1", "208/2", "208/10"];
     const roomIds: string[] = [];
 
-    for (const roomNumber of ["108/10", "108/2", "101", "108/1", "108"]) {
+    for (const roomNumber of ["208/10", "208/2", "201", "208/1", "208"]) {
       roomIds.push((await occupiedRoom(roomNumber, { waterMeterInit: 0, electricMeterInit: 0 })).id);
     }
 
@@ -463,6 +463,33 @@ describe("monthly bill generation", () => {
     expect(body.error.message).toContain("B215");
 
     expect(await listBills("2026-09")).toEqual(before);
+  });
+
+  /**
+   * กฎของหอ: คิดบิลเป็นเดือนต่อเดือน บิลค้างของงวดก่อนเป็นเพียงข้อมูลที่ต้อง
+   * บันทึกไว้ ไม่ใช่เงื่อนไขที่กันการออกบิลงวดใหม่ — ห้องที่ค้าง 3 งวดยังต้อง
+   * ออกบิลของเดือนถัดไปได้ตามปกติ และเลขมิเตอร์ต้องต่อเนื่องจากใบล่าสุด
+   */
+  it("bills a new period normally while older periods are still unpaid", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B250", { waterMeterInit: 100, electricMeterInit: 200 });
+
+    const july = await generate({ period: "2026-07", entries: [{ roomId: room.id, waterCurrent: 105, electricCurrent: 210 }] });
+    expect(july.status).toBe(201);
+    const august = await generate({ period: "2026-08", entries: [{ roomId: room.id, waterCurrent: 110, electricCurrent: 220 }] });
+    expect(august.status).toBe(201);
+
+    const september = await generate({ period: "2026-09", entries: [{ roomId: room.id, waterCurrent: 115, electricCurrent: 230 }] });
+    expect(september.status).toBe(201);
+
+    const bill = first((await september.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
+    expect(bill.status).toBe("unpaid");
+    // เลขตั้งต้นมาจากใบของงวดก่อนหน้าที่ใกล้ที่สุด ไม่ใช่เลขเริ่มต้นของห้อง
+    expect(bill.waterPrevious).toBe(110);
+    expect(bill.electricPrevious).toBe(220);
+
+    const all = await listBills("2026-07");
+    expect(all.filter((item) => item.roomId === room.id)).toHaveLength(1);
   });
 
   it("answers 409 instead of 500 when the same room is generated twice at once", async () => {
@@ -861,6 +888,40 @@ describe("bill management", () => {
     expect(regenerated.roomId).toBe(room.id);
     expect(regenerated.charges).toEqual([]);
     expect((await findBill("2026-09", regenerated.id)).charges).toEqual([]);
+  });
+
+  /**
+   * สลิปต้องอ้างถึงบิลที่มันเทียบไว้เพื่อให้ย้อนตรวจได้ จึงลบบิลที่มีสลิปอ้างถึง
+   * ไม่ได้ — FK บังคับไว้แล้ว แต่เดิมตอบ 500 "ลบบิลไม่สำเร็จ" ซึ่งผู้ใช้อ่านแล้ว
+   * ไม่รู้ว่าต้องทำอะไร ต้องเป็น 409 พร้อมบอกทางออก
+   */
+  it("refuses to delete a bill a slip references, with a reason the owner can act on", async () => {
+    await putRates(18, 7);
+
+    for (const slipStatus of ["pending_review", "rejected"]) {
+      const room = await occupiedRoom(slipStatus === "pending_review" ? "B251" : "B252", {
+        waterMeterInit: 100,
+        electricMeterInit: 200,
+      });
+      const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
+
+      await env.DB.prepare(
+        "INSERT INTO slips (id, family_id, bill_id, line_user_id, image_key, verify_result, status) VALUES (?, ?, ?, 'U-guard', ?, '{}', ?)",
+      )
+        .bind(crypto.randomUUID(), session.familyId, bill.id, `${slipStatus}.png`, slipStatus)
+        .run();
+
+      const response = await deleteBill(bill.id);
+      expect(response.status).toBe(409);
+
+      const body = await response.json<ErrorBody>();
+      expect(body.error.code).toBe("CONFLICT");
+      expect(body.error.message).toContain("สลิป");
+      expect(body.error.message).not.toContain("ไม่สำเร็จ");
+
+      // บิลและค่าใช้จ่ายต้องอยู่ครบ
+      expect((await findBill("2026-09", bill.id)).id).toBe(bill.id);
+    }
   });
 
   it("marks a bill paid and rejects a repeat or a bad method", async () => {
@@ -1315,12 +1376,12 @@ describe("room-scoped ดูบิล link", () => {
   });
 
   it("round-trips a room number shaped like a path segment and ignores hashes without a room", () => {
-    expect(billsFocusHash({ roomNumber: "108/7", period: "2026-08" })).toBe("#bills?room=108%2F7&period=2026-08");
-    expect(billsFocusOf("#bills?room=108%2F7&period=2026-08")).toEqual({ roomNumber: "108/7", period: "2026-08" });
+    expect(billsFocusHash({ roomNumber: "208/7", period: "2026-08" })).toBe("#bills?room=208%2F7&period=2026-08");
+    expect(billsFocusOf("#bills?room=208%2F7&period=2026-08")).toEqual({ roomNumber: "208/7", period: "2026-08" });
 
     expect(billsFocusOf("#bills")).toBeNull();
     expect(billsFocusOf("#bills?period=2026-08")).toBeNull();
-    expect(billsFocusOf("#tenants?room=108&period=2026-08")).toBeNull();
+    expect(billsFocusOf("#tenants?room=208&period=2026-08")).toBeNull();
   });
 });
 

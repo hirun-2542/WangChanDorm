@@ -554,7 +554,7 @@ function RoomDrawer({
             onChange={(value) => {
               update({ id: value });
             }}
-            placeholder="เช่น 108/7"
+            placeholder="เช่น A105"
             error={
               fieldError("roomNumber") ??
               touchedError(
@@ -1265,7 +1265,7 @@ export function RoomsPage() {
                 label="ค้นหาห้อง ผู้เช่า หรือเบอร์โทร"
                 value={query}
                 onChange={setQuery}
-                placeholder="เช่น 108/7 หรือ นงลักษณ์"
+                placeholder="เช่น A105 หรือ สมชาย"
                 helper="จับคู่เลขห้อง ชื่อผู้เช่า และเบอร์โทร"
               />
             </div>

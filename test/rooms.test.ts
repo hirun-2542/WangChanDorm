@@ -63,6 +63,7 @@ interface RoomStatPayload {
   hasPendingSlip: boolean;
   lastBilledPeriod: string | null;
   behindPeriods: number;
+  arrears: { periods: string[]; amount: number };
 }
 
 interface DashboardPayload {
@@ -380,10 +381,10 @@ describe("rooms crud", () => {
   });
 
   it("lists rooms in natural number order, with numbered sub-rooms before two-digit ones", async () => {
-    const naturalOrder = ["101", "108", "108/1", "108/2", "108/10"];
+    const naturalOrder = ["201", "208", "208/1", "208/2", "208/10"];
     const created = new Set<string>();
 
-    for (const roomNumber of ["108/10", "108/2", "101", "108/1", "108"]) {
+    for (const roomNumber of ["208/10", "208/2", "201", "208/1", "208"]) {
       const response = await createRoom({ roomNumber, rent: 2600 });
       expect(response.status).toBe(201);
       created.add((await response.json<RoomBody>()).room.id);
@@ -475,20 +476,20 @@ describe("rooms crud", () => {
   });
 
   it("keeps a room numbered like a path segment intact", async () => {
-    const created = await (await createRoom({ roomNumber: "108/7", rent: 2600 })).json<RoomBody>();
-    expect(created.room.roomNumber).toBe("108/7");
+    const created = await (await createRoom({ roomNumber: "208/7", rent: 2600 })).json<RoomBody>();
+    expect(created.room.roomNumber).toBe("208/7");
 
     const response = await patchRoom(created.room.id, { ownCharges: [{ name: "ค่าบริการ", amount: 10 }] });
     expect(response.status).toBe(200);
 
     const patched = await response.json<RoomBody>();
-    expect(patched.room.roomNumber).toBe("108/7");
+    expect(patched.room.roomNumber).toBe("208/7");
     expect(patched.room.ownCharges).toEqual([{ name: "ค่าบริการ", amount: 10 }]);
     expect(patched.room.charges).toEqual([{ name: "ค่าบริการ", amount: 10 }]);
 
     const list = await listRooms();
     const found = list.rooms.find((room) => room.id === created.room.id);
-    expect(found?.roomNumber).toBe("108/7");
+    expect(found?.roomNumber).toBe("208/7");
     expect(found?.ownCharges).toEqual([{ name: "ค่าบริการ", amount: 10 }]);
   });
 
@@ -867,14 +868,14 @@ describe("family isolation", () => {
     ]);
   });
 
-  it("lets each family keep its own room numbered 101", async () => {
+  it("lets each family keep its own room numbered 201", async () => {
     const other = await signIn("owner", await createFamily());
 
-    const mine = await createRoom({ roomNumber: "101", rent: 3000 });
+    const mine = await createRoom({ roomNumber: "201", rent: 3000 });
     expect(mine.status).toBe(201);
     const myRoom = (await mine.json<RoomBody>()).room;
 
-    const theirs = await createRoom({ roomNumber: "101", rent: 4200 }, other);
+    const theirs = await createRoom({ roomNumber: "201", rent: 4200 }, other);
     expect(theirs.status).toBe(201);
     const theirRoom = (await theirs.json<RoomBody>()).room;
 

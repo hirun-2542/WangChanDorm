@@ -1,4 +1,4 @@
-import { failureDetail, lineUploadTimeoutMs, logLineFailure } from "./api";
+import { demoModeOn, failureDetail, lineUploadTimeoutMs, logLineFailure } from "./api";
 import { asRecord } from "../routes/shared";
 
 const slipOkEndpointBase = "https://api.slipok.com/api/line/apikey";
@@ -18,6 +18,13 @@ export interface SlipOkResult {
   duplicate: boolean;
   receiverMismatch: boolean;
   receiver: SlipReceiver | null;
+  /**
+   * รหัสและข้อความจากผู้ให้บริการ — เก็บไว้ให้หน้ารอตรวจบอกได้ว่า "ตรวจไม่ผ่าน
+   * จากอะไร" เพราะ `verified: false` อย่างเดียวแยกไม่ออกระหว่างสลิปปลอม
+   * รูปอ่านไม่ออก ธนาคารล่ม หรือยอดไม่ตรง
+   */
+  code: number | null;
+  message: string | null;
   raw: unknown;
 }
 
@@ -30,6 +37,8 @@ function notVerified(raw: unknown = null, duplicate = false): SlipOkResult {
     duplicate,
     receiverMismatch: false,
     receiver: null,
+    code: readCode(asRecord(raw)?.code),
+    message: readText(asRecord(raw)?.message),
     raw,
   };
 }
@@ -142,6 +151,8 @@ function readReceiver(data: Record<string, unknown>): SlipReceiver | null {
 }
 
 function verifiedResult(payload: unknown, data: Record<string, unknown>): SlipOkResult {
+  const root = asRecord(payload);
+
   return {
     verified: true,
     amount: readAmount(data.amount),
@@ -150,6 +161,8 @@ function verifiedResult(payload: unknown, data: Record<string, unknown>): SlipOk
     duplicate: false,
     receiverMismatch: false,
     receiver: readReceiver(data),
+    code: readCode(root?.code),
+    message: readText(root?.message),
     raw: payload,
   };
 }
@@ -171,6 +184,22 @@ function receiverMismatch(payload: unknown, root: Record<string, unknown>): Slip
   };
 }
 
+/**
+ * รหัส 1012 = ผู้ให้บริการเคยเห็นสลิปใบนี้แล้ว
+ *
+ * ตัว payload ยังมี transRef/amount/เวลาของรายการโอนครบ จึงต้องอ่านเก็บไว้
+ * เหมือนสลิปปกติ ไม่ใช่ทิ้งเป็น null — เลขอ้างอิงคือสิ่งเดียวที่ทำให้เรารู้ว่า
+ * "ซ้ำกับใบไหน" และเจ้าของหอต้องใช้เทียบกับรายการเดินบัญชี การทิ้งค่านี้ทำให้
+ * ข้อความ "สลิปนี้ถูกใช้ปิดบิลไปแล้ว" กลายเป็นคำกล่าวอ้างที่ตรวจสอบไม่ได้
+ */
+function duplicateSlip(payload: unknown, root: Record<string, unknown>): SlipOkResult {
+  return {
+    ...verifiedResult(payload, asRecord(root.data) ?? {}),
+    verified: false,
+    duplicate: true,
+  };
+}
+
 function normalise(payload: unknown): SlipOkResult {
   const root = asRecord(payload);
 
@@ -182,7 +211,7 @@ function normalise(payload: unknown): SlipOkResult {
     const code = readCode(root.code);
 
     if (code === 1012) {
-      return notVerified(payload, true);
+      return duplicateSlip(payload, root);
     }
 
     if (code === 1013) {
@@ -274,23 +303,54 @@ export function compareReceiver(receiver: SlipReceiver | null, payee: SlipPayee)
   return pairs.some(([received, expected]) => maskedOrExactMatch(received, expected)) ? "match" : "mismatch";
 }
 
-export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType: string, expectedAmount: number | null): Promise<SlipOkResult> {
+/**
+ * รหัสที่แปลว่า "ยังตัดสินสลิปไม่ได้" ไม่ใช่ "สลิปไม่ผ่าน"
+ *
+ * 1001/1002 คือเราตั้งค่าสาขาหรือคีย์ผิด, 1003/1004 คือแพ็กเกจของเราหมดอายุหรือเกินโควตา,
+ * 1009/1010 คือฝั่งธนาคารยังไม่พร้อม — ทั้งหมดลองใหม่แล้วอาจผ่าน ต่างจาก 1007
+ * (รูปไม่มี QR) ซึ่งเป็นคำตอบแน่ชัดว่ารูปนี้ใช้ปิดบิลไม่ได้
+ */
+const providerIssueCodes = new Set([1001, 1002, 1003, 1004, 1009, 1010]);
+
+export interface SlipVerifyOutcome {
+  result: SlipOkResult;
+  /** true เมื่อ "ตรวจไม่ได้" (ไม่ใช่คำตอบว่าไม่จริง) เพราะคีย์หาย เน็ตล่ม หรือผู้ให้บริการล่ม */
+  failed: boolean;
+  /** เหตุผลที่ตรวจไม่ได้ ใช้ทั้งใน log และในหน้ารอตรวจ */
+  failure: string | null;
+}
+
+function outcome(result: SlipOkResult, failed: boolean, failure: string | null): SlipVerifyOutcome {
+  return { result, failed, failure };
+}
+
+export async function verifySlip(
+  env: Env,
+  imageBytes: ArrayBuffer,
+  contentType: string,
+  expectedAmount: number | null,
+): Promise<SlipVerifyOutcome> {
+  if (demoModeOn(env)) {
+    logLineFailure("slipok verify skipped", "demo mode: outbound disabled");
+    return outcome(notVerified(), true, "demo mode: outbound disabled");
+  }
+
   const key = credential(env.SLIPOK_API_KEY);
   const branchId = credential(env.SLIPOK_BRANCH_ID);
 
   if (key === "") {
     logLineFailure("slipok verify skipped", "SLIPOK_API_KEY is not configured");
-    return notVerified();
+    return outcome(notVerified(), true, "SLIPOK_API_KEY is not configured");
   }
 
   if (branchId === "") {
     logLineFailure("slipok verify skipped", "SLIPOK_BRANCH_ID is not configured");
-    return notVerified();
+    return outcome(notVerified(), true, "SLIPOK_BRANCH_ID is not configured");
   }
 
   if (imageBytes.byteLength === 0) {
     logLineFailure("slipok verify skipped", "slip image is empty");
-    return notVerified();
+    return outcome(notVerified(), true, "slip image is empty");
   }
 
   const body = new FormData();
@@ -317,35 +377,48 @@ export async function verifySlip(env: Env, imageBytes: ArrayBuffer, contentType:
     try {
       payload = await response.json();
     } catch {
-      logLineFailure("slipok verify failed", `status ${String(response.status)}: response is not json`);
-      return notVerified();
+      const detail = `status ${String(response.status)}: response is not json`;
+      logLineFailure("slipok verify failed", detail);
+      return outcome(notVerified(), true, detail);
     }
 
-    if (!response.ok) {
-      logLineFailure("slipok verify failed", `status ${String(response.status)}`);
-      return notVerified(payload);
-    }
-
+    // SlipOK ตอบ HTTP 400 ให้ทุก error code ที่เป็นผลการตรวจ (1012/1013/1014
+    // และรหัสอื่น ๆ) ตัวตัดสินจริงคือ code ใน body ไม่ใช่สถานะ HTTP ถ้าเช็ค
+    // response.ok ก่อน สลิปที่โอนผิดบัญชีจะกลายเป็น "ตรวจไม่ผ่าน" ธรรมดา
+    // เลขอ้างอิงกับยอดที่ผู้ให้บริการอ่านได้จะถูกทิ้ง และรหัส 1012 จะไม่ถูก
+    // ปฏิเสธเป็นสลิปซ้ำ — จึงอ่าน payload ก่อน แล้วใช้ status เป็นเพียง
+    // ข้อมูลประกอบเมื่อ payload ไม่ได้บอกอะไรเลย
     const result = normalise(payload);
+
+    if (!result.verified && !result.duplicate && !result.receiverMismatch) {
+      const code = readCode(asRecord(payload)?.code);
+      const message = readText(asRecord(payload)?.message);
+      const detail = `status ${String(response.status)} code ${code === null ? "unknown" : String(code)}${message === null ? "" : `: ${message}`}`;
+      logLineFailure("slipok verify rejected", detail);
+
+      // "ตรวจไม่ได้" มีสองหน้าตา: รหัสที่บอกว่ายังตัดสินสลิปไม่ได้ (ธนาคารไม่พร้อม
+      // แพ็กเกจเราหมดอายุ) หรือไม่มีรหัสตอบกลับมาเลยพร้อม HTTP ที่ไม่สำเร็จ
+      // ส่วน payload ที่มีรหัสและไม่ใช่กลุ่มนั้นคือคำตอบของจริง แม้ HTTP จะเป็น 400
+      // เพราะ SlipOK ใช้ 400 กับผลการตรวจทุกชนิด — 1007 จึงเป็น "ตรวจแล้วไม่ผ่าน"
+      const cannotCheck =
+        code === null ? !response.ok : providerIssueCodes.has(code);
+
+      return cannotCheck ? outcome(notVerified(payload), true, detail) : outcome(result, false, null);
+    }
 
     if (result.duplicate) {
       logLineFailure("slipok verify duplicate", "the provider reports this slip was already submitted");
-      return result;
-    }
-
-    if (!result.verified) {
-      const code = readCode(asRecord(payload)?.code);
-      const message = readText(asRecord(payload)?.message);
-      logLineFailure("slipok verify rejected", `code ${code === null ? "unknown" : String(code)}${message === null ? "" : `: ${message}`}`);
+      return outcome(result, false, null);
     }
 
     if (result.receiverMismatch) {
       logLineFailure("slipok verify receiver mismatch", "the provider reports the receiver is not this branch's account");
     }
 
-    return result;
+    return outcome(result, false, null);
   } catch (error) {
-    logLineFailure("slipok verify failed", failureDetail(error));
-    return notVerified();
+    const detail = failureDetail(error);
+    logLineFailure("slipok verify failed", detail);
+    return outcome(notVerified(), true, detail);
   }
 }

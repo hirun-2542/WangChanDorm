@@ -106,7 +106,14 @@ interface QueueSlip {
   slipAmount: number | null;
   bill: QueueBill | null;
   verified: boolean;
-  verify: { verified: boolean; transRef: string | null; date: string | null };
+  verify: {
+    verified: boolean;
+    transRef: string | null;
+    date: string | null;
+    code: number | null;
+    message: string | null;
+    detail: string | null;
+  };
   transferAt: string | null;
 }
 
@@ -587,6 +594,33 @@ describe("POST /webhook/line image events", () => {
     expect(result.date).toBe(slipDate);
   });
 
+  it("blocks slip image download, SlipOK verification and LINE push outright in demo mode, even with keys configured", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S135", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย โหมดสาธิต");
+    await linkTenantByRoomNumber("S135", "U-slip-demo", "สมชาย โหมดสาธิต");
+    await linkOwner("U-owner-demo");
+    await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-DEMO-BLOCKED");
+    const demoModeEnv = env as unknown as { DEMO_MODE: string };
+    const originalDemoMode = demoModeEnv.DEMO_MODE;
+    demoModeEnv.DEMO_MODE = "1";
+
+    try {
+      const response = await sendSlip("U-slip-demo", "msg-slip-demo");
+      expect(response.status).toBe(200);
+
+      // การดาวน์โหลดรูปสลิปจาก LINE ก็เป็น outbound call จริงเช่นกัน จึงถูกกันไว้
+      // ตั้งแต่ก่อนจะมีข้อมูลให้บันทึกด้วยซ้ำ — ไม่มีแถวสลิปเกิดขึ้นเลย
+      expect(await readSlipsFor("U-slip-demo")).toEqual([]);
+      expect(outboundCalls).toEqual([]);
+    } finally {
+      demoModeEnv.DEMO_MODE = originalDemoMode;
+    }
+  });
+
   it("closes a bill that carries extra charges using the bill total", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S102", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
@@ -747,7 +781,9 @@ describe("POST /webhook/line image events", () => {
     expect(slip.bill_id).toBe(bill.id);
     expect(slip.bill_total).toBe(3550);
     expect(slipResultOf(slip).verified).toBe(false);
-    expect(slipResultOf(slip).reason).toBe("not_verified");
+    // 1009 = ฝั่งธนาคารยังไม่พร้อม ยังตัดสินสลิปไม่ได้ ไม่ใช่สลิปไม่ผ่าน
+    expect(slipResultOf(slip).reason).toBe("verify_failed");
+    expect(String(slipResultOf(slip).detail)).toContain("1009");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
     expectPushed("U-slip-20", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
@@ -826,7 +862,14 @@ describe("POST /webhook/line image events", () => {
     expectPushed("U-slip-12", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
 
-  it("rejects a slip the provider reports as already submitted without touching the bill", async () => {
+  /**
+   * provider บอกว่าซ้ำ แต่เรายังไม่พบบิลที่ปิดด้วยสลิปนี้
+   *
+   * ข้อความเดิม "สลิปนี้ถูกใช้ปิดบิลไปแล้ว" เป็นคำกล่าวอ้างที่เราไม่มีหลักฐาน
+   * รองรับ — ในเคสนี้เงินนั้นยังไม่ถูกใช้ปิดบิล จึงต้องเข้าคิวให้เจ้าของหอตรวจ
+   * และต้องเก็บเลขอ้างอิง/ยอดที่ผู้ให้บริการอ่านได้ไว้ให้เทียบ
+   */
+  it("keeps a provider-reported duplicate in review when no bill was closed with it", async () => {
     await putRates(18, 7);
     const room = await newRoom({ roomNumber: "S121", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
     await newTenant(room.id, "สมปอง สลิปซ้ำผู้ให้บริการ");
@@ -836,24 +879,72 @@ describe("POST /webhook/line image events", () => {
     expect(bill.total).toBe(3550);
 
     outboundCalls = [];
-    slipOkBody = { success: false, code: 1012, message: "สลิปนี้ถูกส่งเข้ามาแล้ว" };
+    slipOkStatus = 400;
+    slipOkBody = {
+      code: 1012,
+      message: "สลิปซ้ำ สลิปนี้เคยส่งเข้ามาในระบบเมื่อ 2026-09-22 02:29:31",
+      data: { transRef: "TR-1012", amount: 3550, transDate: "20260903", transTime: "10:15:07", transTimestamp: slipTimestamp },
+    };
 
     const response = await sendSlip("U-slip-21", "msg-slip-21");
     expect(response.status).toBe(200);
 
     const slip = await readOneSlipFor("U-slip-21");
-    expect(slip.status).toBe("rejected");
-    expect(slip.bill_id).toBeNull();
-    expect(slip.bill_total).toBeNull();
-    expect(slipResultOf(slip).verified).toBe(false);
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slip.bill_total).toBe(3550);
+    // เลขอ้างอิงและยอดต้องรอดจาก payload ของผู้ให้บริการ ไม่ถูกล้างเป็น null
+    expect(slip.trans_ref).toBe("TR-1012");
+    expect(slip.amount).toBe(3550);
     expect(slipResultOf(slip).reason).toBe("duplicate_slip");
+    expect(slipResultOf(slip).message).toContain("สลิปซ้ำ");
 
-    expectPushed("U-slip-21", "ถูกใช้ปิดบิลไปแล้ว", "ติดต่อเจ้าของหอ");
+    // ยังไม่ปิดบิล จึงต้องไม่บอกผู้เช่าว่าถูกใช้ไปแล้ว
+    expectPushed("U-slip-21", "ระบบเคยเห็นสลิปใบนี้แล้ว", "ยังไม่พบบิลที่ปิดด้วยสลิปนี้");
+    expect(pushTextFor("U-slip-21")).not.toContain("ถูกใช้ปิดบิลไปแล้ว");
 
     const unchanged = await billOf("2026-09", bill.id);
     expect(unchanged.status).toBe("unpaid");
     expect(unchanged.paidAt).toBeNull();
     expect(unchanged.paidMethod).toBeNull();
+  });
+
+  /**
+   * ผู้ให้บริการอ่านไม่ได้รอบแรก แต่เราอ่านได้และเก็บเลขอ้างอิงไว้
+   * พอโอนมาอีกรอบต้องปิดบิลได้ ไม่ใช่ถูกกล่าวหาว่าซ้ำ
+   */
+  it("closes the bill on a resend whose reference was stored but never used to close one", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S134", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมจิต เก็บเลขอ้างอิงไว้");
+    await linkTenantByRoomNumber("S134", "U-slip-34", "สมจิต เก็บเลขอ้างอิงไว้");
+
+    // รอบแรก: ห้องยังไม่มีบิลค้าง ผู้ให้บริการอ่านได้ เราจึงเก็บ TR-0034 ไว้ที่สลิปที่ยังไม่ปิดบิล
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3500, "TR-0034");
+    const firstSend = await sendSlip("U-slip-34", "msg-slip-34a");
+    expect(firstSend.status).toBe(200);
+
+    const firstSlip = await readOneSlipFor("U-slip-34");
+    expect(firstSlip.status).toBe("pending_review");
+    expect(firstSlip.trans_ref).toBe("TR-0034");
+
+    // ออกบิลให้ห้องแล้วส่งสลิปใบเดิมมาอีกครั้ง
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-0034");
+    const resend = await sendSlip("U-slip-34", "msg-slip-34b");
+    expect(resend.status).toBe(200);
+
+    const slips = await readSlipsFor("U-slip-34");
+    expect(slips).toHaveLength(2);
+
+    const matched = pick(slips, (slip) => slip.status === "matched");
+    expect(matched.bill_id).toBe(bill.id);
+    expect(matched.trans_ref).toBe("TR-0034");
+    expect((await billOf("2026-09", bill.id)).status).toBe("paid");
   });
 
   it("keeps a provider amount mismatch out of the auto-close and lets our comparison decide", async () => {
@@ -911,7 +1002,9 @@ describe("POST /webhook/line image events", () => {
     expect(slip.bill_id).toBe(bill.id);
     expect(slip.bill_total).toBe(3550);
     expect(slipResultOf(slip).verified).toBe(false);
-    expect(slipResultOf(slip).reason).toBe("not_verified");
+    // ตรวจไม่ได้เพราะเราตั้งค่าไม่ครบ ไม่ใช่เพราะสลิปไม่ผ่าน
+    expect(slipResultOf(slip).reason).toBe("verify_failed");
+    expect(String(slipResultOf(slip).detail)).toContain("SLIPOK_API_KEY");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
     expectPushed("U-slip-8", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
@@ -936,7 +1029,8 @@ describe("POST /webhook/line image events", () => {
     expect(slip.status).toBe("pending_review");
     expect(slip.bill_id).toBe(bill.id);
     expect(slipResultOf(slip).verified).toBe(false);
-    expect(slipResultOf(slip).reason).toBe("not_verified");
+    expect(slipResultOf(slip).reason).toBe("verify_failed");
+    expect(String(slipResultOf(slip).detail)).toContain("SLIPOK_BRANCH_ID");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
     expectPushed("U-slip-23", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
   });
@@ -1022,6 +1116,8 @@ describe("POST /webhook/line image events", () => {
     const result = slipResultOf(rejected);
     expect(result.verified).toBe(true);
     expect(result.reason).toBe("duplicate_slip");
+    // ปฏิเสธเพราะมีใบ matched ด้วยเลขอ้างอิงเดียวกันอยู่จริง จึงอ้างได้ว่า "ถูกใช้ไปแล้ว"
+    expect(result.usedSlipId).toBe(matched.id);
 
     expectPushed("U-slip-10", "ถูกใช้ปิดบิลไปแล้ว");
 
@@ -1187,10 +1283,17 @@ describe("POST /webhook/line image events", () => {
 
     const slip = await readOneSlipFor("U-slip-17");
     expect(slip.status).toBe("pending_review");
-    expect(slip.bill_id).toBeNull();
-    expect(slip.bill_total).toBeNull();
     expect(slip.trans_ref).toBe("TR-0017");
     expect(slipResultOf(slip).reason).toBe("no_unpaid_bill");
+
+    // บิลถูกปิดไปก่อนระหว่างตรวจ แต่เรารู้ว่าสลิปนี้เทียบกับใบไหน จึงต้องเก็บไว้
+    // ไม่ใช่ทิ้งเป็น null แล้วบอกเจ้าของหอว่า "ไม่มีบิลให้เทียบ"
+    expect(slip.bill_id).toBe(bill.id);
+    expect(slip.bill_total).toBe(3550);
+
+    const queued = (await listQueue()).find((item) => item.id === slip.id);
+    expect(queued?.bill?.id).toBe(bill.id);
+    expect(queued?.bill?.period).toBe("2026-09");
 
     const settled = await billOf("2026-09", bill.id);
     expect(settled.status).toBe("paid");
@@ -1302,6 +1405,7 @@ describe("POST /webhook/line image events", () => {
     const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
 
     outboundCalls = [];
+    slipOkStatus = 400;
     slipOkBody = { success: false, code: 1014, message: "บัญชีผู้รับไม่ตรงกับบัญชีหลักของร้าน" };
 
     const response = await sendSlip("U-slip-26", "msg-slip-26");
@@ -1313,6 +1417,198 @@ describe("POST /webhook/line image events", () => {
     expect(slipResultOf(slip).reason).toBe("not_verified");
     expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
     expectPushed("U-slip-26", "โอนเข้าบัญชีอื่น");
+  });
+
+  /**
+   * กรณี HTTP 400 พร้อม data ที่สมบูรณ์: เลขอ้างอิงและยอดที่ผู้ให้บริการอ่านได้
+   * ต้องไม่ถูกทิ้ง เพราะเจ้าของหอใช้เทียบกับใบเสร็จของธนาคารตอนตัดสินใจด้วยมือ
+   */
+  it("keeps the reference and amount the provider read from a rejected slip", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S128", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมพร โอนผิดบัญชี");
+    await linkTenantByRoomNumber("S128", "U-slip-28", "สมพร โอนผิดบัญชี");
+
+    await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkStatus = 400;
+    slipOkBody = {
+      code: 1014,
+      message: "บัญชีผู้รับไม่ตรงกับบัญชีหลักของร้าน",
+      data: {
+        success: true,
+        transRef: "202601010DEMOREF00001234A",
+        transDate: "20260101",
+        transTime: "10:15:00",
+        amount: 4200,
+        receiver: { proxy: { type: "MSISDN", value: "xxx-xxx-1234" }, account: { type: "", value: "" } },
+      },
+    };
+
+    const response = await sendSlip("U-slip-28", "msg-slip-28");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-28");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.trans_ref).toBe("202601010DEMOREF00001234A");
+    expect(slip.amount).toBe(4200);
+    // สลิปจริงแต่ผู้รับผิดบัญชี จึงไม่นับว่าตรวจผ่าน และห้ามปิดบิลอัตโนมัติ
+    expect(slipResultOf(slip).verified).toBe(false);
+    expect(slipResultOf(slip).reason).toBe("not_verified");
+
+    const queue = await listQueue();
+    const queued = queue.find((item) => item.id === slip.id);
+    expect(queued?.verify.transRef).toBe("202601010DEMOREF00001234A");
+    expect(queued?.slipAmount).toBe(4200);
+  });
+
+  /**
+   * 1012 ที่มาเป็น HTTP 400 ต้องเข้าเส้นทางสลิปซ้ำ ไม่ใช่ "ตรวจไม่ผ่าน"
+   * และต้องเก็บรหัส/ข้อความ/เลขอ้างอิงที่ผู้ให้บริการส่งมาด้วย
+   */
+  it("routes a 1012 on a 400 response into the duplicate path with its identifiers intact", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S129", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมศักดิ์ สลิปซ้ำ424");
+    await linkTenantByRoomNumber("S129", "U-slip-29", "สมศักดิ์ สลิปซ้ำ424");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkStatus = 400;
+    slipOkBody = {
+      code: 1012,
+      message: "สลิปซ้ำ สลิปนี้เคยส่งเข้ามาในระบบเมื่อ 2026-09-22 01:35:00",
+      data: { transRef: "TR-4242", amount: 3550, transDate: "20260903", transTime: "01:35:00", transTimestamp: slipTimestamp },
+    };
+
+    const response = await sendSlip("U-slip-29", "msg-slip-29");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-29");
+
+    // ยังไม่มีบิลที่ปิดด้วยเลขอ้างอิงนี้ จึงเข้าคิว ไม่ถูกปฏิเสธทิ้ง
+    expect(slip.status).toBe("pending_review");
+    expect(slip.trans_ref).toBe("TR-4242");
+    expect(slip.amount).toBe(3550);
+    expect(slipResultOf(slip).reason).toBe("duplicate_slip");
+    expect(slipResultOf(slip).code).toBe(1012);
+
+    expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
+  });
+
+  /**
+   * "ตรวจไม่ได้" ต้องแยกจาก "ตรวจแล้วไม่ผ่าน" และต้องเห็นได้จากหน้ารอตรวจ
+   *
+   * เดิมกรณีนี้จบที่ log ของ Cloudflare เจ้าของหอจึงเห็นแค่ "ตรวจไม่ผ่าน"
+   * เหมือนสลิปปลอม แล้วไม่รู้ว่าต้องไปแก้ที่คีย์ ผู้ให้บริการ หรือตัวรูป
+   */
+  it("keeps the provider's reason visible when the check itself cannot run", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S130", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหมาย ผู้ให้บริการล่ม");
+    await linkTenantByRoomNumber("S130", "U-slip-30", "สมหมาย ผู้ให้บริการล่ม");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkStatus = 503;
+    slipOkBody = {};
+
+    const response = await sendSlip("U-slip-30", "msg-slip-30");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-30");
+    expect(slip.status).toBe("pending_review");
+    expect(slip.bill_id).toBe(bill.id);
+
+    const result = slipResultOf(slip);
+    expect(result.reason).toBe("verify_failed");
+    expect(result.verified).toBe(false);
+    expect(String(result.detail)).toContain("503");
+    expect((await billOf("2026-09", bill.id)).status).toBe("unpaid");
+
+    // คิวต้องส่งเหตุผลต่อไปให้หน้า รอตรวจ ไม่ใช่แค่ป้าย "ตรวจไม่ผ่าน"
+    const queued = (await listQueue()).find((item) => item.id === slip.id);
+    expect(queued?.reason).toBe("verify_failed");
+    expect(queued?.verify.detail).toContain("503");
+  });
+
+  it("tells the owner the check itself failed so they know to look by hand", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S133", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมพร ผู้ให้บริการล่ม");
+    await linkTenantByRoomNumber("S133", "U-slip-33", "สมพร ผู้ให้บริการล่ม");
+    await linkOwner("U-boss-33");
+
+    await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkStatus = 503;
+    slipOkBody = {};
+
+    const response = await sendSlip("U-slip-33", "msg-slip-33");
+    expect(response.status).toBe(200);
+
+    expectPushed("U-boss-33", "ระบบตรวจสลิปกับผู้ให้บริการไม่สำเร็จ", "503");
+  });
+
+  it("keeps the provider's own code and message for a slip it rejected", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S132", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมนึก รูปไม่มีคิวอาร์");
+    await linkTenantByRoomNumber("S132", "U-slip-32", "สมนึก รูปไม่มีคิวอาร์");
+
+    await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkStatus = 400;
+    slipOkBody = { code: 1007, message: "รูปภาพไม่มี QR Code" };
+
+    const response = await sendSlip("U-slip-32", "msg-slip-32");
+    expect(response.status).toBe(200);
+
+    const slip = await readOneSlipFor("U-slip-32");
+    const result = slipResultOf(slip);
+    expect(result.reason).toBe("not_verified");
+    expect(result.code).toBe(1007);
+    expect(result.message).toBe("รูปภาพไม่มี QR Code");
+
+    const queued = (await listQueue()).find((item) => item.id === slip.id);
+    expect(queued?.verify.code).toBe(1007);
+    expect(queued?.verify.message).toBe("รูปภาพไม่มี QR Code");
+  });
+
+  /**
+   * กฎของหอ: คิดบิลเป็นเดือนต่อเดือน และเมื่อผู้เช่าโอนเงินที่มียอดตรงกับงวดเก่า
+   * ระบบยึด "บิลล่าสุดที่ยังไม่จ่าย" เท่านั้น ไม่ย้อนไปปิดงวดเก่าตามยอดที่ตรง
+   * เพราะยอดรายเดือนของหอใกล้งกันจนแยกไม่ออกจากตัวเลขเพียงอย่างเดียว
+   */
+  it("closes the latest unpaid bill for a transfer whose amount matches an older period", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S131", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมพงษ์ โอนงวดเก่า");
+    await linkTenantByRoomNumber("S131", "U-slip-31", "สมพงษ์ โอนงวดเก่า");
+
+    // งวด 2026-07 ออกบิลแล้วไม่จ่าย (ยอดตรงกับที่จะโอนมา) แล้วออกบิลงวด 2026-09 อีกใบ
+    // ตั้งใจให้ทั้งสองงวดยอดเท่ากัน ยอดในสลิปจึงชี้ได้ทั้งสองใบ — คำตอบที่ถูกคือใบล่าสุด
+    const july = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 }, "2026-07");
+    const september = await generateBill(room.id, { waterCurrent: 14, electricCurrent: 24 }, "2026-09");
+    expect(july.total).toBe(september.total);
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(september.total, "TR-OLD-PERIOD");
+
+    const response = await sendSlip("U-slip-31", "msg-slip-31");
+    expect(response.status).toBe(200);
+
+    // สลิปปิดงวดล่าสุด ไม่ใช่ใบเก่าที่มียอดเท่ากัน
+    const slip = await readOneSlipFor("U-slip-31");
+    expect(slip.status).toBe("matched");
+    expect(slip.bill_id).toBe(september.id);
+    expect((await billOf("2026-09", september.id)).status).toBe("paid");
+    expect((await billOf("2026-07", july.id)).status).toBe("unpaid");
   });
 
   it("still closes the bill when the receiver matches the configured payee", async () => {
@@ -1387,7 +1683,16 @@ describe("owner alert for slips that land in review", () => {
     expect(response.status).toBe(200);
 
     expectPushed("U-alert-1", "ได้รับสลิปแล้ว", "เจ้าของหอจะตรวจสอบ");
-    expectPushed("U-boss-1", "S201", "สมชาย แจ้งเจ้าของ", "ยอดในสลิป", "3,550.50", "เทียบกับยอดบิล", "3,550");
+    expectPushed(
+      "U-boss-1",
+      "S201",
+      "สมชาย แจ้งเจ้าของ",
+      "ยอดในสลิป",
+      "3,550.50",
+      "เทียบกับยอดบิล",
+      "3,550",
+      "ยอดในสลิปไม่ตรงกับยอดบิล",
+    );
 
     const slip = await readOneSlipFor("U-alert-1");
     expect(slip.status).toBe("pending_review");
@@ -1408,7 +1713,7 @@ describe("owner alert for slips that land in review", () => {
     const response = await sendSlip("U-alert-2", "msg-alert-2");
     expect(response.status).toBe(200);
 
-    expectPushed("U-boss-2", "S202", "สมหญิง ไม่มีบิลค้าง", "3,550", "ยังไม่มีบิลค้างให้เทียบ");
+    expectPushed("U-boss-2", "S202", "สมหญิง ไม่มีบิลค้าง", "3,550", "ตอนรับสลิปไม่พบบิลค้าง");
 
     const slip = await readOneSlipFor("U-alert-2");
     expect(slip.status).toBe("pending_review");
@@ -1477,7 +1782,15 @@ describe("GET /api/slips", () => {
     expect(item.reason).toBe("mismatch");
     expect(item.slipAmount).toBe(3550.5);
     expect(item.verified).toBe(true);
-    expect(item.verify).toEqual({ verified: true, transRef: "TR-2004", date: slipDate });
+    expect(item.verify).toEqual({
+      verified: true,
+      transRef: "TR-2004",
+      date: slipDate,
+      code: null,
+      message: null,
+      detail: null,
+      usedSlipId: null,
+    });
     expect(item.transferAt).toBe(slipDate);
     expect(item.bill).toEqual({
       id: reviewBill.id,

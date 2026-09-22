@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../lib/auth";
 import { familyId } from "../lib/auth";
-import { lineChannelConfigured, pushMessage } from "../line/api";
+import { demoModeOn, lineChannelConfigured, pushMessage } from "../line/api";
 import { bankThaiName } from "../lib/banks";
 import {
   buildBillFlexMessage,
@@ -10,6 +10,7 @@ import {
 import { ownerSendSummaryMessage } from "../line/messages";
 import { thaiPeriodLabel } from "../lib/invoice";
 import { resolveAllRoomCharges } from "../lib/charges";
+import { isForeignKeyViolation } from "../lib/slips";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
 import {
   asRecord,
@@ -1356,6 +1357,27 @@ bills.delete("/:id", async (c) => {
     return c.json({ ok: true }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+
+    /**
+     * บิลที่มีสลิปอ้างถึงลบไม่ได้ — foreign key ไม่ให้ลบ และนั่นถูกต้องแล้ว
+     * เพราะสลิปต้องอ้างถึงใบที่มันเทียบไว้เพื่อให้ย้อนตรวจได้
+     *
+     * เดิมตอบ 500 "ลบบิลไม่สำเร็จ" ซึ่งผู้ใช้อ่านแล้วไม่รู้ว่าต้องทำอะไร
+     * ทั้งที่ทางออกมีอยู่: ตัดสินสลิปให้จบก่อน หรือปิดบิลด้วยมือ
+     */
+    if (isForeignKeyViolation(error)) {
+      console.log(
+        JSON.stringify({ message: "delete bill blocked by a slip", billId: id }),
+      );
+      return c.json(
+        errorBody(
+          "CONFLICT",
+          "บิลนี้มีสลิปอ้างถึงอยู่ ลบไม่ได้ — ตรวจสลิปในคิวรอตรวจให้จบก่อน แล้วค่อยลบ",
+        ),
+        409,
+      );
+    }
+
     console.error(
       JSON.stringify({
         message: "delete bill failed",
@@ -1523,6 +1545,13 @@ bills.post("/send-all", async (c) => {
     const alreadyPaid = targets.filter((bill) => bill.status === "paid");
     targets = targets.filter((bill) => bill.status !== "paid");
 
+    if (demoModeOn(c.env)) {
+      return c.json(
+        errorBody("UPSTREAM", "การส่งบิลทาง LINE ปิดอยู่ในโหมดสาธิต"),
+        503,
+      );
+    }
+
     if (!lineChannelConfigured(c.env)) {
       console.error(
         JSON.stringify({
@@ -1641,6 +1670,13 @@ bills.post("/:id/send", async (c) => {
       return c.json(
         errorBody("CONFLICT", "บิลที่จ่ายแล้วส่งเป็นใบแจ้งหนี้ไม่ได้"),
         409,
+      );
+    }
+
+    if (demoModeOn(c.env)) {
+      return c.json(
+        errorBody("UPSTREAM", "การส่งบิลทาง LINE ปิดอยู่ในโหมดสาธิต"),
+        503,
       );
     }
 

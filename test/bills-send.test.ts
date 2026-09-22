@@ -475,6 +475,41 @@ describe("POST /api/bills/:id/send", () => {
     expect(await sentAtOf("2025-01", bill.id)).toBeNull();
   });
 
+  it("reports demo mode instead of the missing-token message when DEMO_MODE is on", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({
+      roomNumber: "C349",
+      rent: 3500,
+      waterMeterInit: 10,
+      electricMeterInit: 20,
+    });
+    const tenant = await newTenant(room.id, "ผู้เช่าโหมดสาธิต");
+    await linkTenant(tenant.id, "U-demo-send-one");
+    const bill = await generatedBill(
+      room.id,
+      { waterCurrent: 12, electricCurrent: 24 },
+      "2025-03",
+    );
+
+    const demoModeEnv = env as unknown as { DEMO_MODE: string };
+    const originalDemoMode = demoModeEnv.DEMO_MODE;
+    demoModeEnv.DEMO_MODE = "1";
+
+    try {
+      const response = await sendOne(bill.id);
+      expect(response.status).toBe(503);
+
+      const body = await response.json<ErrorBody>();
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("UPSTREAM");
+      expect(body.error.message).toContain("โหมดสาธิต");
+      expect(pushCalls()).toEqual([]);
+      expect(await sentAtOf("2025-03", bill.id)).toBeNull();
+    } finally {
+      demoModeEnv.DEMO_MODE = originalDemoMode;
+    }
+  });
+
   it("rejects a paid bill and sends nothing", async () => {
     await putRates(18, 7);
     const room = await newRoom({
@@ -916,6 +951,28 @@ describe("POST /api/bills/send-all", () => {
     expect(body.error.code).toBe("UPSTREAM");
     expect(body.error.message.length).toBeGreaterThan(0);
     expect(pushCalls()).toEqual([]);
+  });
+
+  it("reports demo mode instead of the missing-token message for send-all when DEMO_MODE is on", async () => {
+    await putRates(18, 7);
+    await twoLinkedBills("2025-04", "C401", "C402");
+
+    const demoModeEnv = env as unknown as { DEMO_MODE: string };
+    const originalDemoMode = demoModeEnv.DEMO_MODE;
+    demoModeEnv.DEMO_MODE = "1";
+
+    try {
+      const response = await sendAll("2025-04");
+      expect(response.status).toBe(503);
+
+      const body = await response.json<ErrorBody>();
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("UPSTREAM");
+      expect(body.error.message).toContain("โหมดสาธิต");
+      expect(pushCalls()).toEqual([]);
+    } finally {
+      demoModeEnv.DEMO_MODE = originalDemoMode;
+    }
   });
 
   it("pushes nothing and reports the paid bills when every bill of the period is paid", async () => {

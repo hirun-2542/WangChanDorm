@@ -436,6 +436,25 @@ describe("POST /webhook/line events", () => {
     expect(followed?.lastSeenAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
+  it("blocks the LINE profile fetch and reply outright in demo mode, even with the channel configured", async () => {
+    outboundCalls = [];
+
+    const demoModeEnv = env as unknown as { DEMO_MODE: string };
+    const originalDemoMode = demoModeEnv.DEMO_MODE;
+    demoModeEnv.DEMO_MODE = "1";
+
+    try {
+      const response = await postWebhook(lineEvents([followEvent("U-follow-demo", "tok-follow-demo")]));
+      expect(response.status).toBe(200);
+      expect(outboundCalls).toEqual([]);
+
+      const followed = await pendingFor("U-follow-demo");
+      expect(followed?.lineUserId).toBe("U-follow-demo");
+    } finally {
+      demoModeEnv.DEMO_MODE = originalDemoMode;
+    }
+  });
+
   it("answers a greeting that is not a room number with the guidance reply", async () => {
     const response = await postWebhook(lineEvents([textEvent("U-greeting", "tok-greeting", "สวัสดี")]));
     expect(response.status).toBe(200);
@@ -450,7 +469,7 @@ describe("POST /webhook/line events", () => {
     expect(row?.lastMessage).toBe("สวัสดี");
   });
 
-  it("answers 500 and releases the event so a retry succeeds once the failure clears", async () => {
+  it("answers 200, records the failure and releases the event so a retry succeeds once the failure clears", async () => {
     await env.DB.prepare(
       "CREATE TRIGGER fail_pending_insert BEFORE INSERT ON line_pending BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
     ).run();
@@ -459,11 +478,13 @@ describe("POST /webhook/line events", () => {
     const body = lineEvents([followEvent("U-db-fail", "tok-db-fail")]);
 
     try {
+      // ตอบ 200 เสมอ เพราะ LINE ไม่ส่งซ้ำให้อีก (redelivery ปิดโดยค่าเริ่มต้น)
+      // การตอบ 500 จึงไม่ช่วยให้งานสำเร็จ แต่ทำให้ LINE มองว่า webhook พังทั้งชุด
       const response = await postWebhook(body);
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(200);
 
-      const failed = await response.json<{ ok: boolean }>();
-      expect(failed.ok).toBe(false);
+      const ok = await response.json<{ ok: boolean }>();
+      expect(ok.ok).toBe(true);
       expect(await pendingFor("U-db-fail")).toBeUndefined();
 
       const failures = errorSpy.mock.calls
@@ -1183,7 +1204,7 @@ describe("GET /api/line/messages", () => {
     await clearBills();
 
     const room = await newRoom("M401");
-    await newTenant(room.id, "นงลักษณ์ มั่นคง");
+    await newTenant(room.id, "สมหญิง รักดี");
     const bill = await generateBill(room.id, "2026-11");
 
     const body = await readLineMessages();
@@ -1192,11 +1213,11 @@ describe("GET /api/line/messages", () => {
     expect(billKind).toBeDefined();
     expect(billKind?.message.type).toBe("flex");
     expect(body.source?.roomNumber).toBe("M401");
-    expect(body.source?.tenantName).toBe("นงลักษณ์ มั่นคง");
+    expect(body.source?.tenantName).toBe("สมหญิง รักดี");
 
     const text = flexText(billKind?.message);
     expect(text).toContain("M401");
-    expect(text).toContain("นงลักษณ์ มั่นคง");
+    expect(text).toContain("สมหญิง รักดี");
     expect(text).toContain(bill.total.toLocaleString("en-US"));
   });
 

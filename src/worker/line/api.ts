@@ -48,6 +48,16 @@ export function logLineFailure(message: string, detail: string): void {
   console.error(JSON.stringify({ message, error: detail }));
 }
 
+/**
+ * ตรวจตรงตัวเหมือน SEAM_PROBE — ปิดเป็นค่าเริ่มต้นเสมอ เปิดเฉพาะเมื่อ DEMO_MODE
+ * เป็น "1" เท่านั้น ใช้เป็นการ์ดชั้นแรกก่อนถึงคีย์ในทุกจุดที่เรียกออกนอกระบบจริง
+ * ไม่พึ่งการที่คีย์ LINE/SlipOK ถูกเว้นว่างเพียงอย่างเดียว เพราะคีย์ที่ตั้งไว้
+ * ผิดที่บนสภาพแวดล้อมเดโม (เช่น copy จาก production มาผิด) ต้องไม่ทำให้ยิงออกจริง
+ */
+export function demoModeOn(env: Env): boolean {
+  return String(env.DEMO_MODE) === "1";
+}
+
 function accessToken(env: Env): string {
   const token = env.LINE_CHANNEL_ACCESS_TOKEN;
   return typeof token === "string" ? token.trim() : "";
@@ -58,6 +68,11 @@ export function lineChannelConfigured(env: Env): boolean {
 }
 
 export async function replyMessage(env: Env, replyToken: string, message: LineOutboundMessage): Promise<void> {
+  if (demoModeOn(env)) {
+    logLineFailure("line reply skipped", "demo mode: outbound disabled");
+    return;
+  }
+
   const token = accessToken(env);
 
   if (token === "") {
@@ -87,6 +102,11 @@ export async function replyMessage(env: Env, replyToken: string, message: LineOu
 }
 
 export async function pushMessage(env: Env, to: string, messages: readonly LineOutboundMessage[]): Promise<true | null> {
+  if (demoModeOn(env)) {
+    logLineFailure("line push skipped", "demo mode: outbound disabled");
+    return null;
+  }
+
   const token = accessToken(env);
 
   if (token === "") {
@@ -164,6 +184,11 @@ async function readBodyWithin(response: Response, limit: number): Promise<ArrayB
 }
 
 export async function fetchMessageContent(env: Env, messageId: string): Promise<LineContent | null> {
+  if (demoModeOn(env)) {
+    logLineFailure("line content skipped", "demo mode: outbound disabled");
+    return null;
+  }
+
   const token = accessToken(env);
 
   if (token === "") {
@@ -227,6 +252,11 @@ export async function fetchMessageContent(env: Env, messageId: string): Promise<
 }
 
 export async function fetchProfile(env: Env, userId: string): Promise<LineProfile | null> {
+  if (demoModeOn(env)) {
+    logLineFailure("line profile skipped", "demo mode: outbound disabled");
+    return null;
+  }
+
   const token = accessToken(env);
 
   if (token === "") {
