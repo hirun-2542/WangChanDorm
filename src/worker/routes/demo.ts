@@ -8,6 +8,7 @@ import { demoModeOn } from "../line/api";
 // temporal-dead-zone ตอน Worker เริ่มทำงานแล้วทั้ง Worker ล่มไปด้วย ไม่ใช่แค่เส้นทางนี้
 import app from "../index";
 import { createSession, sessionCookie } from "../lib/session";
+import { demoSlipImage } from "../lib/demo-slip-image";
 import { errorBody } from "./shared";
 
 const demo = new Hono<AppEnv>();
@@ -102,14 +103,9 @@ const demoSettings: ReadonlyArray<readonly [string, string]> = [
   ["promptpay_name", "สมศักดิ์ ใจดี"],
 ];
 
-// พิกเซลโปร่งใสหนึ่งจุด — ใช้แทนรูปสลิปตัวอย่างเท่านั้น ไม่ใช่สลิปจริง
-const placeholderSlipImage = new Uint8Array([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-  0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-  0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
-  0x42, 0x60, 0x82,
-]);
+// รูปสลิปตัวอย่างที่สังเคราะห์ขึ้นเองทั้งหมด ดู src/worker/lib/demo-slip-image.ts
+// เดิมตรงนี้ใช้พิกเซลโปร่งใส 1x1 ซึ่งทำให้หน้าคิวรอตรวจแสดงกล่องเปล่าใหญ่ ๆ
+// ผู้ชมเดโมจึงเห็นหน้าจอที่ดูเหมือนพังตั้งแต่แรกเข้า
 
 function periodOf(date: Date): string {
   const year = date.getUTCFullYear();
@@ -281,7 +277,7 @@ async function seedPendingSlip(env: Env, period: string, roomId: string): Promis
   }
 
   const imageKey = `${crypto.randomUUID()}.png`;
-  await env.SLIPS.put(imageKey, placeholderSlipImage, { httpMetadata: { contentType: "image/png" } });
+  await env.SLIPS.put(imageKey, demoSlipImage(), { httpMetadata: { contentType: "image/png" } });
 
   await env.DB.prepare(
     "INSERT INTO slips (id, family_id, bill_id, line_user_id, image_key, verify_result, amount, trans_ref, bill_total, status) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'pending_review')",
