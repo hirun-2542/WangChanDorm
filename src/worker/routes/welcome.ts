@@ -160,13 +160,15 @@ const welcomeStyles = `
       .frame-dot { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--silver); }
       .frame img { display: block; width: 100%; height: auto; }
 
-      .subhead { font-size: 13px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
+      /* .subhead ต้องต่างจาก .note (12px #6b6b6b) ให้อ่านออกว่าเป็นป้ายกำกับหัวข้อ
+         ไม่ใช่คำอธิบาย และ .step h3 ต้องหนักกว่าเนื้อความ 15px/400 รอบตัว ไม่ใช่เท่ากัน */
+      .subhead { font-size: 13px; font-weight: 600; letter-spacing: 0.06em; color: var(--steel); }
       .subhead-spaced { margin-top: 40px; }
 
       .steps { display: grid; gap: 1px; margin: 20px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
       .step { padding: 20px; background: var(--white); }
       .step-num { font-size: 13px; font-weight: 700; color: var(--blue); }
-      .step h3 { margin-top: 10px; font-size: 15px; }
+      .step h3 { margin-top: 10px; font-size: 15px; font-weight: 600; }
       .step h3 + p { margin-top: 6px; font-size: 13px; color: var(--steel); }
 
       .demo-grid { display: grid; gap: 40px; margin-top: 28px; align-items: start; }
@@ -201,6 +203,11 @@ const welcomeStyles = `
       .decision dl { margin: 14px 0 0; }
       .decision dl > div { padding-top: 12px; border-top: 1px solid var(--ash); }
       .decision dl > div + div { margin-top: 12px; }
+      /* แถว "ผลที่ตามมา" คือเหตุผลที่ทั้งส่วนนี้มีอยู่ — ข้อเสียที่ยอมรับ คือของจริง
+         ที่ผู้ประเมินต้องเห็น ถ้าให้หน้าตาเท่ากับอีกสองแถว มันจะหายไปในสายตา */
+      .decision dl > div:last-child { margin-top: 14px; padding: 12px 14px; border-top: 0; border-left: 3px solid var(--silver); background: var(--paper); border-radius: 0 var(--radius-card) var(--radius-card) 0; }
+      .decision dl > div:last-child dt { color: var(--steel); }
+      .decision dl > div:last-child dd { color: var(--charcoal); }
       .decision dt { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
       .decision dd { margin: 4px 0 0; font-size: 13px; color: var(--steel); }
 

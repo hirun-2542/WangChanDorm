@@ -473,6 +473,8 @@ describe("GET /welcome composition", () => {
       ["ชื่อเครื่องมือในแต่ละขั้นของกระบวนการ", "charcoal", "white"],
       ["เลขลำดับขั้นของกระบวนการ", "blue", "white"],
       ["ปุ่มที่ยังกดไม่ได้", "charcoal", "silver"],
+      ["ป้ายกำกับหัวข้อย่อยบนพื้น paper", "steel", "paper"],
+      ["หัวข้อการ์ดข้อตัดสินใจ", "charcoal", "white"],
     ];
     const missingTokens: string[] = [];
     const belowAA: string[] = [];
