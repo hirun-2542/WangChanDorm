@@ -96,7 +96,9 @@ describe("GET /welcome", () => {
     expect(section).toContain("ไม่เรียกบริการตรวจสลิปที่คิดค่าใช้จ่ายต่อครั้ง");
     expect(section).toContain("ไม่ผูก LINE ด้วยรหัสของเจ้าของหอ");
     expect(section).toContain("เดโมนี้ใช้ร่วมกัน");
-    expect(section).toContain("ถูกรีเซ็ตกลับเป็นชุดตั้งต้นได้ตลอดเวลา");
+    // เจตนาคือ "ต้องบอกว่าข้อมูลถูกรีเซ็ตทับได้" ไม่ใช่ยึดถ้อยคำเดิม — คำที่ใช้ทั้งหน้า
+    // รวมเป็น "ข้อมูลตัวอย่าง" แล้ว จึงตรวจเจตนา ไม่ใช่คำว่า "ชุดตั้งต้น" ที่เลิกใช้
+    expect(section).toContain("ถูกรีเซ็ตกลับเป็นข้อมูลตัวอย่างชุดเริ่มต้นได้ตลอดเวลา");
     expect(section).not.toContain("รับประกัน");
   });
 
@@ -381,7 +383,7 @@ describe("GET /welcome", () => {
     const html = await (await landing()).text();
 
     // #build และ #process คือสองส่วนที่คนประเมินต้องการที่สุด และเคยเข้าถึงได้ด้วยการเลื่อนเท่านั้น
-    expect(html).toContain('<a class="nav-jump" href="#demo">ดูสาธิต</a>');
+    expect(html).toContain('<a class="nav-jump" href="#demo">ลองระบบ</a>');
     expect(html).toContain('<a class="nav-jump" href="#build">ข้อตัดสินใจ</a>');
     expect(html).toContain('<a class="nav-jump" href="#process">กระบวนการ</a>');
 
@@ -394,6 +396,46 @@ describe("GET /welcome", () => {
 
     // ปุ่มรองใน hero ต้องพาไปส่วน "เขียนยังไง" จริง ไม่ใช่ส่วนพิธีกรรมรายเดือน
     expect(html).toContain('<a class="btn btn-secondary" href="#build">ดูว่าเขียนยังไง</a>');
+  });
+
+  /**
+   * ผู้ชมที่ไม่เคยเห็นระบบต้องรู้ก่อนว่ามีบทบาทอะไรบ้าง
+   *
+   * ข้อเท็จจริงที่ทำให้ระบบนี้ต่างจากซอฟต์แวร์หอเช่าทั่วไปคือมีคนใช้จริงคนเดียว
+   * และผู้เช่าไม่มีบัญชีเลย เดิมเรื่องนี้ถูกอธิบายเฉพาะในฐานะ "ข้อตัดสินใจ" ที่อยู่
+   * ลึกครึ่งหน้าลงไป ผู้ชมที่อ่านจากบนลงล่างจึงเข้าใจผิดว่าเป็นแอปสองฝั่งได้ง่าย
+   * การบอกบทบาทก่อนห้าขั้นตอนทำให้รู้ว่าใครเป็นคนทำขั้นไหน
+   */
+  it("names who is in the system before explaining the steps", async () => {
+    const html = await (await landing()).text();
+    const flow = html.slice(html.indexOf('id="flow"'), html.indexOf('id="demo"'));
+
+    expect(flow).toContain('<dl class="roles" aria-label="บทบาทในระบบ">');
+    expect(flow).toContain("<dt>เจ้าของหอ</dt>");
+    expect(flow).toContain("<dt>ผู้เช่า</dt>");
+    // ต้องบอกให้ชัดว่าฝั่งผู้เช่าไม่มีบัญชี ไม่ใช่ปล่อยให้เดา
+    expect(flow).toContain("ไม่มีบัญชี");
+
+    // บทบาทต้องมาก่อนห้าขั้นตอน ไม่ใช่ตามหลัง
+    const rolesAt = flow.indexOf('<dl class="roles"');
+    const stepsAt = flow.indexOf('<ol class="steps">');
+    expect(rolesAt).toBeGreaterThan(-1);
+    expect(rolesAt).toBeLessThan(stepsAt);
+  });
+
+  /**
+   * ลิงก์ใน nav ต้องไม่ใช้คำว่า "สาธิต" ลอย ๆ ซึ่งไม่บอกว่าไปเจออะไร
+   * และต้องไม่ซ้ำกับปุ่มหลัก เพื่อให้ผู้ใช้แยกออกว่าอันไหนพาออกจากหน้า
+   */
+  it("labels the nav jump so it does not read as the primary action", async () => {
+    const html = await (await landing()).text();
+    const nav = html.slice(html.indexOf('class="nav-links"'), html.indexOf("</nav>"));
+    const jumps = Array.from(nav.matchAll(/<a class="nav-jump"[^>]*>([^<]+)<\/a>/g), (m) => m[1]);
+
+    expect(jumps).toEqual(["ลองระบบ", "ข้อตัดสินใจ", "กระบวนการ"]);
+    // ปุ่มหลักคือ "ทดลองระบบ" ซึ่งเป็นคำที่ต่างกัน ไม่ให้ผู้ใช้อ่านแล้วคิดว่าเป็นอันเดียวกัน
+    expect(jumps).not.toContain("ทดลองระบบ");
+    expect(nav).not.toContain("ดูสาธิต");
   });
 
   it("does not hide sections when the page is printed", async () => {
@@ -521,7 +563,7 @@ describe("GET /welcome composition", () => {
     expect(ruleDeclarations(styles, ".band-paper")).toContain("background: var(--paper)");
 
     const body = ruleDeclarations(styles, "body");
-    expect(body).toContain("font-size: 15px");
+    expect(body).toContain("font-size: 16px");
     expect(body).toContain("color: var(--charcoal)");
   });
 

@@ -60,7 +60,10 @@ const welcomeStyles = `
         background: var(--white);
         color: var(--charcoal);
         font-family: Inter, "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
-        font-size: 15px;
+        /* 16px คือขนาดเนื้อความมาตรฐานของแอป (DESIGN.md: "16px as the canonical body
+           size" — พบบ่อยสุด 1220 ครั้งในโค้ดแอป) เดิมหน้านี้ใช้ 15px ซึ่งต่ำกว่าพื้น
+           ของเนื้อความบนเว็บทั่วไป เนื้อความส่วนใหญ่ของหน้านี้คือคำอธิบายที่ต้องอ่านจริง */
+        font-size: 16px;
         line-height: 1.7;
         -webkit-text-size-adjust: 100%;
       }
@@ -72,10 +75,18 @@ const welcomeStyles = `
         padding: 0 24px;
       }
 
-      h1, h2, h3 { margin: 0; letter-spacing: -0.02em; font-weight: 600; }
+      /* หัวข้อต้องไม่ถูกบีบระยะตัวอักษร
+         ค่า -0.02em เป็นธรรมเนียมของอักษรละติน (ตัวพิมพ์ใหญ่ชนกันได้) แต่อักษรไทย
+         มีสระและวรรณยุกต์ซ้อนบน-ล่าง ไม่ได้ออกแบบมาให้ชนกันในแนวนอน การบีบที่ h1
+         เท่ากับ -1.04px ซึ่งทำให้พยัญชนะชิดกันและอ่านช้าลงตลอดทั้งหน้า
+         text-wrap: balance ช่วยให้หัวข้อสั้น ๆ ขึ้นบรรทัดใหม่สมดุลแทนที่จะเหลือคำเดียว */
+      h1, h2, h3 { margin: 0; letter-spacing: 0; font-weight: 600; text-wrap: balance; }
       h1 { font-size: clamp(32px, 4.2vw, 52px); line-height: 1.15; }
       h2 { font-size: 28px; line-height: 1.3; }
-      p { margin: 0; }
+      /* h3 เป็นบทบาทเดียว ใช้ค่าเดียวทั้งหน้า เดิมกระจายอยู่ 6 ค่า (14/15/16px)
+         ซึ่งทำให้บทบาทเดียวกันหน้าตาไม่เหมือนกันข้ามส่วน */
+      h3 { font-size: 16px; line-height: 1.4; }
+      p { margin: 0; text-wrap: pretty; }
       a { color: inherit; }
 
       .lede { font-size: 18px; line-height: 1.6; color: var(--steel); }
@@ -166,24 +177,28 @@ const welcomeStyles = `
       .subhead-spaced { margin-top: 40px; }
 
       .steps { display: grid; gap: 1px; margin: 20px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
+      /* บทบาทในระบบ — สองบรรทัดที่ต้องอ่านก่อนห้าขั้นตอน เพราะบอกว่าใครเป็นคนทำ
+         แยกด้วยเส้นคั่นอย่างเดียว ไม่ใส่การ์ดซ้อนในแบนด์ที่เป็นพื้นเทาอยู่แล้ว */
+      .roles { display: grid; gap: 1px; margin: 24px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); }
+      .roles > div { padding: 16px 20px; background: var(--white); }
+      .roles dt { font-size: 13px; font-weight: 600; color: var(--charcoal); }
+      .roles dd { margin: 4px 0 0; font-size: 14px; color: var(--steel); max-width: 68ch; }
       .step { padding: 20px; background: var(--white); }
       .step-num { font-size: 13px; font-weight: 700; color: var(--blue); }
-      .step h3 { margin-top: 10px; font-size: 15px; font-weight: 600; }
-      .step h3 + p { margin-top: 6px; font-size: 13px; color: var(--steel); }
+      .step h3 { margin-top: 10px; }
+      .step h3 + p { margin-top: 6px; font-size: 14px; color: var(--steel); }
 
       .demo-grid { display: grid; gap: 40px; margin-top: 28px; align-items: start; }
       .demo-panel { padding: 28px; border: 1px solid var(--ash); border-radius: var(--radius-panel); background: var(--white); }
-      .demo-panel h3 { font-size: 15px; }
       .demo-panel ul { margin: 12px 0 0; padding-left: 20px; }
       .demo-panel li { font-size: 14px; color: var(--steel); }
       .demo-panel li + li { margin-top: 6px; }
       .demo-panel .btn { margin-top: 20px; width: 100%; }
 
       .closure { margin-top: 20px; padding: 20px 24px; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--paper); }
-      .closure h3 { font-size: 14px; }
-      .closure p { margin-top: 6px; font-size: 13px; color: var(--steel); }
+      .closure p { margin-top: 6px; font-size: 14px; color: var(--steel); }
       .closure ul { margin: 10px 0 0; padding-left: 20px; }
-      .closure li { font-size: 13px; color: var(--steel); }
+      .closure li { font-size: 14px; color: var(--steel); }
       .closure li + li { margin-top: 4px; }
 
       .footer { border-top: 1px solid var(--ash); }
@@ -194,12 +209,10 @@ const welcomeStyles = `
       .shots { display: grid; gap: 40px; margin-top: 28px; }
       .shot { margin: 0; }
       .shot figcaption { margin-top: 14px; }
-      .shot h3 { font-size: 15px; }
-      .shot p { margin-top: 6px; font-size: 13px; color: var(--steel); max-width: 68ch; }
+      .shot p { margin-top: 6px; font-size: 14px; color: var(--steel); max-width: 68ch; }
 
       .decisions { display: grid; gap: 20px; margin-top: 28px; }
       .decision { padding: 24px; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--white); }
-      .decision h3 { font-size: 16px; }
       .decision dl { margin: 14px 0 0; }
       .decision dl > div { padding-top: 12px; border-top: 1px solid var(--ash); }
       .decision dl > div + div { margin-top: 12px; }
@@ -210,7 +223,7 @@ const welcomeStyles = `
       .decision dl > div:last-child dt { color: var(--steel); }
       .decision dl > div:last-child dd { color: var(--charcoal); }
       .decision dt { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
-      .decision dd { margin: 4px 0 0; font-size: 13px; color: var(--steel); }
+      .decision dd { margin: 4px 0 0; font-size: 14px; color: var(--steel); }
 
       .stages { display: grid; gap: 1px; margin: 28px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
       /* หลักฐานที่อ่านได้บนหน้าเอง — ตั๋วงานจริงหนึ่งใบ แทนการชี้ไปที่ path ในโปรเจค
@@ -219,12 +232,12 @@ const welcomeStyles = `
       .ticket { margin: 28px 0 0; padding: 20px 24px; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--white); }
       .ticket figcaption { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
       .ticket p { margin-top: 10px; max-width: 68ch; }
-      .ticket .ticket-title { margin-top: 12px; font-size: 15px; font-weight: 600; color: var(--charcoal); }
+      .ticket .ticket-title { margin-top: 12px; color: var(--charcoal); }
       .stage { padding: 24px; background: var(--white); }
       .stage-num { font-size: 13px; font-weight: 700; color: var(--blue); }
-      .stage h3 { margin-top: 10px; font-size: 16px; }
+      .stage h3 { margin-top: 10px; }
       .stage-tools { margin-top: 4px; font-size: 13px; font-weight: 500; color: var(--charcoal); }
-      .stage p:last-child { margin-top: 8px; font-size: 13px; color: var(--steel); }
+      .stage p:last-child { margin-top: 8px; font-size: 14px; color: var(--steel); }
 
       /* ที่เดียวในหน้าที่ยังใช้ monospace และใช้กับสิ่งที่ควรใช้จริง ๆ คือ path ของไฟล์
          (docs/specs, .scratch/...) ไม่ใช่แต่งให้ดูเทคนิค — แอปไม่มีพื้นผิวโค้ดจึงไม่มี
@@ -317,7 +330,7 @@ function navSection(demoMode: boolean): string {
       <div class="container nav-inner">
         <a class="brand" href="/welcome"><span class="mark" aria-hidden="true"><span class="mark-inner">วจ</span></span>หอพักวังจันทร์</a>
         <nav class="nav-links" aria-label="หัวข้อในหน้านี้">
-          <a class="nav-jump" href="#demo">ดูสาธิต</a>
+          <a class="nav-jump" href="#demo">ลองระบบ</a>
           <a class="nav-jump" href="#build">ข้อตัดสินใจ</a>
           <a class="nav-jump" href="#process">กระบวนการ</a>
           ${primaryCta(demoMode)}
@@ -357,6 +370,20 @@ const steps: ReadonlyArray<readonly [string, string]> = [
   ["สลิปเข้า ปิดบิล", "ยอดตรงปิดบิลให้เอง ยอดไม่ตรงเข้าคิวรอเจ้าของตรวจ"],
 ];
 
+/**
+ * บทบาทในระบบ — สองบรรทัดที่ทำให้คนใหม่เข้าใจรูปร่างของระบบ
+ *
+ * ข้อเท็จจริงที่ทำให้ระบบนี้ต่างจากซอฟต์แวร์หอเช่าทั่วไปคือ "มีคนใช้จริงคนเดียว
+ * และผู้เช่าไม่มีบัญชีเลย" ซึ่งเดิมถูกอธิบายเฉพาะในฐานะ "ข้อตัดสินใจ" ที่อยู่ลึก
+ * ลงไปครึ่งหน้า ผู้ชมที่อ่านจากบนลงล่างจึงเข้าใจว่านี่คือแอปสำหรับเจ้าของหอ และ
+ * เพิ่งมารู้ทีหลังว่าฝั่งผู้เช่าไม่มีหน้าจอเลย การบอกบทบาทไว้ตรงนี้ทำให้อ่านส่วน
+ * ห้าขั้นตอนที่ตามมาด้วยรู้ว่าใครเป็นคนทำขั้นไหน
+ */
+const systemRoles: ReadonlyArray<readonly [string, string]> = [
+  ["เจ้าของหอ", "คนเดียวที่มีบัญชี เข้าด้วย Google ทำงานทั้งรอบบิลตั้งแต่กรอกมิเตอร์จนปิดบิล"],
+  ["ผู้เช่า", "ไม่มีบัญชีและไม่ต้องติดตั้งอะไร รับบิล จ่ายผ่าน QR แล้วส่งสลิปกลับในแชท LINE ของหอ"],
+];
+
 function contextSection(): string {
   const cards = steps
     .map(
@@ -365,10 +392,17 @@ function contextSection(): string {
     )
     .join("\n        ");
 
+  const roles = systemRoles
+    .map(([role, detail]) => `<div><dt>${role}</dt><dd>${detail}</dd></div>`)
+    .join("\n          ");
+
   return `<section id="flow" class="band band-paper reveal" aria-labelledby="flow-title">
       <div class="container">
         <h2 id="flow-title">หอเล็กที่เจ้าของคนเดียวทำทุกอย่างเอง</h2>
         <p>หอขนาดไม่เกิน 20 ห้อง ไม่มีพนักงานประจำ และไม่มีระบบเดิมให้ต่อ เจ้าของหอเดินอ่านมิเตอร์เอง จดใส่กระดาษ แล้วกลับมาเปิดโปรแกรมเพื่อออกบิล ส่งให้ผู้เช่า และตามเก็บเงิน ทุกเดือนด้วยมือคนเดียว ระบบนี้ออกแบบจากงานนั้น — งานที่ทำซ้ำทุกเดือนและไม่มีใครช่วยแบ่งเบา</p>
+        <dl class="roles" aria-label="บทบาทในระบบ">
+          ${roles}
+        </dl>
         <p class="subhead subhead-spaced">ห้าขั้นตอนของรอบบิล</p>
         <ol class="steps">
         ${cards}
@@ -381,7 +415,7 @@ function demoSection(demoMode: boolean): string {
   return `<section id="demo" class="band reveal" aria-labelledby="demo-title">
       <div class="container">
         <h2 id="demo-title">ลองระบบจริงด้วยมือตัวเอง</h2>
-        <p class="lede">กดปุ่มเดียวเข้าไปได้ทันที ไม่ต้องมีบัญชี Google และแก้ข้อมูลได้จริงทุกหน้า เพราะปุ่มที่กดแล้วไม่เกิดอะไรไม่ได้บอกอะไรเกี่ยวกับงานชิ้นนี้</p>
+        <p class="lede">กดปุ่มเดียวเข้าไปได้ทันที ไม่ต้องมีบัญชี Google และแก้ข้อมูลได้จริงทุกหน้า เพราะการดูระบบที่กดอะไรก็ไม่ตอบสนองไม่ได้บอกอะไรเกี่ยวกับงานชิ้นนี้</p>
 
         <div class="demo-grid">
           <div class="demo-panel">
@@ -403,15 +437,15 @@ function demoSection(demoMode: boolean): string {
                 <li>ไม่เรียกบริการตรวจสลิปที่คิดค่าใช้จ่ายต่อครั้ง</li>
                 <li>ไม่ผูก LINE ด้วยรหัสของเจ้าของหอ</li>
               </ul>
-              <p>สามอย่างนี้เป็นจุดเดียวที่ระบบติดต่อออกไปข้างนอก การปิดจึงเกิดจากโหมดตัวอย่างโดยตรง ไม่ได้พึ่งการเว้นคีย์ว่าง ปุ่มที่เกี่ยวข้องจะตอบกลับว่าเปิดใช้ในโหมดสาธิตไม่ได้</p>
+              <p>สามอย่างนี้เป็นจุดเดียวที่ระบบติดต่อออกไปข้างนอก ในเดโม สามอย่างนี้ถูกปิดที่ตัวระบบเอง ไม่ใช่เพราะยังไม่ได้ใส่รหัสเชื่อมต่อ ปุ่มที่เกี่ยวข้องจึงตอบกลับว่าใช้ในโหมดตัวอย่างไม่ได้</p>
             </div>
 
             <div class="closure">
               <h3>เดโมนี้ใช้ร่วมกัน</h3>
-              <p>ทุกคนที่เข้าไปเห็นข้อมูลชุดเดียวกันและแก้ข้อมูลชุดเดียวกัน ข้อมูลอาจถูกแก้โดยผู้ชมคนอื่น หรือถูกรีเซ็ตกลับเป็นชุดตั้งต้นได้ตลอดเวลา เดโมจึงไม่ใช่พื้นที่ส่วนตัว และไม่ควรใส่ข้อมูลจริงลงไป</p>
+              <p>ทุกคนที่เข้าไปเห็นข้อมูลชุดเดียวกันและแก้ข้อมูลชุดเดียวกัน ข้อมูลอาจถูกแก้โดยผู้ชมคนอื่น หรือถูกรีเซ็ตกลับเป็นข้อมูลตัวอย่างชุดเริ่มต้นได้ตลอดเวลา เดโมจึงไม่ใช่พื้นที่ส่วนตัว และไม่ควรใส่ข้อมูลจริงลงไป</p>
             </div>
 
-            <p class="note">ข้อมูลทั้งหมดในเดโมเป็นชุดตัวอย่างที่สร้างขึ้นสำหรับหน้านี้ ไม่ใช่ข้อมูลผู้เช่าจริงของหอใด</p>
+            <p class="note">ข้อมูลทั้งหมดในเดโมเป็นข้อมูลตัวอย่างที่สร้างขึ้นสำหรับหน้านี้ ไม่ใช่ข้อมูลผู้เช่าจริงของหอใด</p>
           </div>
         </div>
       </div>
