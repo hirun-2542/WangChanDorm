@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { landingConfig } from "../src/worker/routes/welcome-config";
 import { contrastRatio, hexToken, ruleDeclarations, styleBlock } from "./html-style";
 
 const appTitle = "ระบบจัดการหอพัก";
@@ -277,6 +278,21 @@ describe("GET /welcome", () => {
     const unused = declared.filter((name) => !styles.includes(`var(--${name})`));
 
     expect(unused).toEqual([]);
+  });
+
+  it("points the primary button at the deploy-time demo address once it is set", async () => {
+    const original = landingConfig.demoEntryUrl;
+    landingConfig.demoEntryUrl = "https://wangchan-demo.example.workers.dev";
+
+    try {
+      const html = await (await landing()).text();
+
+      // สเปกกำหนดว่าปุ่มหลักต้องชี้ไปที่ที่อยู่เดโมที่ตั้งไว้จริง ไม่ใช่เส้นทางสำรอง
+      expect(html).toContain('<a class="btn btn-primary" href="https://wangchan-demo.example.workers.dev">ทดลองระบบ</a>');
+      expect(html).not.toContain('href="/api/demo/enter"');
+    } finally {
+      landingConfig.demoEntryUrl = original;
+    }
   });
 
   it("fails the primary button safe when the deploy-time demo address is unset", async () => {
