@@ -49,11 +49,12 @@ describe("GET /welcome", () => {
     expect(html).toContain('<meta name="twitter:card" content="summary_large_image"');
   });
 
-  it("offers a way back to the running system", async () => {
+  it("opens the demo from the primary button and never says เปิดระบบ", async () => {
     const html = await (await landing()).text();
 
-    expect(html).toContain('href="/"');
-    expect(html).toContain("เปิดระบบ");
+    expect(html).toContain('href="/api/demo/enter"');
+    expect(html).toContain("ทดลองระบบ");
+    expect(html).not.toContain("เปิดระบบ");
   });
 
   it("points every in-page link at a section that exists", async () => {
@@ -67,42 +68,49 @@ describe("GET /welcome", () => {
     }
   });
 
-  it("opens with the claim and the three numbers that back it", async () => {
+  it("leads with the claim and the first real screen, and carries no number band", async () => {
     const html = await (await landing()).text();
 
     expect(html).toContain("จากสมุดจด");
     expect(html).toContain("สู่บิลที่ส่งเองทั้งหอ");
-    expect(html).toContain("ห้องสูงสุดต่อหอ");
-    expect(html).toContain("หน้าจอต่อรอบบิล");
-    expect(html).toContain("แอปที่ผู้เช่าต้องติดตั้ง");
+    expect(html).toContain('<img src="/welcome-media/hero-bill-create.webp" width="1510" height="1045"');
+    expect(html).not.toContain("ห้องสูงสุดต่อหอ");
+    expect(html).not.toContain('class="stats"');
   });
 
-  it("plays the recorded round with both formats, a poster and a reserved box", async () => {
+  it("has no video element at all", async () => {
     const html = await (await landing()).text();
-    const video = html.match(/<video[^>]*>[\s\S]*?<\/video>/)?.[0] ?? "";
 
-    expect(video).toContain("controls");
-    expect(video).toContain("playsinline");
-    expect(video).toContain('preload="none"');
-    expect(video).toContain('poster="/welcome-media/poster.jpg"');
-    expect(video).toContain('width="1280"');
-    expect(video).toContain('height="800"');
-    expect(video).toContain('<source src="/welcome-media/demo.webm" type="video/webm"');
-    expect(video).toContain('<source src="/welcome-media/demo.mp4" type="video/mp4"');
+    expect(html).not.toContain("<video");
+    expect(html).not.toContain("welcome-media/demo.mp4");
+    expect(html).not.toContain("welcome-media/demo.webm");
+    expect(html).not.toContain("welcome-media/poster.jpg");
+  });
 
-    expect(html).toContain('<img src="/welcome-media/hero-bills.webp" width="1510" height="1045"');
+  it("tells the visitor what the demo is, what is off and that it is shared", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="demo"'));
+
+    expect(section).toContain("สิ่งที่ปิดไว้ในโหมดตัวอย่าง");
+    expect(section).toContain("ไม่ส่งข้อความ LINE จริงถึงใคร");
+    expect(section).toContain("ไม่เรียกบริการตรวจสลิปที่คิดค่าใช้จ่ายต่อครั้ง");
+    expect(section).toContain("ไม่ผูก LINE ด้วยรหัสของเจ้าของหอ");
+    expect(section).toContain("เดโมนี้ใช้ร่วมกัน");
+    expect(section).toContain("ถูกรีเซ็ตกลับเป็นชุดตั้งต้นได้ตลอดเวลา");
+    expect(section).not.toContain("รับประกัน");
   });
 
   it("labels everything on the page as sample data", async () => {
     const html = await (await landing()).text();
 
     expect(html).toContain("ภาพหน้าจอจากข้อมูลตัวอย่าง");
-    expect(html).toContain("ข้อมูลห้อง ผู้เช่า และยอดเงินในคลิปเป็นข้อมูลตัวอย่างทั้งหมด");
+    expect(html).toContain("ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง");
+    expect(html).toContain("ไม่ใช่ข้อมูลผู้เช่าจริงของหอใด");
   });
 
-  it("walks the monthly ritual as five numbered steps", async () => {
+  it("keeps the five-step ritual as the story spine", async () => {
     const html = await (await landing()).text();
-    const section = html.slice(html.indexOf('id="flow"'), html.indexOf('id="what"'));
+    const section = html.slice(html.indexOf('id="flow"'), html.indexOf('id="demo"'));
     const numbers = Array.from(section.matchAll(/class="step-num num"[^>]*>(\d\d)</g), (match) => match[1]);
 
     expect(numbers).toEqual(["01", "02", "03", "04", "05"]);
@@ -110,59 +118,26 @@ describe("GET /welcome", () => {
     for (const title of ["อ่านมิเตอร์", "กรอกหน้าเดียว", "สร้างบิลทั้งหอ", "ส่งเข้า LINE", "สลิปเข้า ปิดบิล"]) {
       expect(section).toContain(`<h3>${title}</h3>`);
     }
-  });
 
-  it("lists the three duties and the four decisions that shaped the system", async () => {
-    const html = await (await landing()).text();
-    const duties = html.slice(html.indexOf('id="what"'), html.indexOf('id="build"'));
-    const decisions = html.slice(html.indexOf('id="build"'));
-
-    expect(duties).toContain("<h3>บิลรายเดือน</h3><p>หนึ่งบิลต่อห้องต่อเดือน");
-    expect(duties).toContain("<h3>ช่องทาง LINE</h3><p>ผู้เช่าเชื่อมบัญชีด้วยการพิมพ์เลขห้อง");
-    expect(duties).toContain("<h3>ตรวจสลิป</h3><p>สลิปที่ส่งเข้ามาถูกเก็บไว้");
-
-    expect(decisions).toContain("<h3>ราคาถูกตรึงไว้ในบิล</h3><p>บิลเก็บราคาไว้ ณ วันสร้าง");
-    expect(decisions).toContain("<h3>ไม่มีงานตั้งเวลา</h3><p>ไม่มี cron");
-    expect(decisions).toContain("<h3>ผู้เช่าไม่มีบัญชี</h3><p>ไม่มีหน้าจอ");
-    expect(decisions).toContain("<h3>เข้าระบบด้วย Google เท่านั้น</h3><p>ไม่มีรหัสผ่านเก็บอยู่ในระบบเลย</p>");
-  });
-
-  it("names the nine technologies the system actually runs on", async () => {
-    const html = await (await landing()).text();
-    const section = html.slice(html.indexOf('id="build"'));
-    const pairs = Array.from(section.matchAll(/<dt>([^<]+)<\/dt><dd>([^<]+)<\/dd>/g), (match) => [match[1], match[2]]);
-
-    expect(pairs).toEqual([
-      ["รันบน", "Cloudflare Workers"],
-      ["ฐานข้อมูล", "Cloudflare D1 (SQLite)"],
-      ["ไฟล์สลิป", "Cloudflare R2"],
-      ["เราเตอร์ฝั่งเซิร์ฟเวอร์", "Hono"],
-      ["หน้าเว็บ", "React 19 + Vite + Tailwind CSS 4"],
-      ["ใบแจ้งหนี้ PDF", "pdf-lib"],
-      ["QR พร้อมเพย์", "uqr"],
-      ["แชทบอท", "LINE Messaging API"],
-      ["ทดสอบ", "Vitest บน workerd"],
-    ]);
+    expect(section).not.toContain("<img");
   });
 
   it("keeps the sections in the order the page reads them", async () => {
     const html = await (await landing()).text();
-    const order = ['id="demo"', 'id="flow"', 'id="what"', 'id="build"', 'class="footer"'].map((marker) =>
-      html.indexOf(marker),
-    );
+    const order = ['id="flow"', 'id="demo"', 'class="footer"'].map((marker) => html.indexOf(marker));
 
     expect(order.every((index) => index > 0)).toBe(true);
     expect(order).toEqual([...order].sort((left, right) => left - right));
   });
 
-  it("closes with the brand, the sample-data note and a way into the system", async () => {
+  it("closes with the brand, the sample-data note and the way into the demo", async () => {
     const html = await (await landing()).text();
     const footer = html.slice(html.indexOf('class="footer"'));
 
     expect(footer).toContain("วจ");
     expect(footer).toContain("หอพักวังจันทร์");
     expect(footer).toContain("ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง");
-    expect(footer).toContain('<a class="btn btn-primary" href="/">เปิดระบบ</a>');
+    expect(footer).toContain('href="/api/demo/enter"');
   });
 
   it("keeps the brand voice free of exclamation marks", async () => {
@@ -187,7 +162,7 @@ describe("GET /welcome composition", () => {
     expect(ruleDeclarations(styles, ".btn")).toContain("min-height: 44px");
   });
 
-  it("lays the steps and the duty cards out in columns that widen with the screen", async () => {
+  it("lays the steps out in columns that widen with the screen", async () => {
     const styles = styleBlock(await (await landing()).text());
     const medium = styles.slice(styles.indexOf("@media (min-width: 640px)"), styles.indexOf("@media (min-width: 960px)"));
     const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
@@ -201,8 +176,7 @@ describe("GET /welcome composition", () => {
     expect(ruleDeclarations(styles, ".step p")).toBe("");
     expect(ruleDeclarations(medium, ".steps")).toContain("repeat(2, 1fr)");
     expect(ruleDeclarations(wide, ".steps")).toContain("repeat(5, 1fr)");
-    expect(ruleDeclarations(wide, ".cards")).toContain("repeat(3, 1fr)");
-    expect(ruleDeclarations(wide, ".build-grid")).toContain("1fr 1fr");
+    expect(ruleDeclarations(wide, ".demo-grid")).toContain("1fr 1fr");
     expect(ruleDeclarations(styles, ".num")).toContain("font-variant-numeric: tabular-nums");
   });
 
