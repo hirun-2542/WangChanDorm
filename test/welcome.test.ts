@@ -145,6 +145,75 @@ describe("GET /welcome", () => {
     expect(section).not.toContain("hero-bill-create.webp");
   });
 
+  /**
+   * alt ต้องบอกหลักฐานในภาพ ไม่ใช่บอกชื่อส่วน
+   *
+   * ของเดิมคือ "<ชื่อภาพ> — ภาพหน้าจอจากข้อมูลตัวอย่าง" ซึ่งซ้ำกับ h3 ที่อยู่ใต้ภาพ
+   * พอดี ผู้ใช้ screen reader จึงได้ยินชื่อเดิมสองรอบและไม่ได้ข้อมูลอะไรจากภาพเลย
+   * เทสต์นี้จึงบังคับว่า alt ต้องมีตัวเลขจริงที่อยู่ในภาพ และต้องไม่ซ้ำกับ h3
+   */
+  it("describes what each screenshot shows instead of repeating its caption", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="screens"'), html.indexOf('id="build"'));
+    const alts = Array.from(section.matchAll(/<img [^>]*alt="([^"]*)"/g), (m) => m[1]);
+
+    expect(alts.length).toBe(3);
+
+    for (const alt of alts) {
+      expect(alt).toBeDefined();
+
+      const text = alt ?? "";
+
+      // ต้องมีตัวเลขหรือสถานะที่อยู่ในภาพจริง ไม่ใช่คำโปรย
+      expect(text).toMatch(/\d/);
+      expect(text.length).toBeGreaterThan(60);
+      // คำกำกับว่าข้อมูลตัวอย่างมีอยู่ที่ .note ท้ายส่วนแล้ว ไม่ต้องซ้ำใน alt
+      expect(text).not.toContain("ภาพหน้าจอจากข้อมูลตัวอย่าง");
+    }
+
+    // ห้ามซ้ำกับ h3 — ถ้าซ้ำ ผู้ใช้จะได้ยินชื่อเดิมสองรอบ
+    for (const title of ["แดชบอร์ดรายเดือน", "บิลที่ผู้เช่าได้รับ", "สถานะการชำระและคิวรอตรวจ"]) {
+      expect(alts.some((alt) => (alt ?? "").trim() === title)).toBe(false);
+    }
+  });
+
+  /**
+   * การพิมพ์ต้องไม่กินหน้าว่าง
+   *
+   * ภาพหน้าจอเป็นภาพแนวตั้งสูง 1491-1910px ตอนเรนเดอร์ที่ความกว้าง A4 ซึ่งเกินกล่อง
+   * printable (~1123px) เบราว์เซอร์จึงกันหน้าว่างไว้ให้ วัดจริงได้ 3 หน้าว่างจาก 13
+   * ต้องมีทั้งการจำกัดความสูงและห้ามตัด figure คร่อมหน้า
+   */
+  it("keeps tall screenshots from spilling into blank printed pages", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const print = styles.slice(styles.indexOf("@media print"));
+
+    expect(print).toContain(".shot { break-inside: avoid; }");
+    expect(ruleDeclarations(print, ".shot .frame img")).toContain("max-height: 860px");
+  });
+
+  /**
+   * สามภาพในสองคอลัมน์เหลือช่องว่างหนึ่งช่องเสมอ (วัดได้ 1526px ที่ 1440)
+   * ภาพแนวนอนจึงต้องกินเต็มความกว้างเป็นภาพนำ แล้วภาพแนวตั้งสองใบอยู่แถวถัดไป
+   */
+  it("spans the landscape screenshot across both columns as a lead image", async () => {
+    const html = await (await landing()).text();
+    const styles = styleBlock(html);
+
+    // การ์ดแรกเป็นภาพแนวนอน ต้องได้ full-width span
+    expect(html).toContain('<figure class="shot shot-lead">');
+    expect(html).toContain("/welcome-media/bill-dashboard.webp");
+
+    const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
+    expect(ruleDeclarations(wide, ".shots .shot-lead")).toContain("grid-column: 1 / -1");
+    // ภาพนำต้องไม่ถูกยืดเกินความกว้างจริง ไม่งั้นตัวอักษรในภาพจะพร่าจากการขยาย
+    expect(ruleDeclarations(wide, ".shots .shot-lead img")).toContain("max-width: 804px");
+
+    // ต้องมีภาพนำใบเดียว ไม่ใช่ทุกใบ — นับเฉพาะใน markup ไม่ใช่ใน CSS
+    const body = html.slice(html.indexOf("<body>"));
+    expect(body.match(/class="shot shot-lead"/g)?.length).toBe(1);
+  });
+
   it("frames each engineering decision as problem, decision and consequence", async () => {
     const html = await (await landing()).text();
     const section = html.slice(html.indexOf('id="build"'), html.indexOf('id="process"'));

@@ -150,7 +150,7 @@ const welcomeStyles = `
       .band .note { margin-top: 12px; max-width: 62ch; }
 
       .hero-grid { display: grid; gap: 40px; align-items: center; }
-      .kicker { font-size: 12px; font-weight: 500; letter-spacing: 0.08em; color: var(--blue); }
+      .kicker { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--blue); }
       .hero h1 { margin-top: 12px; }
       .hero .lede { margin-top: 16px; max-width: 46ch; }
       .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
@@ -162,7 +162,7 @@ const welcomeStyles = `
 
       /* .subhead ต้องต่างจาก .note (12px #6b6b6b) ให้อ่านออกว่าเป็นป้ายกำกับหัวข้อ
          ไม่ใช่คำอธิบาย และ .step h3 ต้องหนักกว่าเนื้อความ 15px/400 รอบตัว ไม่ใช่เท่ากัน */
-      .subhead { font-size: 13px; font-weight: 600; letter-spacing: 0.06em; color: var(--steel); }
+      .subhead { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--steel); }
       .subhead-spaced { margin-top: 40px; }
 
       .steps { display: grid; gap: 1px; margin: 20px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
@@ -204,8 +204,9 @@ const welcomeStyles = `
       .decision dl > div { padding-top: 12px; border-top: 1px solid var(--ash); }
       .decision dl > div + div { margin-top: 12px; }
       /* แถว "ผลที่ตามมา" คือเหตุผลที่ทั้งส่วนนี้มีอยู่ — ข้อเสียที่ยอมรับ คือของจริง
-         ที่ผู้ประเมินต้องเห็น ถ้าให้หน้าตาเท่ากับอีกสองแถว มันจะหายไปในสายตา */
-      .decision dl > div:last-child { margin-top: 14px; padding: 12px 14px; border-top: 0; border-left: 3px solid var(--silver); background: var(--paper); border-radius: 0 var(--radius-card) var(--radius-card) 0; }
+         ที่ผู้ประเมินต้องเห็น ถ้าให้หน้าตาเท่ากับอีกสองแถว มันจะหายไปในสายตา
+         แยกด้วยพื้นเทาที่เข้มขึ้น ไม่ใช่ขีดสีข้าง ซึ่งเป็นลายเซ็นของ UI ที่ประกอบขึ้น */
+      .decision dl > div:last-child { margin-top: 14px; padding: 14px 16px; border-top: 0; background: var(--paper); border-radius: var(--radius-btn); }
       .decision dl > div:last-child dt { color: var(--steel); }
       .decision dl > div:last-child dd { color: var(--charcoal); }
       .decision dt { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
@@ -213,8 +214,9 @@ const welcomeStyles = `
 
       .stages { display: grid; gap: 1px; margin: 28px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
       /* หลักฐานที่อ่านได้บนหน้าเอง — ตั๋วงานจริงหนึ่งใบ แทนการชี้ไปที่ path ในโปรเจค
-         ซึ่งเปิดไม่ได้ตราบใดที่ repo ยังไม่สาธารณะ */
-      .ticket { margin: 28px 0 0; padding: 20px 24px; border: 1px solid var(--ash); border-left: 3px solid var(--blue); border-radius: var(--radius-card); background: var(--white); }
+         ซึ่งเปิดไม่ได้ตราบใดที่ repo ยังไม่สาธารณะ ส่วนนี้อยู่บนพื้น paper จึงใช้พื้นขาว
+         ตัดกัน (ถ้าใช้ paper จะกลืนหาย) และไม่ใช้ขีดสีข้าง ซึ่งเป็นลายเซ็นของ UI ที่ประกอบขึ้น */
+      .ticket { margin: 28px 0 0; padding: 20px 24px; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--white); }
       .ticket figcaption { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
       .ticket p { margin-top: 10px; max-width: 68ch; }
       .ticket .ticket-title { margin-top: 12px; font-size: 15px; font-weight: 600; color: var(--charcoal); }
@@ -251,8 +253,14 @@ const welcomeStyles = `
         .container { padding: 0 64px; }
         .hero-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
         /* ภาพหน้าจอเป็นภาพแนวตั้งจากจอแคบ ซึ่งเป็นแบบเดียวที่ตัวอักษรในแอปยังอ่านออก
-           จัดสองคอลัมน์จึงทำให้ส่วนนี้สั้นลงครึ่งหนึ่งโดยไม่ต้องย่อภาพให้เล็กลง */
+           แต่มี 3 ภาพ จึงจับคู่ 2 คอลัมน์ได้ไม่ลงตัว — ช่องสุดท้ายว่างเสมอ (วัดได้ 1526px)
+           ภาพแดชบอร์ดที่เป็นภาพแนวนอนจึงกินเต็มความกว้างเป็นภาพนำ แล้วภาพแนวตั้งสองใบ
+           อยู่แถวถัดไป ช่องว่างเหลือเท่าความต่างความสูงของสองใบนั้น
+           ภาพนำจำกัดที่ความกว้างจริง 804px เพื่อให้ตัวอักษรในภาพคมที่สุด (สเกล 100%) */
         .shots { grid-template-columns: 1fr 1fr; gap: 40px 32px; align-items: start; }
+        .shots .shot-lead { grid-column: 1 / -1; }
+        .shots .shot-lead img { width: 100%; max-width: 804px; margin: 0 auto; }
+        .shots .shot-lead .frame { display: flex; justify-content: center; }
         .steps { grid-template-columns: repeat(5, 1fr); }
         .step:last-child { grid-column: auto; }
         .demo-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
@@ -266,11 +274,17 @@ const welcomeStyles = `
       }
 
       /* การพิมพ์/บันทึกเป็น PDF ไม่มีการเลื่อนจอ จึงไม่มีอะไร trigger IntersectionObserver
-         ถ้าไม่ยกเลิกการซ่อน ส่วนที่ยังไม่ถูกเปิดจะพิมพ์ออกมาเป็นหน้าว่างทั้งหน้า */
+         ถ้าไม่ยกเลิกการซ่อน ส่วนที่ยังไม่ถูกเปิดจะพิมพ์ออกมาเป็นหน้าว่างทั้งหน้า
+
+         ภาพหน้าจอเป็นภาพแนวตั้ง สูง 1491-1910px ตอนเรนเดอร์ที่ความกว้างของ A4 ซึ่งเกิน
+         กล่อง printable (~1123px) เบราว์เซอร์จึงกันหน้าว่างไว้ให้ภาพที่ล้น วัดจริงได้
+         3 หน้าว่างจาก 13 หน้า จำกัดความสูงให้พอดีหนึ่งหน้าแล้วห้ามตัด figure คร่อมหน้า */
       @media print {
         html.js .reveal:not(.in) { opacity: 1; transform: none; }
         .band { padding: 32px 0; }
         .frame { box-shadow: none; }
+        .shot { break-inside: avoid; }
+        .shot .frame img { display: block; width: auto; max-width: 100%; max-height: 860px; margin: 0 auto; }
       }
 `;
 
@@ -404,13 +418,23 @@ function demoSection(demoMode: boolean): string {
     </section>`;
 }
 
-const screenshots: ReadonlyArray<readonly [string, string, string, number, number]> = [
+/**
+ * ภาพหน้าจอสามใบกับคำอธิบาย
+ *
+ * ช่องสุดท้ายคือ alt ที่ต้องบอก "หลักฐานในภาพ" ไม่ใช่บอกชื่อส่วน เพราะ alt เดิม
+ * ("แดชบอร์ดรายเดือน — ภาพหน้าจอจากข้อมูลตัวอย่าง") ซ้ำกับ h3 ที่อยู่ใต้ภาพพอดี
+ * ผู้ใช้ screen reader จึงได้ยินชื่อซ้ำสองรอบและไม่รู้อะไรจากตัวภาพเลย บนหน้าที่
+ * ทั้งหน้าเป็นเรื่อง "นี่คือหลักฐานจริง" การที่ภาพให้ข้อมูลไม่ได้คือการสูญเสียสาระ
+ * คำกำกับว่าเป็นข้อมูลตัวอย่างมีอยู่แล้วที่ .note ท้ายส่วน ไม่ต้องซ้ำใน alt
+ */
+const screenshots: ReadonlyArray<readonly [string, string, string, number, number, string]> = [
   [
     "/welcome-media/bill-dashboard.webp",
     "แดชบอร์ดรายเดือน",
     "ยอดที่ควรเก็บ เก็บแล้ว และค้างชำระของเดือนที่เลือก พร้อมจำนวนห้องว่างและอัตราการเช่า",
     804,
     372,
+    "การ์ดสรุปเดือนสิงหาคม 2569 ของหอ 18 ห้อง ยอดที่ควรเก็บ 63,324 บาท จาก 15 บิล เก็บแล้ว 47,140 บาท จาก 11 บิล ค้างชำระ 16,184 บาท จาก 4 ห้อง ห้องว่าง 3 จาก 18 ห้อง อัตราการเช่า 83 เปอร์เซ็นต์",
   ],
   [
     "/welcome-media/bill-line-qr.webp",
@@ -418,6 +442,7 @@ const screenshots: ReadonlyArray<readonly [string, string, string, number, numbe
     "การ์ดบิลในแชท LINE พร้อมปุ่มเปิดใบแจ้งหนี้ และใบแจ้งหนี้ใบเดียวกันที่มี QR พร้อมเพย์ยอดตรงกับบิลนั้น",
     804,
     1684,
+    "การ์ดบิลในแชท LINE ของห้อง A101 ผู้เช่าสมชาย ใจดี ยอด 4,046 บาท แจกแจงค่าเช่าห้อง 3,500 ค่าน้ำ 252 และค่าไฟ 294 บาท พร้อมปุ่มเปิดใบแจ้งหนี้ และรูปใบแจ้งหนี้ใบเดียวกันที่มี QR พร้อมเพย์เบอร์ 089-111-2233",
   ],
   [
     "/welcome-media/payment-status.webp",
@@ -425,14 +450,15 @@ const screenshots: ReadonlyArray<readonly [string, string, string, number, numbe
     "สลิปที่ยอดไม่ตรงหรือตรวจไม่ผ่านจะเข้าคิวนี้ เจ้าของหอเห็นยอดเทียบกับยอดบิลแล้วตัดสินปิดหรือปฏิเสธ",
     736,
     1974,
+    "คิวรอตรวจของห้อง A105 อรุณี แสงทอง สลิปยอด 4,046 บาท ตรงกับยอดบิล แต่ผลตรวจจาก SlipOK ขึ้นว่าตรวจไม่ผ่านเพราะไม่พบเลขอ้างอิงการโอน พร้อมปุ่มปฏิเสธสลิปและปิดบิลด้วยสลิปนี้",
   ],
 ];
 
 function screenshotsSection(): string {
   const cards = screenshots
     .map(
-      ([src, title, detail, width, height]) =>
-        `<figure class="shot"><div class="frame"><img src="${src}" width="${String(width)}" height="${String(height)}" alt="${title} — ภาพหน้าจอจากข้อมูลตัวอย่าง" loading="lazy" /></div><figcaption><h3>${title}</h3><p>${detail}</p></figcaption></figure>`,
+      ([src, title, detail, width, height, alt], index) =>
+        `<figure class="shot${index === 0 ? " shot-lead" : ""}"><div class="frame"><img src="${src}" width="${String(width)}" height="${String(height)}" alt="${alt}" loading="lazy" /></div><figcaption><h3>${title}</h3><p>${detail}</p></figcaption></figure>`,
     )
     .join("\n        ");
 
