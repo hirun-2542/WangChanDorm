@@ -165,7 +165,31 @@ const welcomeStyles = `
       .footer { border-top: 1px solid var(--ash); }
       .footer .container { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding-top: 32px; padding-bottom: 32px; }
       .footer .note { margin: 0; }
-      .footer .btn { margin-left: auto; }
+      .footer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-left: auto; }
+
+      .shots { display: grid; gap: 40px; margin-top: 28px; }
+      .shot { margin: 0; }
+      .shot figcaption { margin-top: 14px; }
+      .shot h3 { font-size: 15px; }
+      .shot p { margin-top: 6px; font-size: 13px; color: var(--steel); max-width: 68ch; }
+
+      .decisions { display: grid; gap: 20px; margin-top: 28px; }
+      .decision { padding: 24px; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--white); }
+      .decision h3 { font-size: 16px; }
+      .decision dl { margin: 14px 0 0; }
+      .decision dl > div { padding-top: 12px; border-top: 1px solid var(--ash); }
+      .decision dl > div + div { margin-top: 12px; }
+      .decision dt { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
+      .decision dd { margin: 4px 0 0; font-size: 13px; color: var(--steel); }
+
+      .stages { display: grid; gap: 1px; margin: 28px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
+      .stage { padding: 24px; background: var(--white); }
+      .stage-num { font-size: 13px; font-weight: 700; color: var(--blue); }
+      .stage h3 { margin-top: 10px; font-size: 16px; }
+      .stage-tools { margin-top: 4px; font-size: 13px; font-weight: 500; color: var(--charcoal); }
+      .stage p:last-child { margin-top: 8px; font-size: 13px; color: var(--steel); }
+
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 
       .reveal { transition: opacity 400ms var(--ease), transform 400ms var(--ease); }
       html.js .reveal:not(.in) { opacity: 0; transform: translateY(12px); }
@@ -186,6 +210,10 @@ const welcomeStyles = `
         .steps { grid-template-columns: repeat(5, 1fr); }
         .step:last-child { grid-column: auto; }
         .demo-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
+        .shots { grid-template-columns: 1fr 1fr; gap: 32px 40px; }
+        .shots .shot:first-child { grid-column: 1 / -1; }
+        .decisions { grid-template-columns: 1fr 1fr; gap: 24px; }
+        .stages { grid-template-columns: repeat(3, 1fr); }
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -306,12 +334,153 @@ function demoSection(): string {
     </section>`;
 }
 
+const screenshots: ReadonlyArray<readonly [string, string, string, number, number]> = [
+  [
+    "/welcome-media/bill-dashboard.webp",
+    "แดชบอร์ดรายเดือน",
+    "ยอดที่ควรเก็บ เก็บแล้ว และค้างชำระของเดือนที่เลือก พร้อมกราฟรายรับหกเดือนและห้องที่ยังไม่จ่าย",
+    1510,
+    1133,
+  ],
+  [
+    "/welcome-media/bill-line-qr.webp",
+    "บิลที่ผู้เช่าได้รับ",
+    "การ์ดบิลในแชท LINE พร้อมปุ่มเปิดใบแจ้งหนี้ และใบแจ้งหนี้ที่มี QR พร้อมเพย์ยอดตรงกับบิลนั้น",
+    2371,
+    980,
+  ],
+  [
+    "/welcome-media/payment-status.webp",
+    "สถานะการชำระและคิวรอตรวจ",
+    "สลิปที่ยอดไม่ตรงหรือตรวจไม่ผ่านจะเข้าคิวนี้ เจ้าของหอเห็นยอดเทียบกับยอดบิลแล้วตัดสินปิดหรือปฏิเสธ",
+    1510,
+    1290,
+  ],
+];
+
+function screenshotsSection(): string {
+  const cards = screenshots
+    .map(
+      ([src, title, detail, width, height]) =>
+        `<figure class="shot"><div class="frame"><img src="${src}" width="${String(width)}" height="${String(height)}" alt="${title} — ภาพหน้าจอจากข้อมูลตัวอย่าง" loading="lazy" /></div><figcaption><h3>${title}</h3><p>${detail}</p></figcaption></figure>`,
+    )
+    .join("\n        ");
+
+  return `<section id="screens" class="band band-paper reveal">
+      <div class="container">
+        <h2>หน้าจอจริงจากตัวระบบ</h2>
+        <p>สามหน้าจอที่บอกว่างานนี้หน้าตาเป็นอย่างไรตอนใช้งาน ไม่ใช่ตอนนำเสนอ</p>
+        <div class="shots">
+        ${cards}
+        </div>
+      </div>
+    </section>`;
+}
+
+const engineeringDecisions: ReadonlyArray<readonly [string, string, string, string]> = [
+  [
+    "ผู้เช่าไม่มีบัญชี",
+    "หอมีผู้เช่าที่ผลัดเปลี่ยนทุกเดือน การออกแบบหน้าจอและระบบยืนยันตัวตนฝั่งผู้เช่าจึงเป็นงานที่ต้องดูแลตลอดแต่ใช้น้อย",
+    "ใช้ LINE เป็นช่องทางเดียว ผู้เช่าไม่ต้องติดตั้งหรือสมัครอะไร และไม่มีรหัสผ่านของผู้เช่าเก็บอยู่ในระบบเลย",
+    "การยืนยันตัวตนอ่อนกว่าการมีบัญชี และผู้เช่าไม่มีหน้าเว็บให้ตรวจสอบย้อนหลังด้วยตัวเอง ต้องพิมพ์เลขห้องในแชทจึงจะยืนยันได้",
+  ],
+  [
+    "ราคาถูกตรึงไว้ในบิล",
+    "ค่าเช่า ค่าน้ำ และค่าไฟของแต่ละห้องไม่เท่ากัน และค่าตั้งต้นอย่างอัตราค่าน้ำถูกแก้ได้ตลอดปี ถ้าบิลอ่านค่าปัจจุบันทุกครั้ง ใบเก่าจะเปลี่ยนยอดย้อนหลัง",
+    "บิลเก็บสำเนาทุกค่าไว้เอง ณ วันที่ออกบิล ทั้งค่าเช่า หน่วยมิเตอร์ อัตราที่ใช้คิด และรายการค่าใช้จ่าย",
+    "แก้ค่าตั้งต้นภายหลังไม่ย้อนไปเปลี่ยนบิลที่ออกไปแล้ว แต่ทุกบิลต้องเก็บสำเนารายการและยอดไว้ครบ ซึ่งเป็นข้อมูลที่ซ้ำกันในทุกแถว",
+  ],
+  [
+    "ปิดบิลเองเมื่อยอดตรงเป๊ะ",
+    "ต้นเดือนมีสลิปเข้ามาหลายสิบใบถ้าเจ้าของต้องนั่งเทียบยอดทีละใบ งานที่ซ้ำและไม่ต้องใช้ดุลยพินิจจะกินเวลาส่วนใหญ่ไปเปล่า",
+    "สลิปที่ผ่านการตรวจของผู้ให้บริการภายนอกและมียอดตรงกับยอดบิลพอดีจะปิดบิลให้เอง ที่เหลือเข้าคิวรอตรวจเสมอ",
+    "ระบบเชื่อผลตรวจของผู้ให้บริการภายนอก ถ้าสลิปปลอมหลุดรอดการตรวจและยอดบังเอิญตรง ระบบจะปิดบิลผิด ยอมรับความเสี่ยงนี้เพราะมีเจ้าของหอคนเดียวคอยดูอยู่ และคิวรอตรวจรองรับกรณีผิดปกติไว้แล้ว",
+  ],
+  [
+    "ไม่มีงานตั้งเวลา",
+    "ระบบที่ไม่มีงานตั้งเวลาไม่มีอะไรต้องเฝ้า และไม่พังเงียบ ๆ ตอนไม่มีใครดูอยู่",
+    "ทุกอย่างเกิดจากคำขอจริง ทั้งการออกบิล การส่ง และการตรวจสลิป ไม่มี cron ให้ดูแลเบื้องหลัง",
+    "ไม่มีค่าใช้จ่ายและงานดูแลฝั่งเซิร์ฟเวอร์ แต่ก็ไม่มีอะไรทำงานแทนคนเมื่อไม่มีใครเข้ามาใช้ งานที่ควรเกิดเองตามเวลาเช่นการแจ้งเตือน จะไม่เกิดขึ้นถ้าไม่มีคำขอเข้ามา",
+  ],
+];
+
+function decisionsSection(): string {
+  const cards = engineeringDecisions
+    .map(
+      ([title, problem, decision, consequence]) =>
+        `<article class="decision">
+          <h3>${title}</h3>
+          <dl>
+            <div><dt>ปัญหา</dt><dd>${problem}</dd></div>
+            <div><dt>ตัดสินใจ</dt><dd>${decision}</dd></div>
+            <div><dt>ผลที่ตามมา</dt><dd>${consequence}</dd></div>
+          </dl>
+        </article>`,
+    )
+    .join("\n        ");
+
+  return `<section id="build" class="band reveal">
+      <div class="container">
+        <h2>ข้อตัดสินใจที่กำหนดรูปร่างระบบ</h2>
+        <p>สี่เรื่องที่เลือกทางใดทางหนึ่งแล้วได้ข้อเสียติดมาด้วยทุกข้อ เขียนไว้ตรง ๆ ทั้งข้อดีและข้อเสีย</p>
+        <div class="decisions">
+        ${cards}
+        </div>
+      </div>
+    </section>`;
+}
+
+const workflowStages: ReadonlyArray<readonly [string, string, string]> = [
+  ["Plan", "ChatGPT · Claude", "เกลาปัญหาให้เป็นข้อกำหนด เขียนสเปกแยกงาน และแยกเป็นตั๋วงานที่ตรวจรับได้ทีละใบก่อนเริ่มเขียนโค้ด"],
+  ["Build", "Codex · Claude Code", "เขียนโค้ดตามตั๋วทีละใบในโปรเจคจริง รันคำสั่งจริงบนเครื่อง และแก้จากการทดสอบที่ล้ม"],
+  ["Verify", "ชุดเทส · การตรวจด้วยตาเปล่า", "รันชุดเทสบนรันไทม์เดียวกับที่ deploy จริง แล้วเปิดหน้าจอจริงดูก่อนรับงานทุกครั้ง"],
+];
+
+function workflowSection(): string {
+  const stages = workflowStages
+    .map(
+      ([name, tools, detail], index) =>
+        `<li class="stage"><p class="stage-num num" aria-hidden="true">${String(index + 1).padStart(2, "0")}</p><h3>${name}</h3><p class="stage-tools">${tools}</p><p>${detail}</p></li>`,
+    )
+    .join("\n        ");
+
+  return `<section id="process" class="band band-paper reveal">
+      <div class="container">
+        <h2>สร้างขึ้นอย่างไร</h2>
+        <p>ใช้ผู้ช่วย AI สามขั้นตอนนี้ตลอดงาน คนเป็นคนกำหนดว่าอะไรต้องได้ ปิดงานแต่ละใบด้วยการตรวจ ไม่ใช่ด้วยความมั่นใจ</p>
+        <ol class="stages">
+        ${stages}
+        </ol>
+        <p class="note">หลักฐานที่ตรวจสอบได้ในโปรเจคนี้คือสเปกกับตั๋วงานที่ใช้จริงใน <code>docs/specs</code> และ <code>.scratch/welcome-case-study/issues</code> ไม่เปิดเผยบทสนทนาภายใน และไม่ลงตัวเลขที่ไม่มีการวัดรองรับ</p>
+      </div>
+    </section>`;
+}
+
+function contactRow(): string {
+  const links: string[] = [];
+
+  if (landingConfig.githubProfileUrl !== "") {
+    links.push(`<a class="btn btn-secondary" href="${landingConfig.githubProfileUrl}">โปรไฟล์ GitHub</a>`);
+  }
+
+  if (landingConfig.contactEmail !== "") {
+    links.push(`<a class="btn btn-secondary" href="mailto:${landingConfig.contactEmail}">${landingConfig.contactEmail}</a>`);
+  }
+
+  return links.join("\n        ");
+}
+
 function footerSection(): string {
+  const contact = contactRow();
+
   return `<footer class="footer">
       <div class="container">
         <span class="brand"><span class="mark" aria-hidden="true"><span class="mark-inner">วจ</span></span>หอพักวังจันทร์</span>
         <p class="note">ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง</p>
+        <div class="footer-actions">
+        ${contact}
         ${primaryCta()}
+        </div>
       </div>
     </footer>`;
 }
@@ -399,6 +568,9 @@ export function renderWelcomePage(origin: string): string {
       ${heroSection()}
       ${contextSection()}
       ${demoSection()}
+      ${screenshotsSection()}
+      ${decisionsSection()}
+      ${workflowSection()}
     </main>
     ${footerSection()}
     <script>${revealScript}</script>

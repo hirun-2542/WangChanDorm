@@ -124,10 +124,59 @@ describe("GET /welcome", () => {
 
   it("keeps the sections in the order the page reads them", async () => {
     const html = await (await landing()).text();
-    const order = ['id="flow"', 'id="demo"', 'class="footer"'].map((marker) => html.indexOf(marker));
+    const order = ['id="flow"', 'id="demo"', 'id="screens"', 'id="build"', 'id="process"', 'class="footer"'].map(
+      (marker) => html.indexOf(marker),
+    );
 
     expect(order.every((index) => index > 0)).toBe(true);
     expect(order).toEqual([...order].sort((left, right) => left - right));
+  });
+
+  it("shows three real screens with intrinsic sizes and never repeats the hero image", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="screens"'), html.indexOf('id="build"'));
+
+    expect(section).toContain('src="/welcome-media/bill-dashboard.webp" width="1510" height="1133"');
+    expect(section).toContain('src="/welcome-media/bill-line-qr.webp" width="2371" height="980"');
+    expect(section).toContain('src="/welcome-media/payment-status.webp" width="1510" height="1290"');
+    expect(section).toContain("<h3>แดชบอร์ดรายเดือน</h3>");
+    expect(section).toContain("<h3>บิลที่ผู้เช่าได้รับ</h3>");
+    expect(section).toContain("<h3>สถานะการชำระและคิวรอตรวจ</h3>");
+    expect(section).not.toContain("hero-bill-create.webp");
+  });
+
+  it("frames each engineering decision as problem, decision and consequence", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="build"'), html.indexOf('id="process"'));
+
+    for (const title of [
+      "ผู้เช่าไม่มีบัญชี",
+      "ราคาถูกตรึงไว้ในบิล",
+      "ปิดบิลเองเมื่อยอดตรงเป๊ะ",
+      "ไม่มีงานตั้งเวลา",
+    ]) {
+      expect(section).toContain(`<h3>${title}</h3>`);
+    }
+
+    // สี่เรื่อง สามหัวข้อเท่ากันทุกเรื่อง = 12 คู่
+    expect(Array.from(section.matchAll(/<dt>ปัญหา<\/dt>/g))).toHaveLength(4);
+    expect(Array.from(section.matchAll(/<dt>ตัดสินใจ<\/dt>/g))).toHaveLength(4);
+    expect(Array.from(section.matchAll(/<dt>ผลที่ตามมา<\/dt>/g))).toHaveLength(4);
+
+    // ข้อเสียที่ยอมรับต้องอยู่บนหน้าจริง ไม่ใช่ซ่อนไว้
+    expect(section).toContain("ยอมรับความเสี่ยงนี้");
+  });
+
+  it("describes the AI-assisted process as Plan, Build, Verify with the real tools", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="process"'), html.indexOf('class="footer"'));
+
+    expect(section).toContain("<h3>Plan</h3>");
+    expect(section).toContain("<h3>Build</h3>");
+    expect(section).toContain("<h3>Verify</h3>");
+    expect(section).toContain("ChatGPT · Claude");
+    expect(section).toContain("Codex · Claude Code");
+    expect(section).toContain("ชุดเทส · การตรวจด้วยตาเปล่า");
   });
 
   it("closes with the brand, the sample-data note and the way into the demo", async () => {
@@ -138,6 +187,13 @@ describe("GET /welcome", () => {
     expect(footer).toContain("หอพักวังจันทร์");
     expect(footer).toContain("ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง");
     expect(footer).toContain('href="/api/demo/enter"');
+  });
+
+  it("renders no contact link while the deploy-time values are still blank", async () => {
+    const html = await (await landing()).text();
+
+    expect(html).not.toContain("mailto:");
+    expect(html).not.toContain("github.com");
   });
 
   it("keeps the brand voice free of exclamation marks", async () => {
@@ -192,6 +248,18 @@ describe("GET /welcome composition", () => {
     expect(body).toContain("color: var(--charcoal)");
   });
 
+  it("widens the gallery, the decisions and the stages with the screen", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
+
+    expect(ruleDeclarations(styles, ".shots")).toContain("display: grid");
+    expect(ruleDeclarations(wide, ".shots")).toContain("1fr 1fr");
+    expect(ruleDeclarations(wide, ".decisions")).toContain("1fr 1fr");
+    expect(ruleDeclarations(wide, ".stages")).toContain("repeat(3, 1fr)");
+    expect(ruleDeclarations(styles, ".stages")).toContain("background: var(--ash)");
+    expect(ruleDeclarations(styles, ".decision dd")).toContain("color: var(--steel)");
+  });
+
   it("keeps every text colour readable against the surface it is painted on", async () => {
     const styles = styleBlock(await (await landing()).text());
     const pairs: ReadonlyArray<readonly [string, string, string]> = [
@@ -203,6 +271,11 @@ describe("GET /welcome composition", () => {
       ["หัวข้อและค่าที่สืบทอดสีหลักบนพื้น paper", "charcoal", "paper"],
       ["ป้ายในรายการเทคโนโลยีและหัวข้อเล็กบนพื้น paper", "fog", "paper"],
       ["คำอธิบายข้อตัดสินใจ", "steel", "paper"],
+      ["คำอธิบายใต้ภาพในส่วน Screenshots", "steel", "paper"],
+      ["หัวข้อ ปัญหา/ตัดสินใจ/ผลที่ตามมา", "fog", "white"],
+      ["คำอธิบายข้อตัดสินใจบนการ์ด", "steel", "white"],
+      ["ชื่อเครื่องมือในแต่ละขั้นของกระบวนการ", "charcoal", "white"],
+      ["เลขลำดับขั้นของกระบวนการ", "blue", "white"],
     ];
     const missingTokens: string[] = [];
     const belowAA: string[] = [];
