@@ -12,11 +12,82 @@
 // The output file contains real tenant data and must stay in the gitignored seed/live/.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const ROOT = new URL("../", import.meta.url);
+
+// รหัส Sheet ไม่ใช่ค่าที่ปลอดภัยจะ track — Sheet เป็นของเจ้าของหอคนเดียว และถ้าใครก็ตาม
+// ที่มีลิงก์นี้เปิดดูได้แบบ export CSV โดยไม่ต้องล็อกอิน ค่านี้จึงต้องมาจาก environment
+// variable หรือไฟล์ local เท่านั้น ไม่ใช่ค่าคงที่ในไฟล์ที่ track — ใช้ไฟล์ของตัวเอง
+// (ไม่ใช่ .dev.vars) เพราะ `wrangler types` สแกน .dev.vars แล้วประกาศทุกคีย์ในนั้น
+// เป็น binding ของ Worker ทั้งที่ค่านี้เป็นของสคริปต์นี้เท่านั้น ไม่ใช่ของแอป
+const LOCAL_CONFIG_PATH = fileURLToPath(new URL("scripts/.dorm-sheet.env", ROOT));
+let SHEET_ID = "";
 const OUT_DEFAULT = "seed/live/import.sql";
 const DEFAULT_FAMILY_ID = "00000000-0000-4000-8000-000000000001";
+
+function stripQuotes(value) {
+  if (value.length < 2) {
+    return value;
+  }
+
+  const first = value[0];
+  const last = value[value.length - 1];
+
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+function loadLocalConfig() {
+  try {
+    const text = readFileSync(LOCAL_CONFIG_PATH, "utf8");
+    const vars = {};
+
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim();
+
+      if (line === "" || line.startsWith("#")) {
+        continue;
+      }
+
+      const eq = line.indexOf("=");
+
+      if (eq === -1) {
+        continue;
+      }
+
+      vars[line.slice(0, eq).trim()] = stripQuotes(line.slice(eq + 1).trim());
+    }
+
+    return vars;
+  } catch {
+    return {};
+  }
+}
+
+function resolveSheetId() {
+  const fromEnv = process.env.DORM_SHEET_ID;
+
+  if (typeof fromEnv === "string" && fromEnv.trim() !== "") {
+    return fromEnv.trim();
+  }
+
+  const fromFile = loadLocalConfig().DORM_SHEET_ID;
+
+  if (typeof fromFile === "string" && fromFile.trim() !== "") {
+    return fromFile.trim();
+  }
+
+  throw new Error(
+    "ต้องตั้งค่า DORM_SHEET_ID ก่อนรันสคริปต์นี้ — ใส่ในตัวแปรสภาพแวดล้อม หรือสร้างไฟล์ " +
+      "scripts/.dorm-sheet.env ที่มีบรรทัด DORM_SHEET_ID=... (ห้าม commit ค่านี้)",
+  );
+}
 
 const TAB_TENANTS = "ข้อมูลผู้เช่า";
 const TAB_CONFIG = "Config";
@@ -1174,6 +1245,8 @@ function printReport(model, statementCount, outPath) {
 // ------------------------------------------------------------ entrypoint
 
 async function main() {
+  SHEET_ID = resolveSheetId();
+
   const args = process.argv.slice(2);
   let outPath = OUT_DEFAULT;
   let familyId = DEFAULT_FAMILY_ID;

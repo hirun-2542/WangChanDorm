@@ -28,3 +28,7 @@ GOOGLE_CLIENT_SECRET=
 #
 # หมายเหตุ: OWNER_EMAIL ไม่ใช่ secret จึงตั้งใน `vars` ของ wrangler.jsonc
 # ไม่ต้องใส่ในไฟล์นี้
+#
+# หมายเหตุ: DORM_SHEET_ID (ใช้กับ scripts/import-dorm-sheet.mjs เท่านั้น ไม่ใช่ของแอป)
+# ไม่ได้อยู่ในไฟล์นี้เพราะ `wrangler types` จะประกาศทุกคีย์ใน .dev.vars เป็น binding
+# ของ Worker — ตั้งค่าด้วย environment variable หรือไฟล์ scripts/.dorm-sheet.env แทน

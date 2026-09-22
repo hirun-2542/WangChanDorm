@@ -4,6 +4,10 @@ dist
 .dev.vars
 .env
 .env.*
+
+# รหัส Google Sheet ของ scripts/import-dorm-sheet.mjs — ไม่ใช่ตัวแปรของแอป จึงแยก
+# จาก .dev.vars เพื่อไม่ให้ wrangler types ประกาศเป็น binding ของ Worker
+scripts/.dorm-sheet.env
 !.env.example
 coverage
 .commandcode/
