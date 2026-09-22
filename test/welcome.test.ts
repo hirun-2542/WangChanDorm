@@ -370,6 +370,24 @@ describe("GET /welcome", () => {
     }
   });
 
+  it("exposes every section as a landmark and quotes a real ticket instead of a repo path", async () => {
+    const html = await (await landing()).text();
+
+    // แต่ละส่วนมีหัวข้อของตัวเองและอ้างอิงถึงกัน จึงถูกเปิดเป็น landmark region
+    for (const id of ["flow", "demo", "screens", "build", "process"]) {
+      expect(html).toContain(`aria-labelledby="${id}-title"`);
+      expect(html).toContain(`<h2 id="${id}-title">`);
+    }
+
+    // หลักฐานต้องอ่านได้บนหน้าเอง — ตราบใดที่ repo ยังไม่สาธารณะ path ในโปรเจค
+    // ก็เปิดไม่ได้ การชี้ไปที่ path จึงไม่ใช่หลักฐาน
+    const section = html.slice(html.indexOf('id="process"'), html.indexOf('class="footer"'));
+    expect(section).toContain("ตัวอย่างตั๋วงานที่ใช้จริง");
+    expect(section).not.toContain("docs/specs");
+    expect(section).not.toContain(".scratch");
+    expect(section).not.toContain("<code>");
+  });
+
   it("keeps the brand voice free of exclamation marks", async () => {
     const html = await (await landing()).text();
     const copy = html

@@ -205,6 +205,12 @@ const welcomeStyles = `
       .decision dd { margin: 4px 0 0; font-size: 13px; color: var(--steel); }
 
       .stages { display: grid; gap: 1px; margin: 28px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
+      /* หลักฐานที่อ่านได้บนหน้าเอง — ตั๋วงานจริงหนึ่งใบ แทนการชี้ไปที่ path ในโปรเจค
+         ซึ่งเปิดไม่ได้ตราบใดที่ repo ยังไม่สาธารณะ */
+      .ticket { margin: 28px 0 0; padding: 20px 24px; border: 1px solid var(--ash); border-left: 3px solid var(--blue); border-radius: var(--radius-card); background: var(--white); }
+      .ticket figcaption { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
+      .ticket p { margin-top: 10px; max-width: 68ch; }
+      .ticket .ticket-title { margin-top: 12px; font-size: 15px; font-weight: 600; color: var(--charcoal); }
       .stage { padding: 24px; background: var(--white); }
       .stage-num { font-size: 13px; font-weight: 700; color: var(--blue); }
       .stage h3 { margin-top: 10px; font-size: 16px; }
@@ -338,9 +344,9 @@ function contextSection(): string {
     )
     .join("\n        ");
 
-  return `<section id="flow" class="band band-paper reveal">
+  return `<section id="flow" class="band band-paper reveal" aria-labelledby="flow-title">
       <div class="container">
-        <h2>หอเล็กที่เจ้าของคนเดียวทำทุกอย่างเอง</h2>
+        <h2 id="flow-title">หอเล็กที่เจ้าของคนเดียวทำทุกอย่างเอง</h2>
         <p>หอขนาดไม่เกิน 20 ห้อง ไม่มีพนักงานประจำ และไม่มีระบบเดิมให้ต่อ เจ้าของหอเดินอ่านมิเตอร์เอง จดใส่กระดาษ แล้วกลับมาเปิดโปรแกรมเพื่อออกบิล ส่งให้ผู้เช่า และตามเก็บเงิน ทุกเดือนด้วยมือคนเดียว ระบบนี้ออกแบบจากงานนั้น — งานที่ทำซ้ำทุกเดือนและไม่มีใครช่วยแบ่งเบา</p>
         <p class="subhead subhead-spaced">ห้าขั้นตอนของรอบบิล</p>
         <ol class="steps">
@@ -351,9 +357,9 @@ function contextSection(): string {
 }
 
 function demoSection(demoMode: boolean): string {
-  return `<section id="demo" class="band reveal">
+  return `<section id="demo" class="band reveal" aria-labelledby="demo-title">
       <div class="container">
-        <h2>ลองระบบจริงด้วยมือตัวเอง</h2>
+        <h2 id="demo-title">ลองระบบจริงด้วยมือตัวเอง</h2>
         <p class="lede">กดปุ่มเดียวเข้าไปได้ทันที ไม่ต้องมีบัญชี Google และแก้ข้อมูลได้จริงทุกหน้า เพราะปุ่มที่กดแล้วไม่เกิดอะไรไม่ได้บอกอะไรเกี่ยวกับงานชิ้นนี้</p>
 
         <div class="demo-grid">
@@ -423,9 +429,9 @@ function screenshotsSection(): string {
     )
     .join("\n        ");
 
-  return `<section id="screens" class="band band-paper reveal">
+  return `<section id="screens" class="band band-paper reveal" aria-labelledby="screens-title">
       <div class="container">
-        <h2>หน้าจอจริงจากตัวระบบ</h2>
+        <h2 id="screens-title">หน้าจอจริงจากตัวระบบ</h2>
         <p>สามหน้าจอที่บอกว่างานนี้หน้าตาเป็นอย่างไรตอนใช้งาน ไม่ใช่ตอนนำเสนอ</p>
         <div class="shots">
         ${cards}
@@ -476,9 +482,9 @@ function decisionsSection(): string {
     )
     .join("\n        ");
 
-  return `<section id="build" class="band reveal">
+  return `<section id="build" class="band reveal" aria-labelledby="build-title">
       <div class="container">
-        <h2>ข้อตัดสินใจที่กำหนดรูปร่างระบบ</h2>
+        <h2 id="build-title">ข้อตัดสินใจที่กำหนดรูปร่างระบบ</h2>
         <p>สี่เรื่องที่เลือกทางใดทางหนึ่งแล้วได้ข้อเสียติดมาด้วยทุกข้อ เขียนไว้ตรง ๆ ทั้งข้อดีและข้อเสีย</p>
         <div class="decisions">
         ${cards}
@@ -493,6 +499,18 @@ const workflowStages: ReadonlyArray<readonly [string, string, string]> = [
   ["Verify", "ชุดเทส · การตรวจด้วยตาเปล่า", "รันชุดเทสบนรันไทม์เดียวกับที่ deploy จริง แล้วเปิดหน้าจอจริงดูก่อนรับงานทุกครั้ง"],
 ];
 
+/**
+ * ตัวอย่างตั๋วงานจริงหนึ่งใบ ยกมาแสดงบนหน้าแทนการชี้ไปที่ path ในโปรเจค
+ *
+ * สเปก 0003 อนุญาตหลักฐานจริงได้ 1-2 ชิ้น (สเปกตัวอย่าง หรือตั๋วงานตัวอย่าง)
+ * และห้ามเปิดเผย prompt หรือ log ภายใน — ข้อความนี้คือหัวข้อกับเกณฑ์ตรวจรับของ
+ * ตั๋ว 06 ที่ใช้จริง ไม่ใช่คำโฆษณา และอ่านได้โดยไม่ต้องมีสิทธิ์เข้าโปรเจค
+ */
+const ticketExcerpt: readonly [string, string] = [
+  "06 — ประตูเข้าเดโมที่ปิดสนิท สร้างเซสชันจริง และรีเซ็ตแบบเช็กกิจกรรม",
+  "มีอยู่จริงเฉพาะเมื่อโหมดสาธิตเปิดอยู่ · สร้างเซสชันด้วยกลไกเดิมของระบบ ไม่สร้างกลไกคู่ขนาน · รีเซ็ตกลับเป็นชุดข้อมูลสังเคราะห์ แต่ข้ามถ้ามีคนเพิ่งเข้าไป · รับงานเมื่อยอดและสถานะของสองเดือนตรงกับที่กำหนด และคำขอที่มาพร้อมกันต้องไม่รีเซ็ตซ้อนกัน",
+];
+
 function workflowSection(): string {
   const stages = workflowStages
     .map(
@@ -501,14 +519,19 @@ function workflowSection(): string {
     )
     .join("\n        ");
 
-  return `<section id="process" class="band band-paper reveal">
+  return `<section id="process" class="band band-paper reveal" aria-labelledby="process-title">
       <div class="container">
-        <h2>สร้างขึ้นอย่างไร</h2>
+        <h2 id="process-title">สร้างขึ้นอย่างไร</h2>
         <p>ใช้ผู้ช่วย AI สามขั้นตอนนี้ตลอดงาน คนเป็นคนกำหนดว่าอะไรต้องได้ ปิดงานแต่ละใบด้วยการตรวจ ไม่ใช่ด้วยความมั่นใจ</p>
         <ol class="stages">
         ${stages}
         </ol>
-        <p class="note">หลักฐานที่ตรวจสอบได้ในโปรเจคนี้คือสเปกกับตั๋วงานที่ใช้จริงใน <code>docs/specs</code> และ <code>.scratch/welcome-case-study/issues</code> ไม่เปิดเผยบทสนทนาภายใน และไม่ลงตัวเลขที่ไม่มีการวัดรองรับ</p>
+        <figure class="ticket">
+          <figcaption>ตัวอย่างตั๋วงานที่ใช้จริง — ตั๋วที่ 06 ของงานนี้</figcaption>
+          <p class="ticket-title">${ticketExcerpt[0]}</p>
+          <p>${ticketExcerpt[1]}</p>
+        </figure>
+        <p class="note">ตั๋วงานถูกเขียนก่อนเริ่มโค้ดทุกใบ และปิดเมื่อเกณฑ์ตรวจรับผ่านจริง ห้ามเปิดเผยบทสนทนาภายใน และไม่ลงตัวเลขที่ไม่มีการวัดรองรับ</p>
       </div>
     </section>`;
 }
