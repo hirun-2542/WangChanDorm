@@ -4,6 +4,7 @@ import { requireAuth, sameOriginOnly } from "./lib/auth";
 import auth from "./routes/auth";
 import bills from "./routes/bills";
 import { invoiceRoute, qrRoute } from "./routes/bills-render";
+import demo from "./routes/demo";
 import family from "./routes/family";
 import health from "./routes/health";
 import line, { lineAdmin } from "./routes/line";
@@ -26,7 +27,7 @@ const app = new Hono<AppEnv>();
  * ตั้งใจให้เป็นรายการ "ยกเว้น" ไม่ใช่รายการ "ที่ต้องกัน" เพราะ route ใหม่
  * ที่ใครสักคนเพิ่มเข้ามาทีหลังจะถูกกันไว้เองโดยอัตโนมัติ
  */
-const publicApiPrefixes = ["/api/auth/", "/api/register"];
+const publicApiPrefixes = ["/api/auth/", "/api/demo/", "/api/register"];
 
 app.use("/api/*", sameOriginOnly);
 
@@ -47,6 +48,7 @@ app.route("/health", health);
 app.route("/api", api);
 app.route("/api/auth", auth);
 app.route("/api/bills", bills);
+app.route("/api/demo", demo);
 app.route("/api/family", family);
 app.route("/api/line", lineAdmin);
 app.route("/api/register", register);
