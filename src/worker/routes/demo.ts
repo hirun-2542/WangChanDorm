@@ -365,6 +365,15 @@ async function claimResetSlot(db: D1Database): Promise<boolean> {
   return (created.meta.changes ?? 0) > 0;
 }
 
+/**
+ * ฝั่งหน้าเว็บใช้บอกว่าควรแสดงตัวชี้โหมดตัวอย่างหรือไม่ — เปิดได้เสมอไม่ต้อง
+ * fail closed แบบ /enter เพราะไม่มีผลข้างเคียงและไม่ใช่ข้อมูลลับ (คืนค่าเดียวกับ
+ * demoModeOn ที่ทุกเส้นทางในระบบใช้ตัดสินอยู่แล้ว) เรียกได้โดยไม่ต้องล็อกอิน
+ */
+demo.get("/status", (c) => {
+  return c.json({ ok: true, demoMode: demoModeOn(c.env) });
+});
+
 demo.get("/enter", async (c) => {
   // ปิดเป็นค่าเริ่มต้นเสมอ เปิดเฉพาะเมื่อ DEMO_MODE ตั้งค่าตรงตัวว่า "1" เท่านั้น
   // รูปแบบเดียวกับ SEAM_PROBE — ทำงานเฉพาะบน config ของ Worker เดโมเท่านั้น

@@ -792,6 +792,11 @@ export async function fetchMe(): Promise<AuthUser> {
   return body.user;
 }
 
+export async function fetchDemoStatus(): Promise<boolean> {
+  const body = await apiGet<{ ok: true; demoMode: boolean }>("/api/demo/status");
+  return body.demoMode;
+}
+
 export async function logout(): Promise<void> {
   await apiPost<{ ok: true }>("/api/auth/logout", {});
 }

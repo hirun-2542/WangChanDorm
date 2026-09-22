@@ -187,3 +187,25 @@ describe("GET /api/demo/enter", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /api/demo/status", () => {
+  afterEach(() => {
+    demoModeEnv.DEMO_MODE = "0";
+  });
+
+  it("reports demoMode false on the default config without requiring a session", async () => {
+    demoModeEnv.DEMO_MODE = "0";
+
+    const response = await SELF.fetch(`${base}/api/demo/status`);
+    expect(response.status).toBe(200);
+    expect((await response.json<{ ok: boolean; demoMode: boolean }>()).demoMode).toBe(false);
+  });
+
+  it("reports demoMode true when DEMO_MODE is on, still without requiring a session", async () => {
+    demoModeEnv.DEMO_MODE = "1";
+
+    const response = await SELF.fetch(`${base}/api/demo/status`);
+    expect(response.status).toBe(200);
+    expect((await response.json<{ ok: boolean; demoMode: boolean }>()).demoMode).toBe(true);
+  });
+});

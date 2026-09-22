@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AccountButton } from "./account";
-import { fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
+import { fetchDemoStatus, fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
 import { ErrorBoundary } from "./error-boundary";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
@@ -192,6 +192,13 @@ function Shell() {
   const [jumpTenants, setJumpTenants] = useState<Tenant[]>([]);
   const [panelDismissed, setPanelDismissed] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
+  const [demoMode, setDemoMode] = useState(false);
+
+  useEffect(() => {
+    fetchDemoStatus()
+      .then(setDemoMode)
+      .catch(() => undefined);
+  }, []);
 
   /**
    * ดัชนีสำหรับค้นหาด่วน — โหลดซ้ำทุกครั้งที่โฟกัสช่องค้นหา
@@ -307,7 +314,19 @@ function Shell() {
   };
 
   return (
-    <div className="min-h-screen bg-canvas-white text-charcoal md:grid md:grid-cols-[72px_1fr] xl:grid-cols-[232px_1fr]">
+    <>
+      {demoMode && (
+        <div
+          role="status"
+          className="flex min-h-9 items-center justify-center gap-1.5 bg-status-review-bg px-4 py-1.5 text-center text-[13px] font-medium text-status-review-fg"
+        >
+          <span className="ms text-[16px]" aria-hidden="true">
+            info
+          </span>
+          โหมดสาธิต — ข้อมูลทั้งหมดในหน้านี้เป็นข้อมูลตัวอย่าง อาจถูกผู้ชมคนอื่นแก้ไขหรือถูกรีเซ็ตได้ตลอดเวลา
+        </div>
+      )}
+      <div className="min-h-screen bg-canvas-white text-charcoal md:grid md:grid-cols-[72px_1fr] xl:grid-cols-[232px_1fr]">
       <aside className="sticky top-0 hidden h-screen flex-col overflow-y-auto border-r border-ash bg-canvas-white px-3 py-4 md:flex">
         <div className="flex items-center gap-2.5 px-1 pb-5 md:justify-center md:px-0 xl:justify-start xl:px-1">
           <Monogram />
@@ -552,6 +571,7 @@ function Shell() {
         </nav>
       </dialog>
     </div>
+    </>
   );
 }
 
