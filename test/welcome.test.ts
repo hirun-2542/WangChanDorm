@@ -216,10 +216,36 @@ describe("GET /welcome composition", () => {
     const body = ruleDeclarations(styles, "body");
     expect(body).toContain("font-size: 15px");
     expect(body).toContain("color: var(--charcoal)");
+  });
 
-    const text = hexToken(styles, "charcoal");
-    const background = hexToken(styles, "white");
-    expect(contrastRatio(text, background)).toBeGreaterThanOrEqual(4.5);
+  it("keeps every text colour readable against the surface it is painted on", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const pairs: ReadonlyArray<readonly [string, string, string]> = [
+      ["ข้อความหลัก", "charcoal", "white"],
+      ["คำโปรยและคำอธิบาย", "steel", "white"],
+      ["คำกำกับและป้ายตัวเลข", "fog", "white"],
+      ["คำโปรยบนและเลขลำดับขั้น", "blue", "white"],
+      ["ป้ายบนปุ่มหลัก", "white", "ink"],
+      ["หัวข้อและค่าที่สืบทอดสีหลักบนพื้น paper", "charcoal", "paper"],
+      ["ป้ายในรายการเทคโนโลยีและหัวข้อเล็กบนพื้น paper", "fog", "paper"],
+      ["คำอธิบายข้อตัดสินใจ", "steel", "paper"],
+    ];
+    const missingTokens: string[] = [];
+    const belowAA: string[] = [];
+
+    for (const [label, foreground, background] of pairs) {
+      const foregroundHex = hexToken(styles, foreground);
+      const backgroundHex = hexToken(styles, background);
+
+      if (foregroundHex === "" || backgroundHex === "") {
+        missingTokens.push(`${label}: --${foreground} หรือ --${background}`);
+      } else if (contrastRatio(foregroundHex, backgroundHex) < 4.5) {
+        belowAA.push(label);
+      }
+    }
+
+    expect(missingTokens).toEqual([]);
+    expect(belowAA).toEqual([]);
   });
 
   it("hides reveal sections only when scripting is on, and not at all under reduced motion", async () => {
