@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { contrastRatio, hexToken, ruleDeclarations, styleBlock } from "./html-style";
 
@@ -194,6 +194,40 @@ describe("GET /welcome", () => {
 
     expect(html).not.toContain("mailto:");
     expect(html).not.toContain("github.com");
+  });
+
+  it("references exactly the four page images, each with its intrinsic size", async () => {
+    const html = await (await landing()).text();
+    const sources = Array.from(html.matchAll(/<img [^>]*src="\/(welcome-media\/[^"]+)"/g), (match) => match[1]);
+
+    expect(sources).toEqual([
+      "welcome-media/hero-bill-create.webp",
+      "welcome-media/bill-dashboard.webp",
+      "welcome-media/bill-line-qr.webp",
+      "welcome-media/payment-status.webp",
+    ]);
+
+    for (const tag of html.match(/<img [^>]*>/g) ?? []) {
+      expect(tag).toMatch(/width="\d+"/);
+      expect(tag).toMatch(/height="\d+"/);
+      expect(tag).toMatch(/alt="[^"]{10,}"/);
+    }
+  });
+
+  /**
+   * หน้าเสิร์ฟได้โดยไม่มีเซสชันและไม่พึ่งฐานข้อมูล — เทสต์ในไฟล์นี้ไม่สร้างผู้ใช้
+   * ห้อง หรือบิลเลย ทั้งไฟล์จึงพิสูจน์ข้อนี้อยู่แล้ว เทสต์นี้ล็อกเจตนานั้นไว้
+   */
+  it("serves the whole page with no session and an empty database", async () => {
+    const count = await env.DB.prepare(
+      "SELECT (SELECT COUNT(*) FROM rooms) + (SELECT COUNT(*) FROM tenants) AS n",
+    ).first<{ n: number }>();
+
+    expect(count?.n).toBe(0);
+
+    const html = await (await landing()).text();
+    expect(html).toContain("ทดลองระบบ");
+    expect(html).toContain("ข้อตัดสินใจที่กำหนดรูปร่างระบบ");
   });
 
   it("keeps the brand voice free of exclamation marks", async () => {
