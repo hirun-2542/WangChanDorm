@@ -1,6 +1,7 @@
 import { Hono } from "hono";
+import { demoModeOn } from "../line/api";
 import type { AppEnv } from "../lib/auth";
-import { demoEntryHref, landingConfig } from "./welcome-config";
+import { demoEntryPath, landingConfig } from "./welcome-config";
 
 /**
  * หน้าแนะนำโปรเจคสำหรับคนที่มาดูผลงาน — หน้าสาธารณะหน้าที่สองต่อจากหน้า
@@ -97,6 +98,10 @@ const welcomeStyles = `
       .btn-primary { background: var(--ink); color: var(--white); }
       .btn-secondary { background: var(--white); border-color: var(--ash); color: var(--charcoal); }
       .btn:hover { box-shadow: var(--shadow-sm); }
+      /* ปุ่มที่ยังกดไม่ได้ (ยังไม่ตั้งที่อยู่เดโม) ต้องดูออกว่าไม่ใช่ลิงก์
+         ใช้ตัวอักษรเข้มบนพื้นเทา — ขาวบนเทาได้แค่ 2.5:1 ซึ่งอ่านไม่ออก */
+      .btn[aria-disabled="true"] { background: var(--silver); color: var(--charcoal); cursor: not-allowed; }
+      .btn[aria-disabled="true"]:hover { box-shadow: none; }
       .btn:focus-visible, a:focus-visible {
         outline: 2px solid var(--blue);
         outline-offset: 2px;
@@ -140,7 +145,9 @@ const welcomeStyles = `
       .band { padding: 88px 0; }
       .band-paper { background: var(--paper); }
       .band h2 + p { margin-top: 12px; max-width: 62ch; }
-      .band .note { margin-top: 12px; }
+      /* คำกำกับยาว ๆ ยังต้องมีความกว้างสูงสุด ไม่งั้นบรรทัดเดียวจะยาวเกิน 160 ตัวอักษร
+         บนจอ wide — .band .note ที่ไม่มี max-width คือจุดที่เคยหลุด */
+      .band .note { margin-top: 12px; max-width: 62ch; }
 
       .hero-grid { display: grid; gap: 40px; align-items: center; }
       .kicker { font-size: 12px; font-weight: 500; letter-spacing: 0.08em; color: var(--blue); }
@@ -214,6 +221,11 @@ const welcomeStyles = `
 
       @media (max-width: 639px) {
         .band { padding: 56px 0; }
+        /* ลิงก์กระโดดมีไว้ให้คนที่อยากข้ามไปอ่าน ไม่ใช่ทางหลักของหน้า บนจอแคบมันดัน
+           ปุ่มหลักตกขอบและตัดคำเป็นสองบรรทัด เนื้อหายังเข้าถึงตามลำดับอ่านปกติได้
+           ต้องเขียนให้ specificity เท่ากับ .nav-links a:not(.btn) (0,2,1) ไม่งั้น
+           กฎนั้นจะชนะแล้วลิงก์ยังโผล่บนมือถือ */
+        .nav-links a.nav-jump { display: none; }
       }
 
       @media (min-width: 640px) {
@@ -225,6 +237,9 @@ const welcomeStyles = `
       @media (min-width: 960px) {
         .container { padding: 0 64px; }
         .hero-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
+        /* ภาพหน้าจอเป็นภาพแนวตั้งจากจอแคบ ซึ่งเป็นแบบเดียวที่ตัวอักษรในแอปยังอ่านออก
+           จัดสองคอลัมน์จึงทำให้ส่วนนี้สั้นลงครึ่งหนึ่งโดยไม่ต้องย่อภาพให้เล็กลง */
+        .shots { grid-template-columns: 1fr 1fr; gap: 40px 32px; align-items: start; }
         .steps { grid-template-columns: repeat(5, 1fr); }
         .step:last-child { grid-column: auto; }
         .demo-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
@@ -236,29 +251,55 @@ const welcomeStyles = `
         .reveal { transition: none; }
         html.js .reveal:not(.in) { opacity: 1; transform: none; }
       }
+
+      /* การพิมพ์/บันทึกเป็น PDF ไม่มีการเลื่อนจอ จึงไม่มีอะไร trigger IntersectionObserver
+         ถ้าไม่ยกเลิกการซ่อน ส่วนที่ยังไม่ถูกเปิดจะพิมพ์ออกมาเป็นหน้าว่างทั้งหน้า */
+      @media print {
+        html.js .reveal:not(.in) { opacity: 1; transform: none; }
+        .band { padding: 32px 0; }
+        .frame { box-shadow: none; }
+      }
 `;
 
 const pageTitle = "หอพักวังจันทร์ — แนะนำโปรเจค";
 const pageDescription =
   "ระบบจัดการหอพักขนาดเล็ก สร้างบิลทั้งหอจากการกรอกมิเตอร์ครั้งเดียว ส่งเข้า LINE พร้อม QR พร้อมเพย์ และปิดบิลเองเมื่อสลิปยอดตรง พร้อมเดโมสาธารณะให้ลองเอง";
 
-function primaryCta(): string {
-  return `<a class="btn btn-primary" href="${demoEntryHref(landingConfig)}">ทดลองระบบ</a>`;
+/**
+ * ปุ่มหลักของหน้าต้องไม่พาคนไปเจอ 404
+ *
+ * - ถ้าตั้งที่อยู่เดโมจริงแล้ว (วัน deploy) ใช้ที่อยู่นั้น
+ * - ถ้ายังไม่ตั้ง แต่กำลังรันอยู่บน Worker เดโมเอง ใช้เส้นทางในเครื่องได้จริง
+ * - ถ้ายังไม่ตั้ง และไม่ใช่เดโม (production ก่อน deploy) เส้นทางสำรองถูกปิดแบบ
+ *   fail closed จึงตอบ 404 ปุ่มต้องแสดงเป็นสถานะปิดแทนลิงก์ที่กดแล้วพัง
+ */
+function primaryCta(demoMode: boolean): string {
+  if (landingConfig.demoEntryUrl !== "") {
+    return `<a class="btn btn-primary" href="${landingConfig.demoEntryUrl}">ทดลองระบบ</a>`;
+  }
+
+  if (demoMode) {
+    return `<a class="btn btn-primary" href="${demoEntryPath}">ทดลองระบบ</a>`;
+  }
+
+  return `<span class="btn btn-primary" role="link" aria-disabled="true" title="ยังไม่ได้ตั้งที่อยู่เดโม">ทดลองระบบ</span>`;
 }
 
-function navSection(): string {
+function navSection(demoMode: boolean): string {
   return `<header class="nav">
       <div class="container nav-inner">
         <a class="brand" href="/welcome"><span class="mark" aria-hidden="true"><span class="mark-inner">วจ</span></span>หอพักวังจันทร์</a>
         <nav class="nav-links" aria-label="หัวข้อในหน้านี้">
-          <a href="#demo">ดูสาธิต</a>
-          ${primaryCta()}
+          <a class="nav-jump" href="#demo">ดูสาธิต</a>
+          <a class="nav-jump" href="#build">ข้อตัดสินใจ</a>
+          <a class="nav-jump" href="#process">กระบวนการ</a>
+          ${primaryCta(demoMode)}
         </nav>
       </div>
     </header>`;
 }
 
-function heroSection(): string {
+function heroSection(demoMode: boolean): string {
   return `<section class="band hero">
       <div class="container hero-grid">
         <div>
@@ -266,14 +307,14 @@ function heroSection(): string {
           <h1>จากสมุดจด<br />สู่บิลที่ส่งเองทั้งหอ</h1>
           <p class="lede">หอไม่เกิน 20 ห้อง กรอกเลขมิเตอร์ครั้งเดียวแล้วออกบิลได้ทั้งหอ ส่งเข้า LINE พร้อม QR พร้อมเพย์ยอดตรง และปิดบิลให้เองเมื่อสลิปยอดถูกต้อง</p>
           <div class="hero-actions">
-            ${primaryCta()}
-            <a class="btn btn-secondary" href="#flow">ดูว่าเขียนยังไง</a>
+            ${primaryCta(demoMode)}
+            <a class="btn btn-secondary" href="#build">ดูว่าเขียนยังไง</a>
           </div>
         </div>
         <div>
           <div class="frame">
             <div class="frame-bar" aria-hidden="true"><span class="frame-dot"></span><span class="frame-dot"></span><span class="frame-dot"></span></div>
-            <img src="/welcome-media/hero-bill-create.webp" width="1510" height="1045" fetchpriority="high" decoding="async" alt="หน้าสร้างบิลที่กรอกเลขมิเตอร์ไปแล้วสามห้อง ยอดค่าน้ำ ค่าไฟ และยอดรวมคำนวณให้ทันที" />
+            <img src="/welcome-media/hero-bill-create.webp" width="804" height="798" fetchpriority="high" decoding="async" alt="การ์ดห้อง A101 ของสมชาย ใจดี กรอกเลขมิเตอร์น้ำและไฟแล้ว ระบบคำนวณค่าน้ำ ค่าไฟ และยอดรวม 3,999 บาท พร้อมสถานะพร้อมสร้าง" />
           </div>
           <p class="note">ภาพหน้าจอจากข้อมูลตัวอย่าง</p>
         </div>
@@ -309,7 +350,7 @@ function contextSection(): string {
     </section>`;
 }
 
-function demoSection(): string {
+function demoSection(demoMode: boolean): string {
   return `<section id="demo" class="band reveal">
       <div class="container">
         <h2>ลองระบบจริงด้วยมือตัวเอง</h2>
@@ -323,7 +364,7 @@ function demoSection(): string {
               <li>บิลสองเดือนย้อนหลัง ครอบคลุมทั้งจ่ายแล้ว ยังไม่จ่าย และสลิปรอตรวจ</li>
               <li>เดือนปัจจุบันเว้นว่างไว้ ให้ได้ลองออกบิลทั้งหอด้วยมือตัวเอง</li>
             </ul>
-            ${primaryCta()}
+            ${primaryCta(demoMode)}
             <p class="note">เดโมใช้ฐานข้อมูลคนละก้อนกับหอจริง แก้หรือลบข้อมูลในนั้นได้ไม่มีผลกับข้อมูลจริง</p>
           </div>
 
@@ -354,23 +395,23 @@ const screenshots: ReadonlyArray<readonly [string, string, string, number, numbe
   [
     "/welcome-media/bill-dashboard.webp",
     "แดชบอร์ดรายเดือน",
-    "ยอดที่ควรเก็บ เก็บแล้ว และค้างชำระของเดือนที่เลือก พร้อมกราฟรายรับหกเดือนและห้องที่ยังไม่จ่าย",
-    1510,
-    1133,
+    "ยอดที่ควรเก็บ เก็บแล้ว และค้างชำระของเดือนที่เลือก พร้อมจำนวนห้องว่างและอัตราการเช่า",
+    804,
+    372,
   ],
   [
     "/welcome-media/bill-line-qr.webp",
     "บิลที่ผู้เช่าได้รับ",
-    "การ์ดบิลในแชท LINE พร้อมปุ่มเปิดใบแจ้งหนี้ และใบแจ้งหนี้ที่มี QR พร้อมเพย์ยอดตรงกับบิลนั้น",
-    2371,
-    980,
+    "การ์ดบิลในแชท LINE พร้อมปุ่มเปิดใบแจ้งหนี้ และใบแจ้งหนี้ใบเดียวกันที่มี QR พร้อมเพย์ยอดตรงกับบิลนั้น",
+    804,
+    1684,
   ],
   [
     "/welcome-media/payment-status.webp",
     "สถานะการชำระและคิวรอตรวจ",
     "สลิปที่ยอดไม่ตรงหรือตรวจไม่ผ่านจะเข้าคิวนี้ เจ้าของหอเห็นยอดเทียบกับยอดบิลแล้วตัดสินปิดหรือปฏิเสธ",
-    1510,
-    1290,
+    736,
+    1974,
   ],
 ];
 
@@ -486,7 +527,7 @@ function contactRow(): string {
   return links.join("\n        ");
 }
 
-function footerSection(): string {
+function footerSection(demoMode: boolean): string {
   const contact = contactRow();
 
   return `<footer class="footer">
@@ -495,7 +536,7 @@ function footerSection(): string {
         <p class="note">ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง</p>
         <div class="footer-actions">
         ${contact}
-        ${primaryCta()}
+        ${primaryCta(demoMode)}
         </div>
       </div>
     </footer>`;
@@ -558,7 +599,7 @@ const revealScript = `
  * ต้องเป็น URL เต็ม ตัว crawler ของ LINE ไม่แก้ URL แบบ نسبให้) — ฟังก์ชันยัง
  * บริสุทธิ์และเรียกตรงในเทสได้ด้วย origin คงที่
  */
-export function renderWelcomePage(origin: string): string {
+export function renderWelcomePage(origin: string, demoMode = false): string {
   return `<!doctype html>
 <html lang="th">
   <head>
@@ -579,16 +620,16 @@ export function renderWelcomePage(origin: string): string {
     <style>${welcomeStyles}</style>
   </head>
   <body>
-    ${navSection()}
+    ${navSection(demoMode)}
     <main>
-      ${heroSection()}
+      ${heroSection(demoMode)}
       ${contextSection()}
-      ${demoSection()}
+      ${demoSection(demoMode)}
       ${screenshotsSection()}
       ${decisionsSection()}
       ${workflowSection()}
     </main>
-    ${footerSection()}
+    ${footerSection(demoMode)}
     <script>${revealScript}</script>
   </body>
 </html>
@@ -597,6 +638,6 @@ export function renderWelcomePage(origin: string): string {
 
 const welcomePage = new Hono<AppEnv>();
 
-welcomePage.get("/", (c) => c.html(renderWelcomePage(new URL(c.req.url).origin)));
+welcomePage.get("/", (c) => c.html(renderWelcomePage(new URL(c.req.url).origin, demoModeOn(c.env))));
 
 export default welcomePage;

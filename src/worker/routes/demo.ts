@@ -95,12 +95,12 @@ const demoTenants: readonly DemoTenantSeed[] = [
 // ชุดเดียวกับ seed/settings.sql
 const demoSettings: ReadonlyArray<readonly [string, string]> = [
   ["dorm_name", "หอพักวังจันทร์"],
-  ["owner_name", "สมศักดิ์ ใจดี"],
+  ["owner_name", "สมหมาย ใจดี"],
   ["default_water_rate", "18"],
   ["default_electric_rate", "7"],
   ["promptpay_type", "phone"],
-  ["promptpay_id", "081-234-5678"],
-  ["promptpay_name", "สมศักดิ์ ใจดี"],
+  ["promptpay_id", "089-111-2233"],
+  ["promptpay_name", "สมหมาย ใจดี"],
 ];
 
 // รูปสลิปตัวอย่างที่สังเคราะห์ขึ้นเองทั้งหมด ดู src/worker/lib/demo-slip-image.ts

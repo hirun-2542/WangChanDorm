@@ -71,10 +71,12 @@ export interface LineEvent {
 
 export const dorm: DormInfo = {
   name: "หอพักวังจันทร์",
-  ownerName: "สมศักดิ์ ใจดี",
-  phone: "081-234-5678",
-  promptPayId: "081-234-5678",
-  promptPayName: "สมศักดิ์ ใจดี",
+  ownerName: "สมหมาย ใจดี",
+  // เลขของเจ้าของหอต้องไม่ชนกับเบอร์ผู้เช่าใน seed/tenants.sql (ห้อง A101 ใช้ 081-234-5678)
+  // ไม่งั้นหน้าจอตัวอย่างจะดูเหมือนจ่ายเงินเข้าบัญชีผู้เช่าเอง
+  phone: "089-111-2233",
+  promptPayId: "089-111-2233",
+  promptPayName: "สมหมาย ใจดี",
   waterRate: 18,
   electricRate: 7,
   pairingCode: "529407",

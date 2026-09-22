@@ -22,14 +22,11 @@ export const landingConfig: LandingConfig = {
 };
 
 /**
- * เส้นทางเข้าเดโมจริงจากตั๋ว 06 ใช้เมื่อยังไม่ได้ตั้งที่อยู่เดโมแบบเต็ม
+ * เส้นทางเข้าเดโมภายในเครื่อง ใช้เฉพาะเมื่อรันอยู่บน Worker เดโมเอง
  *
  * เส้นทางนี้ทำงานได้ทุกที่ที่ตัวเดโมเข้าถึงได้ (ตัวเดโมรันแอปเดียวกันทั้งหมด จึง
  * เสิร์ฟ `/welcome` เองด้วย) ส่วน production จะตั้ง `demoEntryUrl` เป็นที่อยู่
- * ของ Worker เดโมตอน deploy จริง
+ * ของ Worker เดโมตอน deploy จริง — ก่อนถึงตอนนั้นปุ่มหลักจะแสดงเป็นสถานะปิด
+ * แทนที่จะเป็นลิงก์ที่กดแล้วเจอ 404 เพราะเส้นทางนี้ถูกปิดแบบ fail closed บน production
  */
 export const demoEntryPath = "/api/demo/enter";
-
-export function demoEntryHref(config: LandingConfig = landingConfig): string {
-  return config.demoEntryUrl === "" ? demoEntryPath : config.demoEntryUrl;
-}

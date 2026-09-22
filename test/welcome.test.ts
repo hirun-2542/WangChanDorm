@@ -52,7 +52,6 @@ describe("GET /welcome", () => {
   it("opens the demo from the primary button and never says เปิดระบบ", async () => {
     const html = await (await landing()).text();
 
-    expect(html).toContain('href="/api/demo/enter"');
     expect(html).toContain("ทดลองระบบ");
     expect(html).not.toContain("เปิดระบบ");
   });
@@ -73,7 +72,7 @@ describe("GET /welcome", () => {
 
     expect(html).toContain("จากสมุดจด");
     expect(html).toContain("สู่บิลที่ส่งเองทั้งหอ");
-    expect(html).toContain('<img src="/welcome-media/hero-bill-create.webp" width="1510" height="1045"');
+    expect(html).toContain('<img src="/welcome-media/hero-bill-create.webp" width="804" height="798"');
     expect(html).not.toContain("ห้องสูงสุดต่อหอ");
     expect(html).not.toContain('class="stats"');
   });
@@ -136,9 +135,9 @@ describe("GET /welcome", () => {
     const html = await (await landing()).text();
     const section = html.slice(html.indexOf('id="screens"'), html.indexOf('id="build"'));
 
-    expect(section).toContain('src="/welcome-media/bill-dashboard.webp" width="1510" height="1133"');
-    expect(section).toContain('src="/welcome-media/bill-line-qr.webp" width="2371" height="980"');
-    expect(section).toContain('src="/welcome-media/payment-status.webp" width="1510" height="1290"');
+    expect(section).toContain('src="/welcome-media/bill-dashboard.webp" width="804" height="372"');
+    expect(section).toContain('src="/welcome-media/bill-line-qr.webp" width="804" height="1684"');
+    expect(section).toContain('src="/welcome-media/payment-status.webp" width="736" height="1974"');
     expect(section).toContain("<h3>แดชบอร์ดรายเดือน</h3>");
     expect(section).toContain("<h3>บิลที่ผู้เช่าได้รับ</h3>");
     expect(section).toContain("<h3>สถานะการชำระและคิวรอตรวจ</h3>");
@@ -186,7 +185,7 @@ describe("GET /welcome", () => {
     expect(footer).toContain("วจ");
     expect(footer).toContain("หอพักวังจันทร์");
     expect(footer).toContain("ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง");
-    expect(footer).toContain('href="/api/demo/enter"');
+    expect(footer).toContain("ทดลองระบบ");
   });
 
   it("renders no contact link while the deploy-time values are still blank", async () => {
@@ -241,7 +240,9 @@ describe("GET /welcome", () => {
     expect(ruleDeclarations(styles, ".nav-links a")).toBe("");
 
     expect(ruleDeclarations(styles, ".btn-primary")).toContain("color: var(--white)");
-    expect(html).toContain('<a class="btn btn-primary" href="/api/demo/enter">ทดลองระบบ</a>');
+
+    // บน config ฐาน (DEMO_MODE=0) ปุ่มหลักเป็นสถานะปิด ไม่ใช่ลิงก์
+    expect(html).toContain('<span class="btn btn-primary" role="link" aria-disabled="true"');
   });
 
   it("gives every interactive element a visible focus ring and a themed selection", async () => {
@@ -276,6 +277,97 @@ describe("GET /welcome", () => {
     const unused = declared.filter((name) => !styles.includes(`var(--${name})`));
 
     expect(unused).toEqual([]);
+  });
+
+  it("fails the primary button safe when the deploy-time demo address is unset", async () => {
+    const html = await (await landing()).text();
+
+    // เทสต์รันบน config ฐานที่ DEMO_MODE=0 และ landingConfig.demoEntryUrl ว่าง
+    // เส้นทางสำรองถูกปิดแบบ fail closed บน production ปุ่มจึงต้องไม่เป็นลิงก์
+    expect(html).toContain('<span class="btn btn-primary" role="link" aria-disabled="true"');
+    expect(html).not.toContain('href="/api/demo/enter"');
+
+    const styles = styleBlock(html);
+    expect(ruleDeclarations(styles, '.btn[aria-disabled="true"]')).toContain("color: var(--charcoal)");
+    expect(ruleDeclarations(styles, '.btn[aria-disabled="true"]')).toContain("background: var(--silver)");
+  });
+
+  it("offers a jump link for every section a reviewer needs", async () => {
+    const html = await (await landing()).text();
+
+    // #build และ #process คือสองส่วนที่คนประเมินต้องการที่สุด และเคยเข้าถึงได้ด้วยการเลื่อนเท่านั้น
+    expect(html).toContain('<a class="nav-jump" href="#demo">ดูสาธิต</a>');
+    expect(html).toContain('<a class="nav-jump" href="#build">ข้อตัดสินใจ</a>');
+    expect(html).toContain('<a class="nav-jump" href="#process">กระบวนการ</a>');
+
+    // บนจอแคบ ลิงก์กระโดดต้องถูกซ่อน ไม่งั้นปุ่มหลักตกขอบจอ (390px เคยล้น 1px
+    // และตัดคำเป็นสามบรรทัด) ต้องมี specificity เท่ากับ .nav-links a:not(.btn)
+    const styles = styleBlock(html);
+    const mobile = styles.slice(styles.indexOf("@media (max-width: 639px)"), styles.indexOf("@media (min-width: 640px)"));
+    expect(mobile).toContain(".nav-links a.nav-jump");
+    expect(mobile).toContain("display: none");
+
+    // ปุ่มรองใน hero ต้องพาไปส่วน "เขียนยังไง" จริง ไม่ใช่ส่วนพิธีกรรมรายเดือน
+    expect(html).toContain('<a class="btn btn-secondary" href="#build">ดูว่าเขียนยังไง</a>');
+  });
+
+  it("does not hide sections when the page is printed", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const print = styles.slice(styles.indexOf("@media print"));
+
+    // ไม่มีการเลื่อนจอตอนพิมพ์ จึงไม่มีอะไร trigger IntersectionObserver
+    expect(print).toContain("html.js .reveal:not(.in)");
+    expect(print).toContain("opacity: 1");
+    expect(print).toContain("transform: none");
+  });
+
+  it("bounds the width of every text block so no line runs to the screen edge", async () => {
+    const styles = styleBlock(await (await landing()).text());
+
+    // .note ใน .band เคยไม่มี max-width ทำให้ได้บรรทัดยาว ~168 ตัวอักษรบนจอกว้าง
+    expect(ruleDeclarations(styles, ".band .note")).toContain("max-width: 62ch");
+    expect(ruleDeclarations(styles, ".band h2 + p")).toContain("max-width: 62ch");
+    expect(ruleDeclarations(styles, ".shot p")).toContain("max-width: 68ch");
+  });
+
+  it("renders a working demo link when the page is served by the demo worker", async () => {
+    const demoEnv = env as unknown as { DEMO_MODE: string };
+    demoEnv.DEMO_MODE = "1";
+
+    try {
+      const html = await (await landing()).text();
+      const body = html.slice(html.indexOf("<body>"));
+
+      expect(body).toContain('<a class="btn btn-primary" href="/api/demo/enter">ทดลองระบบ</a>');
+      expect(body).not.toContain('aria-disabled="true"');
+    } finally {
+      demoEnv.DEMO_MODE = "0";
+    }
+  });
+
+  /**
+   * ภาพหน้าจอต้องอ่านออกที่สเกลที่หน้าเว็บเรนเดอร์จริง
+   *
+   * ภาพชุดแรก (ตั๋ว 09) เป็นภาพเต็มจอ 1510-2313px ที่แสดงเพียง 340-990px
+   * ทำให้ตัวอักษรแอป 13px เหลือ 1.9-8.5px คือมองเห็นเป็นแถบเทา หลักฐานจึงไม่ถูกส่งมอบ
+   * ตอนนี้ภาพเป็น crop จากจอแคบที่ถ่ายที่ DPR 2 (ตัวอักษรแอป 13px = 26 device px)
+   * เทสต์นี้ล็อกความสัมพันธ์นั้นไว้: แสดงผลอย่างน้อย 42% ของความกว้างจริง
+   */
+  it("keeps every screenshot readable at the scale the page actually renders it", async () => {
+    const html = await (await landing()).text();
+    const imgs = Array.from(html.matchAll(/<img [^>]*src="\/welcome-media\/([^"]+)"[^>]*width="(\d+)"[^>]*height="(\d+)"/g));
+
+    expect(imgs.length).toBe(4);
+
+    for (const [, file, width] of imgs) {
+      const natural = Number(width);
+
+      // ด้านแคบสุดที่หน้าเว็บแสดงภาพคือ 340px (มือถือ 390 ลบ padding)
+      const smallestDisplay = 340;
+      const scale = smallestDisplay / natural;
+
+      expect(scale, `${file} ถูกย่อเหลือ ${String(Math.round(scale * 100))}%`).toBeGreaterThanOrEqual(0.4);
+    }
   });
 
   it("keeps the brand voice free of exclamation marks", async () => {
@@ -330,14 +422,16 @@ describe("GET /welcome composition", () => {
     expect(body).toContain("color: var(--charcoal)");
   });
 
-  it("widens the decisions and the stages with the screen, and keeps the gallery in one column", async () => {
+  it("widens the decisions, the stages and the gallery with the screen", async () => {
     const styles = styleBlock(await (await landing()).text());
     const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
 
     expect(ruleDeclarations(styles, ".shots")).toContain("display: grid");
-    // แกลเลอรีเป็นคอลัมน์เดียวตลอด — ภาพมีความกว้างต่อความสูงต่างกันมาก (2.42 กับ 1.17)
-    // การจับคู่ในแถวเดียวทำให้คำบรรยายเหลื่อมกันเป็นร้อยพิกเซล
-    expect(ruleDeclarations(wide, ".shots")).toBe("");
+    // แกลเลอรีเดิมเป็นคอลัมน์เดียวเพราะภาพชุดแรกมีความกว้างต่อความสูงต่างกันมาก
+    // ภาพชุดใหม่ (ตั๋ว 09 rev. 2) เป็นภาพแนวตั้งจากจอแคบทั้งหมด จึงจับคู่สองคอลัมน์ได้
+    // และทำให้ส่วนนี้สั้นลงครึ่งหนึ่งโดยไม่ต้องย่อภาพให้เล็กลงจนอ่านไม่ออก
+    expect(ruleDeclarations(wide, ".shots")).toContain("1fr 1fr");
+    expect(ruleDeclarations(wide, ".shots")).toContain("align-items: start");
     expect(ruleDeclarations(wide, ".decisions")).toContain("1fr 1fr");
     expect(ruleDeclarations(wide, ".stages")).toContain("repeat(3, 1fr)");
     expect(ruleDeclarations(styles, ".stages")).toContain("background: var(--ash)");
@@ -360,6 +454,7 @@ describe("GET /welcome composition", () => {
       ["คำอธิบายข้อตัดสินใจบนการ์ด", "steel", "white"],
       ["ชื่อเครื่องมือในแต่ละขั้นของกระบวนการ", "charcoal", "white"],
       ["เลขลำดับขั้นของกระบวนการ", "blue", "white"],
+      ["ปุ่มที่ยังกดไม่ได้", "charcoal", "silver"],
     ];
     const missingTokens: string[] = [];
     const belowAA: string[] = [];

@@ -134,6 +134,15 @@ describe("GET /api/demo/enter", () => {
     expect(pending.length).toBe(1);
     expect(pending[0]?.bill?.roomNumber).toBe("A105");
     expect(pending[0]?.bill?.period).toBe(periodOffset(1));
+
+    // ยอดนี้ถูกวาดฝังอยู่ในรูปสลิป (src/worker/lib/demo-slip-image.ts) ผู้ชมที่ซูมดู
+    // จะเทียบยอดในภาพกับยอดบนหน้าจอ ถ้าไม่ตรงกันถือเป็นหลักฐานที่จัดฉาก
+    const seeded = await env.DB.prepare(
+      "SELECT b.total AS total, t.full_name AS tenant FROM slips s JOIN bills b ON b.id = s.bill_id LEFT JOIN tenants t ON t.room_id = b.room_id AND t.status = 'current' WHERE s.status = 'pending_review'",
+    ).first<{ total: number; tenant: string }>();
+
+    expect(seeded?.total).toBe(4046);
+    expect(seeded?.tenant).toBe("อรุณี แสงทอง");
   });
 
   it("skips the reset when a request already arrived within the idle window", async () => {
