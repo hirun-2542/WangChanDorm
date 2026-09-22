@@ -1,7 +1,7 @@
 node_modules
 dist
 .wrangler
-.dev.vars
+.dev.vars*
 .env
 .env.*
 
@@ -9,6 +9,7 @@ dist
 # จาก .dev.vars เพื่อไม่ให้ wrangler types ประกาศเป็น binding ของ Worker
 scripts/.dorm-sheet.env
 !.env.example
+!.dev.vars.example
 coverage
 .commandcode/
 .impeccable/

@@ -45,5 +45,42 @@
     "directory": "./dist/client",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/health", "/webhook/*", "/qr/*", "/slips/*", "/invoices/*", "/register", "/welcome"]
+  },
+  // สภาพแวดล้อมเดโมสาธารณะ — Worker คนละตัว (wangchan-demo) ฐานข้อมูลและ R2
+  // คนละก้อนกับ production โดยสิ้นเชิง (เทียบ id/ชื่อ bucket ด้านล่างกับของ
+  // production ด้านบน — ต้องไม่ตรงกันแม้แต่ตัวเดียว) ยังไม่มี route ของเดโมเอง
+  // ในตั๋วนี้ (นั่นคืองานของตั๋ว 06) — ตอนนี้รันแอปเดิมทุกอย่างเหมือนเดิม แค่
+  // ชี้ไปที่ resource คนละก้อน — vars/bindings ไม่ inherit จาก top-level ตาม
+  // ธรรมชาติของ wrangler จึงต้องประกาศครบทุกค่าซ้ำในนี้
+  "env": {
+    "demo": {
+      "name": "wangchan-demo",
+      "vars": {
+        "SEAM_PROBE": "0",
+
+        // เปิดเสมอบนสภาพแวดล้อมนี้เท่านั้น — เป็นค่าเดียวที่ทำให้ประตู DEMO_MODE
+        // ทั่วทั้งระบบเปิด (เส้นทางเข้าเดโม + การ์ดกันส่ง LINE/ตรวจสลิปจริง)
+        "DEMO_MODE": "1",
+        "LIFF_ID": "",
+
+        // ค่าตัวอย่าง ไม่ใช่อีเมลเจ้าของหอจริง — เดโมไม่ใช้เส้นทาง Google OAuth
+        // เดิมในการเข้าระบบ (ตั๋ว 06 มีทางเข้าคลิกเดียวของตัวเอง)
+        "OWNER_EMAIL": "demo-owner@example.invalid"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "wangchan-demo",
+          "database_id": "c89c697e-a991-4a9a-8360-6d3d2d4dc351",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "SLIPS",
+          "bucket_name": "wangchan-demo-slips"
+        }
+      ]
+    }
   }
 }
