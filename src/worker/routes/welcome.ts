@@ -127,6 +127,23 @@ const welcomeStyles = `
       .band h2 + p { margin-top: 12px; max-width: 60ch; }
       .band .note { margin-top: 12px; }
 
+      .hero-grid { display: grid; gap: 40px; align-items: center; }
+      .kicker { font-size: 12px; font-weight: 500; letter-spacing: 0.08em; color: var(--blue); }
+      .hero h1 { margin-top: 12px; }
+      .hero .lede { margin-top: 16px; max-width: 46ch; }
+      .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+
+      .stats { display: flex; flex-wrap: wrap; gap: 32px; margin: 36px 0 0; padding-top: 20px; border-top: 1px solid var(--ash); }
+      .stat { margin: 0; }
+      .stat dt, .stat dd { margin: 0; }
+      .stat-value { font-size: 22px; font-weight: 600; }
+      .stat-label { font-size: 12px; color: var(--fog); }
+
+      .frame { overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--white); box-shadow: var(--shadow-sm); }
+      .frame-bar { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--ash); background: var(--paper); }
+      .frame-dot { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--silver); }
+      .frame img, .frame video { display: block; width: 100%; height: auto; }
+
       .reveal { transition: opacity 400ms var(--ease), transform 400ms var(--ease); }
       html.js .reveal:not(.in) { opacity: 0; transform: translateY(12px); }
 
@@ -140,6 +157,7 @@ const welcomeStyles = `
 
       @media (min-width: 960px) {
         .container { padding: 0 64px; }
+        .hero-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -165,17 +183,55 @@ function navSection(): string {
     </header>`;
 }
 
-/**
- * หัวข้อว่างที่ยกมาจากเนื้อหาจริงของตั๋ว 04 และ 05 เพื่อให้สมอของเมนูและกลไก
- * การเลื่อนเปิดมีของจริงให้ทำงานด้วย — เนื้อหาเต็มจะมาแทนที่ในตั๋วทั้งสอง
- */
-function pendingSections(): string {
+function heroSection(): string {
+  return `<section class="band hero">
+      <div class="container hero-grid">
+        <div>
+          <p class="kicker">โปรเจคจัดการหอพักขนาดเล็ก</p>
+          <h1>จากสมุดจด<br />สู่บิลที่ส่งเองทั้งหอ</h1>
+          <p class="lede">หอไม่เกิน 20 ห้อง กรอกเลขมิเตอร์ครั้งเดียวแล้วออกบิลได้ทั้งหอ ส่งเข้า LINE พร้อม QR พร้อมเพย์ยอดตรง และปิดบิลให้เองเมื่อสลิปยอดถูกต้อง</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#demo">ดูวิดีโอสาธิต</a>
+            <a class="btn btn-secondary" href="#build">ดูว่าสร้างด้วยอะไร</a>
+          </div>
+          <dl class="stats">
+            <div class="stat"><dt class="stat-value num">20</dt><dd class="stat-label">ห้องสูงสุดต่อหอ</dd></div>
+            <div class="stat"><dt class="stat-value num">1</dt><dd class="stat-label">หน้าจอต่อรอบบิล</dd></div>
+            <div class="stat"><dt class="stat-value num">0</dt><dd class="stat-label">แอปที่ผู้เช่าต้องติดตั้ง</dd></div>
+          </dl>
+        </div>
+        <div>
+          <div class="frame">
+            <div class="frame-bar" aria-hidden="true"><span class="frame-dot"></span><span class="frame-dot"></span><span class="frame-dot"></span></div>
+            <img src="/welcome-media/hero-bills.webp" width="1510" height="1045" alt="หน้าสร้างบิลที่กรอกเลขมิเตอร์ไปแล้วสามห้อง ยอดค่าน้ำ ค่าไฟ และยอดรวมคำนวณให้ทันที" />
+          </div>
+          <p class="note">ภาพหน้าจอจากข้อมูลตัวอย่าง</p>
+        </div>
+      </div>
+    </section>`;
+}
+
+function demoSection(): string {
   return `<section id="demo" class="band reveal">
       <div class="container">
         <h2>ดูรอบบิลจริงหนึ่งรอบ</h2>
+        <p class="lede">คลิปเดียวจบตั้งแต่กรอกมิเตอร์ จนบิลไปถึงแชทของผู้เช่า</p>
+        <div class="frame">
+          <div class="frame-bar" aria-hidden="true"><span class="frame-dot"></span><span class="frame-dot"></span><span class="frame-dot"></span></div>
+          <video controls muted playsinline preload="none" poster="/welcome-media/poster.jpg" width="1280" height="800">
+            <source src="/welcome-media/demo.webm" type="video/webm" />
+            <source src="/welcome-media/demo.mp4" type="video/mp4" />
+            เบราว์เซอร์นี้เล่นวิดีโอไม่ได้ เปิดไฟล์คลิปได้ที่ <a href="/welcome-media/demo.mp4">demo.mp4</a>
+          </video>
+        </div>
+        <p class="note">ข้อมูลห้อง ผู้เช่า และยอดเงินในคลิปเป็นข้อมูลตัวอย่างทั้งหมด</p>
       </div>
-    </section>
-    <section id="build" class="band band-paper reveal">
+    </section>`;
+}
+
+/** หัวข้อว่างของส่วนสถาปัตยกรรม — เนื้อหาเต็มมาแทนที่ในตั๋ว 05 */
+function buildStub(): string {
+  return `<section id="build" class="band band-paper reveal">
       <div class="container">
         <h2>สร้างด้วยอะไร</h2>
       </div>
@@ -235,7 +291,9 @@ export function renderWelcomePage(origin: string): string {
   <body>
     ${navSection()}
     <main>
-      ${pendingSections()}
+      ${heroSection()}
+      ${demoSection()}
+      ${buildStub()}
     </main>
     <script>${revealScript}</script>
   </body>

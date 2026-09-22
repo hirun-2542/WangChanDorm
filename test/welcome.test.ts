@@ -55,9 +55,62 @@ describe("GET /welcome", () => {
     expect(html).toContain('href="/"');
     expect(html).toContain("เปิดระบบ");
   });
+
+  it("points every in-page link at a section that exists", async () => {
+    const html = await (await landing()).text();
+    const targets = Array.from(html.matchAll(/href="#([^"]+)"/g), (match) => match[1]);
+
+    expect(targets.length).toBeGreaterThan(0);
+
+    for (const target of targets) {
+      expect(html).toContain(`id="${target}"`);
+    }
+  });
+
+  it("opens with the claim and the three numbers that back it", async () => {
+    const html = await (await landing()).text();
+
+    expect(html).toContain("จากสมุดจด");
+    expect(html).toContain("สู่บิลที่ส่งเองทั้งหอ");
+    expect(html).toContain("ห้องสูงสุดต่อหอ");
+    expect(html).toContain("หน้าจอต่อรอบบิล");
+    expect(html).toContain("แอปที่ผู้เช่าต้องติดตั้ง");
+  });
+
+  it("plays the recorded round with both formats, a poster and a reserved box", async () => {
+    const html = await (await landing()).text();
+    const video = html.match(/<video[^>]*>[\s\S]*?<\/video>/)?.[0] ?? "";
+
+    expect(video).toContain("controls");
+    expect(video).toContain("playsinline");
+    expect(video).toContain('preload="none"');
+    expect(video).toContain('poster="/welcome-media/poster.jpg"');
+    expect(video).toContain('width="1280"');
+    expect(video).toContain('height="800"');
+    expect(video).toContain('<source src="/welcome-media/demo.webm" type="video/webm"');
+    expect(video).toContain('<source src="/welcome-media/demo.mp4" type="video/mp4"');
+
+    expect(html).toContain('<img src="/welcome-media/hero-bills.webp" width="1510" height="1045"');
+  });
+
+  it("labels everything on the page as sample data", async () => {
+    const html = await (await landing()).text();
+
+    expect(html).toContain("ภาพหน้าจอจากข้อมูลตัวอย่าง");
+    expect(html).toContain("ข้อมูลห้อง ผู้เช่า และยอดเงินในคลิปเป็นข้อมูลตัวอย่างทั้งหมด");
+  });
 });
 
 describe("GET /welcome composition", () => {
+  it("stacks the hero on narrow screens and splits it in two from 960px up", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
+
+    expect(ruleDeclarations(styles, ".hero-grid")).toContain("display: grid");
+    expect(ruleDeclarations(wide, ".hero-grid")).toContain("grid-template-columns: 1fr 1fr");
+    expect(ruleDeclarations(styles, ".btn")).toContain("min-height: 44px");
+  });
+
   it("draws its colours, radii and surfaces from the app's own theme", async () => {
     const styles = styleBlock(await (await landing()).text());
 
