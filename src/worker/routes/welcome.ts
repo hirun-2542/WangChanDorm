@@ -144,6 +144,35 @@ const welcomeStyles = `
       .frame-dot { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--silver); }
       .frame img, .frame video { display: block; width: 100%; height: auto; }
 
+      .subhead { font-size: 13px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
+
+      .steps { display: grid; gap: 1px; margin: 20px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
+      .step { padding: 20px; background: var(--white); }
+      .step-num { font-size: 13px; font-weight: 700; color: var(--blue); }
+      .step h3 { margin-top: 10px; font-size: 15px; }
+      .step h3 + p { margin-top: 6px; font-size: 13px; color: var(--steel); }
+
+      .cards { display: grid; gap: 20px; margin-top: 28px; }
+      .card { padding: 24px; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--white); }
+      .card h3 { font-size: 16px; }
+      .card p { margin-top: 8px; font-size: 14px; color: var(--steel); }
+
+      .build-grid { display: grid; gap: 40px; margin-top: 28px; }
+      .tech { margin: 0; }
+      .tech-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; padding: 12px 0; border-top: 1px solid var(--ash); }
+      .tech-row:last-child { border-bottom: 1px solid var(--ash); }
+      .tech-row dt { font-size: 13px; color: var(--fog); }
+      .tech-row dd { margin: 0; font-size: 14px; font-weight: 500; }
+      .decisions { margin-top: 18px; }
+      .decision + .decision { margin-top: 18px; }
+      .decision h3 { font-size: 14px; }
+      .decision p { margin-top: 4px; font-size: 13px; color: var(--steel); }
+
+      .footer { border-top: 1px solid var(--ash); }
+      .footer .container { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding-top: 32px; padding-bottom: 32px; }
+      .footer .note { margin: 0; }
+      .footer .btn { margin-left: auto; }
+
       .reveal { transition: opacity 400ms var(--ease), transform 400ms var(--ease); }
       html.js .reveal:not(.in) { opacity: 0; transform: translateY(12px); }
 
@@ -153,11 +182,17 @@ const welcomeStyles = `
 
       @media (min-width: 640px) {
         .container { padding: 0 40px; }
+        .steps { grid-template-columns: repeat(2, 1fr); }
+        .step:last-child { grid-column: 1 / -1; }
       }
 
       @media (min-width: 960px) {
         .container { padding: 0 64px; }
         .hero-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
+        .steps { grid-template-columns: repeat(5, 1fr); }
+        .step:last-child { grid-column: auto; }
+        .cards { grid-template-columns: repeat(3, 1fr); }
+        .build-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -229,13 +264,116 @@ function demoSection(): string {
     </section>`;
 }
 
-/** หัวข้อว่างของส่วนสถาปัตยกรรม — เนื้อหาเต็มมาแทนที่ในตั๋ว 05 */
-function buildStub(): string {
+const steps: ReadonlyArray<readonly [string, string]> = [
+  ["อ่านมิเตอร์", "เดินอ่านเลขน้ำและไฟทีละห้อง จดลงกระดาษเหมือนเดิม"],
+  ["กรอกหน้าเดียว", "พิมพ์เลขลงตารางเดียวทั้งหอ เห็นยอดของทุกห้องขยับทันที"],
+  ["สร้างบิลทั้งหอ", "กดครั้งเดียวได้บิลทุกห้อง ราคาถูกตรึงไว้ ณ วันสร้าง"],
+  ["ส่งเข้า LINE", "บิลพร้อม QR พร้อมเพย์ยอดตรงถึงแชทที่ผู้เช่าใช้อยู่แล้ว"],
+  ["สลิปเข้า ปิดบิล", "ยอดตรงปิดบิลให้เอง ยอดไม่ตรงเข้าคิวรอเจ้าของตรวจ"],
+];
+
+const duties: ReadonlyArray<readonly [string, string]> = [
+  [
+    "บิลรายเดือน",
+    "หนึ่งบิลต่อห้องต่อเดือน รวมค่าห้อง ค่าน้ำ ค่าไฟ และค่าใช้จ่ายประจำของหอ ค่าไฟเลือกได้ทั้งแบบคิดตามมิเตอร์และแบบเหมาจ่ายรายห้อง",
+  ],
+  [
+    "ช่องทาง LINE",
+    "ผู้เช่าเชื่อมบัญชีด้วยการพิมพ์เลขห้องให้บอท จากนั้นรับบิล สแกนจ่าย และส่งสลิปได้ในแชทเดิม ไม่ต้องสมัครบัญชีกับระบบ",
+  ],
+  [
+    "ตรวจสลิป",
+    "สลิปที่ส่งเข้ามาถูกเก็บไว้และส่งตรวจกับบริการภายนอก ยอดตรงระบบปิดบิลเอง ยอดไม่ตรงหรืออ่านไม่ออกจะเข้าคิวให้เจ้าของตัดสินใจ",
+  ],
+];
+
+const stack: ReadonlyArray<readonly [string, string]> = [
+  ["รันบน", "Cloudflare Workers"],
+  ["ฐานข้อมูล", "Cloudflare D1 (SQLite)"],
+  ["ไฟล์สลิป", "Cloudflare R2"],
+  ["เราเตอร์ฝั่งเซิร์ฟเวอร์", "Hono"],
+  ["หน้าเว็บ", "React 19 + Vite + Tailwind CSS 4"],
+  ["ใบแจ้งหนี้ PDF", "pdf-lib"],
+  ["QR พร้อมเพย์", "uqr"],
+  ["แชทบอท", "LINE Messaging API"],
+  ["ทดสอบ", "Vitest บน workerd"],
+];
+
+const decisions: ReadonlyArray<readonly [string, string]> = [
+  ["ราคาถูกตรึงไว้ในบิล", "บิลเก็บราคาไว้ ณ วันสร้าง การแก้ค่าตั้งต้นภายหลังจึงไม่ย้อนไปเปลี่ยนบิลที่ออกไปแล้ว"],
+  ["ไม่มีงานตั้งเวลา", "ไม่มี cron ทุกอย่างเกิดจากคำขอจริง ระบบจึงไม่มีอะไรให้ดูแลเบื้องหลัง"],
+  ["ผู้เช่าไม่มีบัญชี", "ไม่มีหน้าจอและไม่มีรหัสผ่านฝั่งผู้เช่า LINE เป็นช่องทางเดียว"],
+  ["เข้าระบบด้วย Google เท่านั้น", "ไม่มีรหัสผ่านเก็บอยู่ในระบบเลย"],
+];
+
+function flowSection(): string {
+  const cards = steps
+    .map(
+      ([title, detail], index) =>
+        `<li class="step"><p class="step-num num" aria-hidden="true">${String(index + 1).padStart(2, "0")}</p><h3>${title}</h3><p>${detail}</p></li>`,
+    )
+    .join("\n        ");
+
+  return `<section id="flow" class="band band-paper reveal">
+      <div class="container">
+        <h2 class="subhead">ห้าขั้นตอนของรอบบิล</h2>
+        <ol class="steps">
+        ${cards}
+        </ol>
+      </div>
+    </section>`;
+}
+
+function whatSection(): string {
+  const cards = duties
+    .map(([title, detail]) => `<article class="card"><h3>${title}</h3><p>${detail}</p></article>`)
+    .join("\n        ");
+
+  return `<section id="what" class="band reveal">
+      <div class="container">
+        <h2>ระบบดูแลอะไรให้บ้าง</h2>
+        <div class="cards">
+        ${cards}
+        </div>
+      </div>
+    </section>`;
+}
+
+function buildSection(): string {
+  const rows = stack
+    .map(([label, value]) => `<div class="tech-row"><dt>${label}</dt><dd>${value}</dd></div>`)
+    .join("\n        ");
+
+  const items = decisions
+    .map(([title, detail]) => `<div class="decision"><h3>${title}</h3><p>${detail}</p></div>`)
+    .join("\n          ");
+
   return `<section id="build" class="band band-paper reveal">
       <div class="container">
         <h2>สร้างด้วยอะไร</h2>
+        <div class="build-grid">
+          <dl class="tech">
+        ${rows}
+          </dl>
+          <div>
+            <p class="subhead">ข้อตัดสินใจที่กำหนดรูปร่างระบบ</p>
+            <div class="decisions">
+          ${items}
+            </div>
+          </div>
+        </div>
       </div>
     </section>`;
+}
+
+function footerSection(): string {
+  return `<footer class="footer">
+      <div class="container">
+        <span class="brand"><span class="mark" aria-hidden="true"><span class="mark-inner">วจ</span></span>หอพักวังจันทร์</span>
+        <p class="note">ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง</p>
+        <a class="btn btn-primary" href="/">เปิดระบบ</a>
+      </div>
+    </footer>`;
 }
 
 const revealScript = `
@@ -258,6 +396,33 @@ const revealScript = `
         });
 
         Array.prototype.forEach.call(targets, function (target) { observer.observe(target); });
+
+        /**
+         * กันกรณีกระโดดข้าม: การเลื่อนแบบกระโดดไกล (กดสมอ หรือปัดเร็วมาก)
+         * ทำให้บางหัวข้อไม่เคย intersect เลยและค้างซ่อนอยู่ ทั้งที่ผู้ใช้อยู่ต่ำกว่าแล้ว
+         * ตัวนี้จึงเปิดให้หัวข้อที่อยู่เหนือจอไปแล้วโดยไม่ต้องรออนิเมชัน
+         */
+        var backstop = function () {
+          var hidden = 0;
+
+          Array.prototype.forEach.call(targets, function (target) {
+            if (target.classList.contains("in")) {
+              return;
+            }
+
+            if (target.getBoundingClientRect().bottom < 0) {
+              reveal(target);
+            } else {
+              hidden += 1;
+            }
+          });
+
+          if (hidden === 0) {
+            window.removeEventListener("scroll", backstop);
+          }
+        };
+
+        window.addEventListener("scroll", backstop, { passive: true });
       })();
 `;
 
@@ -293,8 +458,11 @@ export function renderWelcomePage(origin: string): string {
     <main>
       ${heroSection()}
       ${demoSection()}
-      ${buildStub()}
+      ${flowSection()}
+      ${whatSection()}
+      ${buildSection()}
     </main>
+    ${footerSection()}
     <script>${revealScript}</script>
   </body>
 </html>

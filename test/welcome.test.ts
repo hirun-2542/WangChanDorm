@@ -99,6 +99,82 @@ describe("GET /welcome", () => {
     expect(html).toContain("ภาพหน้าจอจากข้อมูลตัวอย่าง");
     expect(html).toContain("ข้อมูลห้อง ผู้เช่า และยอดเงินในคลิปเป็นข้อมูลตัวอย่างทั้งหมด");
   });
+
+  it("walks the monthly ritual as five numbered steps", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="flow"'), html.indexOf('id="what"'));
+    const numbers = Array.from(section.matchAll(/class="step-num num"[^>]*>(\d\d)</g), (match) => match[1]);
+
+    expect(numbers).toEqual(["01", "02", "03", "04", "05"]);
+
+    for (const title of ["อ่านมิเตอร์", "กรอกหน้าเดียว", "สร้างบิลทั้งหอ", "ส่งเข้า LINE", "สลิปเข้า ปิดบิล"]) {
+      expect(section).toContain(`<h3>${title}</h3>`);
+    }
+  });
+
+  it("lists the three duties and the four decisions that shaped the system", async () => {
+    const html = await (await landing()).text();
+    const duties = html.slice(html.indexOf('id="what"'), html.indexOf('id="build"'));
+    const decisions = html.slice(html.indexOf('id="build"'));
+
+    expect(duties).toContain("<h3>บิลรายเดือน</h3><p>หนึ่งบิลต่อห้องต่อเดือน");
+    expect(duties).toContain("<h3>ช่องทาง LINE</h3><p>ผู้เช่าเชื่อมบัญชีด้วยการพิมพ์เลขห้อง");
+    expect(duties).toContain("<h3>ตรวจสลิป</h3><p>สลิปที่ส่งเข้ามาถูกเก็บไว้");
+
+    expect(decisions).toContain("<h3>ราคาถูกตรึงไว้ในบิล</h3><p>บิลเก็บราคาไว้ ณ วันสร้าง");
+    expect(decisions).toContain("<h3>ไม่มีงานตั้งเวลา</h3><p>ไม่มี cron");
+    expect(decisions).toContain("<h3>ผู้เช่าไม่มีบัญชี</h3><p>ไม่มีหน้าจอ");
+    expect(decisions).toContain("<h3>เข้าระบบด้วย Google เท่านั้น</h3><p>ไม่มีรหัสผ่านเก็บอยู่ในระบบเลย</p>");
+  });
+
+  it("names the nine technologies the system actually runs on", async () => {
+    const html = await (await landing()).text();
+    const section = html.slice(html.indexOf('id="build"'));
+    const pairs = Array.from(section.matchAll(/<dt>([^<]+)<\/dt><dd>([^<]+)<\/dd>/g), (match) => [match[1], match[2]]);
+
+    expect(pairs).toEqual([
+      ["รันบน", "Cloudflare Workers"],
+      ["ฐานข้อมูล", "Cloudflare D1 (SQLite)"],
+      ["ไฟล์สลิป", "Cloudflare R2"],
+      ["เราเตอร์ฝั่งเซิร์ฟเวอร์", "Hono"],
+      ["หน้าเว็บ", "React 19 + Vite + Tailwind CSS 4"],
+      ["ใบแจ้งหนี้ PDF", "pdf-lib"],
+      ["QR พร้อมเพย์", "uqr"],
+      ["แชทบอท", "LINE Messaging API"],
+      ["ทดสอบ", "Vitest บน workerd"],
+    ]);
+  });
+
+  it("keeps the sections in the order the page reads them", async () => {
+    const html = await (await landing()).text();
+    const order = ['id="demo"', 'id="flow"', 'id="what"', 'id="build"', 'class="footer"'].map((marker) =>
+      html.indexOf(marker),
+    );
+
+    expect(order.every((index) => index > 0)).toBe(true);
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+  });
+
+  it("closes with the brand, the sample-data note and a way into the system", async () => {
+    const html = await (await landing()).text();
+    const footer = html.slice(html.indexOf('class="footer"'));
+
+    expect(footer).toContain("วจ");
+    expect(footer).toContain("หอพักวังจันทร์");
+    expect(footer).toContain("ข้อมูลทั้งหมดที่แสดงในหน้านี้เป็นข้อมูลตัวอย่าง");
+    expect(footer).toContain('<a class="btn btn-primary" href="/">เปิดระบบ</a>');
+  });
+
+  it("keeps the brand voice free of exclamation marks", async () => {
+    const html = await (await landing()).text();
+    const copy = html
+      .replace(/<!doctype[^>]*>/i, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "");
+
+    expect(copy).not.toContain("!");
+  });
 });
 
 describe("GET /welcome composition", () => {
@@ -109,6 +185,25 @@ describe("GET /welcome composition", () => {
     expect(ruleDeclarations(styles, ".hero-grid")).toContain("display: grid");
     expect(ruleDeclarations(wide, ".hero-grid")).toContain("grid-template-columns: 1fr 1fr");
     expect(ruleDeclarations(styles, ".btn")).toContain("min-height: 44px");
+  });
+
+  it("lays the steps and the duty cards out in columns that widen with the screen", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const medium = styles.slice(styles.indexOf("@media (min-width: 640px)"), styles.indexOf("@media (min-width: 960px)"));
+    const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
+
+    expect(ruleDeclarations(styles, ".steps")).toContain("gap: 1px");
+    expect(ruleDeclarations(styles, ".steps")).toContain("background: var(--ash)");
+    expect(ruleDeclarations(styles, ".step")).toContain("background: var(--white)");
+    expect(ruleDeclarations(styles, ".step-num")).toContain("color: var(--blue)");
+    // คำอธิบายต้องผูกกับย่อหน้าที่ตามหลังหัวข้อเท่านั้น ไม่ใช่ `.step p` ที่จะทับสีของเลขลำดับ
+    expect(ruleDeclarations(styles, ".step h3 + p")).toContain("color: var(--steel)");
+    expect(ruleDeclarations(styles, ".step p")).toBe("");
+    expect(ruleDeclarations(medium, ".steps")).toContain("repeat(2, 1fr)");
+    expect(ruleDeclarations(wide, ".steps")).toContain("repeat(5, 1fr)");
+    expect(ruleDeclarations(wide, ".cards")).toContain("repeat(3, 1fr)");
+    expect(ruleDeclarations(wide, ".build-grid")).toContain("1fr 1fr");
+    expect(ruleDeclarations(styles, ".num")).toContain("font-variant-numeric: tabular-nums");
   });
 
   it("draws its colours, radii and surfaces from the app's own theme", async () => {
