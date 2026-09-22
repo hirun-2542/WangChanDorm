@@ -13,8 +13,11 @@ export function styleBlock(html: string): string {
 
 /** ดึง declarations ของ selector หนึ่งตัวจากสไตล์ชีต คืนค่าว่างเมื่อไม่พบ */
 export function ruleDeclarations(styles: string, selector: string): string {
+  // คอมเมนต์ต้องถูกตัดก่อนจับคู่ ไม่งั้นคอมเมนต์ที่วางระหว่างกฎสองข้อจะกลายเป็น
+  // ตัวคั่นที่ทำให้ regex (?:^|\}) ไม่ match แล้วคืนค่าผิดเป็น "" เงียบ ๆ
+  const withoutComments = styles.replace(/\/\*[\s\S]*?\*\//g, "");
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = styles.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
+  const match = withoutComments.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
   return match?.[1] ?? "";
 }
 

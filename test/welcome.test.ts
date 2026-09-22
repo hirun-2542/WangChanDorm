@@ -230,6 +230,54 @@ describe("GET /welcome", () => {
     expect(html).toContain("ข้อตัดสินใจที่กำหนดรูปร่างระบบ");
   });
 
+  it("keeps the nav button readable instead of letting the nav link colour win", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const html = await (await landing()).text();
+
+    // ปุ่มใน nav ต้องไม่ถูก `.nav-links a` ทับสี (เคยทำให้เหลือ 2.53:1)
+    const navRule = ruleDeclarations(styles, ".nav-links a:not(.btn)");
+    expect(navRule).toContain("color: var(--steel)");
+    expect(navRule).toContain("min-height: 44px");
+    expect(ruleDeclarations(styles, ".nav-links a")).toBe("");
+
+    expect(ruleDeclarations(styles, ".btn-primary")).toContain("color: var(--white)");
+    expect(html).toContain('<a class="btn btn-primary" href="/api/demo/enter">ทดลองระบบ</a>');
+  });
+
+  it("gives every interactive element a visible focus ring and a themed selection", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const tokens = hexToken(styles, "selection-bg");
+
+    // ต้องตรงกับสไตล์ชีตของแอป (::selection กับ :focus-visible) ไม่ใช่ค่าที่คิดขึ้นใหม่
+    // แอปใช้ #dbeaff กับพื้นหลัง selection และ #2563eb กับ focus ring
+    expect(tokens).toBe("#dbeaff");
+    expect(ruleDeclarations(styles, ".btn:focus-visible, a:focus-visible")).toContain("outline: 2px solid var(--blue)");
+    expect(ruleDeclarations(styles, "::selection")).toContain("background: var(--selection-bg)");
+    expect(styles).toContain("color-scheme: light");
+    // พื้นผิวของเบราว์เซอร์เป็นของเราด้วย ไม่ปล่อยเป็นค่าเริ่มต้นของระบบ
+    expect(styles).toContain("scrollbar-color: var(--scrollbar) transparent");
+  });
+
+  it("marks the hero as the high-priority image and leaves the rest lazy", async () => {
+    const html = await (await landing()).text();
+    const hero = html.match(/<img src="\/welcome-media\/hero-bill-create\.webp"[^>]*>/)?.[0] ?? "";
+
+    expect(hero).toContain('fetchpriority="high"');
+    expect(hero).toContain('decoding="async"');
+    expect(hero).not.toContain('loading="lazy"');
+
+    const gallery = html.slice(html.indexOf('id="screens"'), html.indexOf('id="build"'));
+    expect(Array.from(gallery.matchAll(/loading="lazy"/g))).toHaveLength(3);
+  });
+
+  it("declares only the tokens it actually uses", async () => {
+    const styles = styleBlock(await (await landing()).text());
+    const declared = Array.from(styles.matchAll(/--([a-z-]+):/g), (match) => match[1]);
+    const unused = declared.filter((name) => !styles.includes(`var(--${name})`));
+
+    expect(unused).toEqual([]);
+  });
+
   it("keeps the brand voice free of exclamation marks", async () => {
     const html = await (await landing()).text();
     const copy = html
@@ -282,12 +330,14 @@ describe("GET /welcome composition", () => {
     expect(body).toContain("color: var(--charcoal)");
   });
 
-  it("widens the gallery, the decisions and the stages with the screen", async () => {
+  it("widens the decisions and the stages with the screen, and keeps the gallery in one column", async () => {
     const styles = styleBlock(await (await landing()).text());
     const wide = styles.slice(styles.indexOf("@media (min-width: 960px)"));
 
     expect(ruleDeclarations(styles, ".shots")).toContain("display: grid");
-    expect(ruleDeclarations(wide, ".shots")).toContain("1fr 1fr");
+    // แกลเลอรีเป็นคอลัมน์เดียวตลอด — ภาพมีความกว้างต่อความสูงต่างกันมาก (2.42 กับ 1.17)
+    // การจับคู่ในแถวเดียวทำให้คำบรรยายเหลื่อมกันเป็นร้อยพิกเซล
+    expect(ruleDeclarations(wide, ".shots")).toBe("");
     expect(ruleDeclarations(wide, ".decisions")).toContain("1fr 1fr");
     expect(ruleDeclarations(wide, ".stages")).toContain("repeat(3, 1fr)");
     expect(ruleDeclarations(styles, ".stages")).toContain("background: var(--ash)");

@@ -31,24 +31,28 @@ const welcomeStyles = `
         --paper: #f5f5f5;
         --white: #ffffff;
         --blue: #2563eb;
-        --sapphire: #1e40af;
-        --mint: #dcfce7;
-        --green: #15803d;
-        --amber-bg: #fff7e6;
-        --amber-fg: #b45309;
-        --line: #06c755;
-        --radius-input: 6px;
         --radius-btn: 8px;
         --radius-card: 12px;
         --radius-panel: 16px;
         --radius-pill: 9999px;
-        --shadow-subtle: rgba(0, 0, 0, 0.05) 0 1px 2px;
         --shadow-sm: rgba(0, 0, 0, 0.1) 0 4px 6px -1px, rgba(0, 0, 0, 0.1) 0 2px 4px -2px;
         --monogram: conic-gradient(from -81deg, #ff0000, #eab308 99deg, #5cff80 162deg, #00fff9 216deg, #3a8bfd 288deg, #855afc);
         --ease: cubic-bezier(0.16, 1, 0.3, 1);
+        /* สองตัวนี้คัดจากสไตล์ชีตของแอป (::selection และ scrollbar-color) เพื่อให้
+           พื้นผิวของเบราว์เซอร์เหมือนกันทั้งระบบ ไม่ใช่คิดค่าขึ้นใหม่ */
+        --selection-bg: #dbeaff;
+        --scrollbar: #d4d4d4;
+        /* ฟอร์มคอนโทรลและสกรอลบาร์ของเบราว์เซอร์เป็นของเราด้วย ไม่ใช่ของระบบ */
+        color-scheme: light;
       }
 
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+        scrollbar-width: thin;
+        scrollbar-color: var(--scrollbar) transparent;
+      }
+
+      ::selection { background: var(--selection-bg); color: var(--charcoal); }
 
       body {
         margin: 0;
@@ -92,6 +96,12 @@ const welcomeStyles = `
       }
       .btn-primary { background: var(--ink); color: var(--white); }
       .btn-secondary { background: var(--white); border-color: var(--ash); color: var(--charcoal); }
+      .btn:hover { box-shadow: var(--shadow-sm); }
+      .btn:focus-visible, a:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+        border-radius: var(--radius-btn);
+      }
 
       .mark {
         display: grid;
@@ -120,8 +130,12 @@ const welcomeStyles = `
       .nav-inner { display: flex; align-items: center; gap: 16px; min-height: 64px; }
       .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; }
       .nav-links { display: flex; align-items: center; gap: 20px; margin-left: auto; }
-      .nav-links a { text-decoration: none; color: var(--steel); font-size: 14px; }
-      .nav-links a:hover { color: var(--charcoal); }
+      /* :not(.btn) จำเป็นสองเหตุผล — (1) ถ้าไม่ใส่ selector นี้ (0,1,1) จะทับ
+         .btn-primary (0,1,0) ที่ประกาศไว้ก่อนหน้า ทำให้สีข้อความบนปุ่มหลักกลายเป็น
+         --steel บนพื้น --ink ซึ่งอ่านไม่ออก (2.53:1) (2) พื้นที่กดของลิงก์ข้อความ
+         ต้องถึง 44px แม้ตัวอักษรจะสูงแค่ 24px จึงใช้ padding แนวตั้ง ไม่ใช่ขยายฟอนต์ */
+      .nav-links a:not(.btn) { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; color: var(--steel); font-size: 14px; }
+      .nav-links a:not(.btn):hover { color: var(--charcoal); }
 
       .band { padding: 88px 0; }
       .band-paper { background: var(--paper); }
@@ -140,6 +154,7 @@ const welcomeStyles = `
       .frame img { display: block; width: 100%; height: auto; }
 
       .subhead { font-size: 13px; font-weight: 500; letter-spacing: 0.04em; color: var(--fog); }
+      .subhead-spaced { margin-top: 40px; }
 
       .steps { display: grid; gap: 1px; margin: 20px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--ash); border-radius: var(--radius-card); background: var(--ash); list-style: none; }
       .step { padding: 20px; background: var(--white); }
@@ -189,7 +204,10 @@ const welcomeStyles = `
       .stage-tools { margin-top: 4px; font-size: 13px; font-weight: 500; color: var(--charcoal); }
       .stage p:last-child { margin-top: 8px; font-size: 13px; color: var(--steel); }
 
-      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      /* ที่เดียวในหน้าที่ยังใช้ monospace และใช้กับสิ่งที่ควรใช้จริง ๆ คือ path ของไฟล์
+         (docs/specs, .scratch/...) ไม่ใช่แต่งให้ดูเทคนิค — แอปไม่มีพื้นผิวโค้ดจึงไม่มี
+         โทเคนนี้ให้คัดมา จึงใช้สแตกของแพลตฟอร์มแทนการคิดโทเคนใหม่ */
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 
       .reveal { transition: opacity 400ms var(--ease), transform 400ms var(--ease); }
       html.js .reveal:not(.in) { opacity: 0; transform: translateY(12px); }
@@ -210,8 +228,6 @@ const welcomeStyles = `
         .steps { grid-template-columns: repeat(5, 1fr); }
         .step:last-child { grid-column: auto; }
         .demo-grid { grid-template-columns: 1fr 1fr; gap: 56px; }
-        .shots { grid-template-columns: 1fr 1fr; gap: 32px 40px; }
-        .shots .shot:first-child { grid-column: 1 / -1; }
         .decisions { grid-template-columns: 1fr 1fr; gap: 24px; }
         .stages { grid-template-columns: repeat(3, 1fr); }
       }
@@ -257,7 +273,7 @@ function heroSection(): string {
         <div>
           <div class="frame">
             <div class="frame-bar" aria-hidden="true"><span class="frame-dot"></span><span class="frame-dot"></span><span class="frame-dot"></span></div>
-            <img src="/welcome-media/hero-bill-create.webp" width="1510" height="1045" alt="หน้าสร้างบิลที่กรอกเลขมิเตอร์ไปแล้วสามห้อง ยอดค่าน้ำ ค่าไฟ และยอดรวมคำนวณให้ทันที" />
+            <img src="/welcome-media/hero-bill-create.webp" width="1510" height="1045" fetchpriority="high" decoding="async" alt="หน้าสร้างบิลที่กรอกเลขมิเตอร์ไปแล้วสามห้อง ยอดค่าน้ำ ค่าไฟ และยอดรวมคำนวณให้ทันที" />
           </div>
           <p class="note">ภาพหน้าจอจากข้อมูลตัวอย่าง</p>
         </div>
@@ -285,7 +301,7 @@ function contextSection(): string {
       <div class="container">
         <h2>หอเล็กที่เจ้าของคนเดียวทำทุกอย่างเอง</h2>
         <p>หอขนาดไม่เกิน 20 ห้อง ไม่มีพนักงานประจำ และไม่มีระบบเดิมให้ต่อ เจ้าของหอเดินอ่านมิเตอร์เอง จดใส่กระดาษ แล้วกลับมาเปิดโปรแกรมเพื่อออกบิล ส่งให้ผู้เช่า และตามเก็บเงิน ทุกเดือนด้วยมือคนเดียว ระบบนี้ออกแบบจากงานนั้น — งานที่ทำซ้ำทุกเดือนและไม่มีใครช่วยแบ่งเบา</p>
-        <p class="subhead" style="margin-top:28px">ห้าขั้นตอนของรอบบิล</p>
+        <p class="subhead subhead-spaced">ห้าขั้นตอนของรอบบิล</p>
         <ol class="steps">
         ${cards}
         </ol>
