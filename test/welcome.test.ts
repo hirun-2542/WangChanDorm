@@ -313,8 +313,9 @@ describe("GET /welcome", () => {
 
     expect(ruleDeclarations(styles, ".btn-primary")).toContain("color: var(--white)");
 
-    // บน config ฐาน (DEMO_MODE=0) ปุ่มหลักเป็นสถานะปิด ไม่ใช่ลิงก์
-    expect(html).toContain('<span class="btn btn-primary" role="link" aria-disabled="true"');
+    // ตอนนี้ deploy แล้ว ที่อยู่เดโมมีค่าจริง ปุ่มหลักจึงเป็นลิงก์ที่ชี้ไปที่นั้น
+    // ส่วนสถานะปิดยังต้องมีอยู่จริงสำหรับกรณีที่ยังไม่ตั้งค่า (ตรวจในเทสต์ถัดไป)
+    expect(html).toContain(`<a class="btn btn-primary" href="${landingConfig.demoEntryUrl}">ทดลองระบบ</a>`);
   });
 
   it("gives every interactive element a visible focus ring and a themed selection", async () => {
@@ -351,32 +352,49 @@ describe("GET /welcome", () => {
     expect(unused).toEqual([]);
   });
 
-  it("points the primary button at the deploy-time demo address once it is set", async () => {
+  /**
+   * ปุ่มหลักมีสามสาขา ต้องตรวจครบทั้งสาม ไม่ใช่แค่สาขาที่บังเอิญเป็นอยู่
+   *
+   * 1. ตั้งที่อยู่เดโมแล้ว (สถานะหลัง deploy)  -> ลิงก์ไปที่นั่น
+   * 2. ยังไม่ตั้ง แต่รันบน Worker เดโมเอง       -> ใช้เส้นทางในเครื่อง ซึ่งใช้ได้จริง
+   * 3. ยังไม่ตั้ง และไม่ใช่เดโม (production ก่อนตั้งค่า) -> ปิดปุ่ม ไม่เป็นลิงก์ 404
+   */
+  it("sends the primary button somewhere real in all three config states", async () => {
     const original = landingConfig.demoEntryUrl;
-    landingConfig.demoEntryUrl = "https://wangchan-demo.example.workers.dev";
+    const realUrl = original;
 
     try {
-      const html = await (await landing()).text();
+      // 1. ตั้งแล้ว — ค่าจริงที่ deploy ไป
+      expect(realUrl).not.toBe("");
 
-      // สเปกกำหนดว่าปุ่มหลักต้องชี้ไปที่ที่อยู่เดโมที่ตั้งไว้จริง ไม่ใช่เส้นทางสำรอง
-      expect(html).toContain('<a class="btn btn-primary" href="https://wangchan-demo.example.workers.dev">ทดลองระบบ</a>');
-      expect(html).not.toContain('href="/api/demo/enter"');
+      const deployed = await (await landing()).text();
+      expect(deployed).toContain(`<a class="btn btn-primary" href="${realUrl}">ทดลองระบบ</a>`);
+      expect(deployed).not.toContain('href="/api/demo/enter"');
+
+      // 2. ยังไม่ตั้ง + เป็นเดโม -> เส้นทางในเครื่อง
+      landingConfig.demoEntryUrl = "";
+      const demoEnv = env as unknown as { DEMO_MODE: string };
+      const wasDemo = demoEnv.DEMO_MODE;
+      demoEnv.DEMO_MODE = "1";
+
+      const onDemo = await (await landing()).text();
+      expect(onDemo).toContain('<a class="btn btn-primary" href="/api/demo/enter">ทดลองระบบ</a>');
+
+      // 3. ยังไม่ตั้ง + ไม่ใช่เดโม -> ปุ่มปิด ไม่เป็นลิงก์ที่พาไป 404
+      demoEnv.DEMO_MODE = "0";
+
+      const beforeDeploy = await (await landing()).text();
+      expect(beforeDeploy).toContain('<span class="btn btn-primary" role="link" aria-disabled="true"');
+      expect(beforeDeploy).not.toContain('href="/api/demo/enter"');
+
+      const styles = styleBlock(beforeDeploy);
+      expect(ruleDeclarations(styles, '.btn[aria-disabled="true"]')).toContain("color: var(--charcoal)");
+      expect(ruleDeclarations(styles, '.btn[aria-disabled="true"]')).toContain("background: var(--silver)");
+
+      demoEnv.DEMO_MODE = wasDemo;
     } finally {
       landingConfig.demoEntryUrl = original;
     }
-  });
-
-  it("fails the primary button safe when the deploy-time demo address is unset", async () => {
-    const html = await (await landing()).text();
-
-    // เทสต์รันบน config ฐานที่ DEMO_MODE=0 และ landingConfig.demoEntryUrl ว่าง
-    // เส้นทางสำรองถูกปิดแบบ fail closed บน production ปุ่มจึงต้องไม่เป็นลิงก์
-    expect(html).toContain('<span class="btn btn-primary" role="link" aria-disabled="true"');
-    expect(html).not.toContain('href="/api/demo/enter"');
-
-    const styles = styleBlock(html);
-    expect(ruleDeclarations(styles, '.btn[aria-disabled="true"]')).toContain("color: var(--charcoal)");
-    expect(ruleDeclarations(styles, '.btn[aria-disabled="true"]')).toContain("background: var(--silver)");
   });
 
   it("offers a jump link for every section a reviewer needs", async () => {
@@ -455,21 +473,6 @@ describe("GET /welcome", () => {
     expect(ruleDeclarations(styles, ".band .note")).toContain("max-width: 62ch");
     expect(ruleDeclarations(styles, ".band h2 + p")).toContain("max-width: 62ch");
     expect(ruleDeclarations(styles, ".shot p")).toContain("max-width: 68ch");
-  });
-
-  it("renders a working demo link when the page is served by the demo worker", async () => {
-    const demoEnv = env as unknown as { DEMO_MODE: string };
-    demoEnv.DEMO_MODE = "1";
-
-    try {
-      const html = await (await landing()).text();
-      const body = html.slice(html.indexOf("<body>"));
-
-      expect(body).toContain('<a class="btn btn-primary" href="/api/demo/enter">ทดลองระบบ</a>');
-      expect(body).not.toContain('aria-disabled="true"');
-    } finally {
-      demoEnv.DEMO_MODE = "0";
-    }
   });
 
   /**

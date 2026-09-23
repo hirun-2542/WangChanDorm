@@ -3,7 +3,6 @@
  * ("ค่าที่เปลี่ยนตามการ deploy อยู่ในที่เดียวที่แก้ได้ และปล่อยเป็นค่าตั้งต้นว่าง
  * ไว้ก่อน — ห้ามใส่ค่าปลอมลงหน้าเว็บ")
  *
- * ตอน deploy จริง (ตั๋ว 12) เติมค่าจริงทั้งสามที่ไฟล์นี้ที่เดียว ไม่ต้องแก้ที่อื่น
  * ค่าที่เว้นว่างจะไม่ถูกแสดงเป็นลิงก์เลย หน้าเว็บจึงไม่มีลิงก์ที่กดแล้วไปไหนไม่ได้
  */
 export interface LandingConfig {
@@ -16,7 +15,10 @@ export interface LandingConfig {
 }
 
 export const landingConfig: LandingConfig = {
-  demoEntryUrl: "",
+  // ยืนยันแล้วด้วยการ deploy จริง: Worker ชื่อ wangchan-demo บนบัญชีนี้
+  // (subdomain เดาไม่ได้จากโค้ด จึงต้องมาจากการ deploy เท่านั้น)
+  demoEntryUrl: "https://wangchan-demo.nodhk2545.workers.dev",
+  // ยังไม่มีค่าจริง — เว้นว่างไว้ตามที่สเปกสั่ง ห้ามใส่ค่าปลอม
   contactEmail: "",
   githubProfileUrl: "",
 };
