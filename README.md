@@ -173,8 +173,8 @@ npm run deploy
 
 ## เอกสารเพิ่มเติม
 
-- `docs/features.md` — พฤติกรรมระดับ implementation ของ API ทุกตัว เงื่อนไขการปิดบิล นโยบายการคิดเงิน LINE bot และการยืนยันตัวตน
-- `docs/adr/` — ADR ของการตัดสินใจที่สำคัญ
-- `docs/specs/` — สเปกของแต่ละงาน
-- `CONTEXT.md` — คำศัพท์ของโดเมนนี้
-- `DESIGN.md` — แนวทาง UI
+- [docs/features.md](docs/features.md) — พฤติกรรมระดับ implementation ของ API ทุกตัว เงื่อนไขการปิดบิล นโยบายการคิดเงิน LINE bot และการยืนยันตัวตน
+- [docs/adr/](docs/adr) — ADR ของการตัดสินใจที่สำคัญ
+- [docs/specs/](docs/specs) — สเปกของแต่ละงาน
+- [CONTEXT.md](CONTEXT.md) — คำศัพท์ของโดเมนนี้
+- [DESIGN.md](DESIGN.md) — แนวทาง UI
