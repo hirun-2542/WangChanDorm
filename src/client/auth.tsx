@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { fetchMe, logout, onUnauthorized, type AuthUser } from "./api";
+import { fetchDemoStatus, fetchMe, logout, onUnauthorized, type AuthUser } from "./api";
 import { AuthScreen, AuthSplash, InviteAcceptScreen } from "./pages/auth";
 
 export interface AuthValue {
@@ -15,6 +15,8 @@ export interface AuthValue {
   user: AuthUser | null;
   /** กำลังตรวจเซสชันครั้งแรกก่อนตัดสินใจว่าจะแสดงหน้าใด */
   checking: boolean;
+  /** รันอยู่บน Worker เดโมหรือไม่ — ใช้ตัดสินว่าหน้าเข้าสู่ระบบควรเสนอทางเข้าเดโม */
+  demoMode: boolean;
   /** ออกจากระบบที่เซิร์ฟเวอร์แล้วพากลับหน้าเข้าสู่ระบบ */
   signOut: () => Promise<void>;
 }
@@ -24,6 +26,7 @@ const AuthContext = createContext<AuthValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checking, setChecking] = useState(true);
+  const [demoMode, setDemoMode] = useState(false);
 
   /**
    * ตรวจเซสชันจากคุกกี้
@@ -33,14 +36,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * เองและได้เซสชันที่เซิร์ฟเวอร์เพิ่งสร้างให้
    */
   const load = useCallback(async () => {
-    try {
-      setUser(await fetchMe());
-    } catch {
-      // 401 คือยังไม่เข้าสู่ระบบ ส่วนเน็ตหรือเซิร์ฟเวอร์ล่มก็ให้หน้าเข้าสู่ระบบไว้ก่อน
-      setUser(null);
-    } finally {
-      setChecking(false);
-    }
+    // ตรวจโหมดสาธิตคู่กับการตรวจเซสชัน ไม่ต่อกันเป็นสองรอบ — หน้าเข้าสู่ระบบต้องรู้
+    // ตั้งแต่เฟรมแรกว่าควรเสนอทางเข้าเดโมหรือไม่ ไม่งั้นผู้ชมจะเห็นหน้าแจ้งเข้าสู่ระบบ
+    // ด้วย Google แล้วเพิ่งมีปุ่มโผล่มาทีหลัง
+    const [me] = await Promise.all([
+      fetchMe().catch(() => null),
+      fetchDemoStatus()
+        .then(setDemoMode)
+        .catch(() => undefined),
+    ]);
+
+    setUser(me);
+    setChecking(false);
   }, []);
 
   useEffect(() => {
@@ -59,9 +66,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       checking,
+      demoMode,
       signOut,
     }),
-    [user, checking, signOut],
+    [user, checking, demoMode, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -109,10 +117,23 @@ function useInviteToken(): string | null {
   return token;
 }
 
-/** ด่านเดียวที่ตัดสินว่าใครเห็นอะไร: คำเชิญ · กำลังตรวจเซสชัน · เข้าสู่ระบบ · ตัวแอป */
+/** ด่านเดียวที่ตัดสินว่าใครเห็นอะไร: คำเชิญ · โหมดสาธิต · กำลังตรวจเซสชัน · เข้าสู่ระบบ · ตัวแอป */
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { user, checking } = useAuth();
+  const { user, checking, demoMode } = useAuth();
   const inviteToken = useInviteToken();
+
+  /**
+   * บน Worker เดโม ผู้ชมไม่ควรเจอหน้าเข้าสู่ระบบเลย
+   *
+   * ปุ่มบนหน้าแนะนำพาไปที่ /api/demo/enter อยู่แล้ว แต่คนที่เปิด URL เดโมตรง ๆ หรือ
+   * กด refresh หลังเซสชันหมดอายุ จะตกลงมาที่หน้านี้ และหน้าเข้าสู่ระบบไม่มีที่ให้ไปต่อ
+   * จึงพาไปที่ทางเข้าเดโมเอง ซึ่งออกคุกกี้ใหม่แล้วรีไดเรกต์กลับมา ทำงานเหมือนกดปุ่ม
+   */
+  useEffect(() => {
+    if (!checking && demoMode && user === null && inviteToken === null) {
+      window.location.replace("/api/demo/enter");
+    }
+  }, [checking, demoMode, user, inviteToken]);
 
   if (inviteToken !== null) {
     return (
@@ -128,6 +149,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (checking) {
+    return <AuthSplash />;
+  }
+
+  // ระหว่างรอเบราว์เซอร์พาไป /api/demo/enter อย่าโชว์หน้าเข้าสู่ระบบค้างไว้
+  if (demoMode && user === null) {
     return <AuthSplash />;
   }
 

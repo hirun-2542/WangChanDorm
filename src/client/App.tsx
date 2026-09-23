@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AccountButton } from "./account";
-import { fetchDemoStatus, fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
+import { useAuth } from "./auth";
+import { fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
 import { ErrorBoundary } from "./error-boundary";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
@@ -192,13 +193,9 @@ function Shell() {
   const [jumpTenants, setJumpTenants] = useState<Tenant[]>([]);
   const [panelDismissed, setPanelDismissed] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
-  const [demoMode, setDemoMode] = useState(false);
-
-  useEffect(() => {
-    fetchDemoStatus()
-      .then(setDemoMode)
-      .catch(() => undefined);
-  }, []);
+  // โหมดสาธิตมาจาก AuthProvider แล้ว (ตรวจคู่กับการตรวจเซสชันตั้งแต่เฟรมแรก)
+  // ไม่ต้องยิง /api/demo/status ซ้ำที่นี่ ซึ่งเดิมทำให้ยิงสองครั้งต่อการโหลดหนึ่งครั้ง
+  const { demoMode } = useAuth();
 
   /**
    * ดัชนีสำหรับค้นหาด่วน — โหลดซ้ำทุกครั้งที่โฟกัสช่องค้นหา
