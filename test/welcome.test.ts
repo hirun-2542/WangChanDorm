@@ -260,11 +260,45 @@ describe("GET /welcome", () => {
     expect(footer).toContain("ทดลองระบบ");
   });
 
-  it("renders no contact link while the deploy-time values are still blank", async () => {
+  /**
+   * เจตนาถาวรคือ footer ต้องไม่มีลิงก์ที่กดแล้วไปไหนไม่ได้ และต้องมีลิงก์เมื่อค่าจริงมา
+   *
+   * ของเดิมยึดว่า "ตอนนี้ยังว่าง ต้องไม่โผล่" ซึ่งเป็นสภาวะชั่วคราวก่อน deploy
+   * ตอนนี้ค่าจริงมาแล้ว จึงต้องทดสอบทั้งสองสาขา ไม่ใช่สาขาที่บังเอิญเป็นอยู่
+   */
+  it("renders contact links only for the values that are actually set", async () => {
     const html = await (await landing()).text();
+    const footer = html.slice(html.indexOf('class="footer"'));
 
-    expect(html).not.toContain("mailto:");
-    expect(html).not.toContain("github.com");
+    // ค่าที่ตั้งแล้ว ต้องเป็นลิงก์ที่ออกไปได้จริง
+    expect(footer).toContain('href="mailto:nodhk2545@gmail.com"');
+    expect(footer).toContain("nodhk2545@gmail.com");
+    expect(footer).toContain('href="https://github.com/hirun-2542"');
+    expect(footer).toContain("โปรไฟล์ GitHub");
+
+    // ไม่มีค่าปลอม: ลิงก์ต้องตรงกับค่าที่ประกาศ ไม่ใช่ค่าที่ hardcode ไว้ที่อื่น
+    expect(footer).toContain(`href="mailto:${landingConfig.contactEmail}"`);
+    expect(footer).toContain(`href="${landingConfig.githubProfileUrl}"`);
+
+    // สาขาที่ค่าว่าง ต้องไม่เรนเดอร์ลิงก์ — ทดสอบโดยล้างค่าแล้วเรนเดอร์ใหม่
+    const email = landingConfig.contactEmail;
+    const github = landingConfig.githubProfileUrl;
+
+    try {
+      landingConfig.contactEmail = "";
+      landingConfig.githubProfileUrl = "";
+
+      const blank = await (await landing()).text();
+      const blankFooter = blank.slice(blank.indexOf('class="footer"'));
+
+      expect(blankFooter).not.toContain("mailto:");
+      expect(blankFooter).not.toContain("github.com");
+      // ปุ่มหลักต้องยังอยู่ ไม่ใช่ footer ว่างเปล่า
+      expect(blankFooter).toContain("ทดลองระบบ");
+    } finally {
+      landingConfig.contactEmail = email;
+      landingConfig.githubProfileUrl = github;
+    }
   });
 
   it("references exactly the four page images, each with its intrinsic size", async () => {

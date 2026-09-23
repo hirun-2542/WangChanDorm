@@ -18,9 +18,9 @@ export const landingConfig: LandingConfig = {
   // ยืนยันแล้วด้วยการ deploy จริง: Worker ชื่อ wangchan-demo บนบัญชีนี้
   // (subdomain เดาไม่ได้จากโค้ด จึงต้องมาจากการ deploy เท่านั้น)
   demoEntryUrl: "https://wangchan-demo.nodhk2545.workers.dev",
-  // ยังไม่มีค่าจริง — เว้นว่างไว้ตามที่สเปกสั่ง ห้ามใส่ค่าปลอม
-  contactEmail: "",
-  githubProfileUrl: "",
+  // ค่าจริงจากเจ้าของงาน — เทสต์ยืนยันว่า footer เรนเดอร์เป็นลิงก์เมื่อมีค่า
+  contactEmail: "nodhk2545@gmail.com",
+  githubProfileUrl: "https://github.com/hirun-2542",
 };
 
 /**
