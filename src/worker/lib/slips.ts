@@ -4,13 +4,14 @@ import {
   ownerSlipPendingMessage,
   slipDownloadFailedMessage,
   slipDuplicateMessage,
+  slipDuplicateReviewMessage,
   slipMatchedMessage,
   slipNotLinkedMessage,
   slipPendingReviewMessage,
 } from "../line/messages";
 import { asRecord } from "../routes/shared";
 
-export type SlipReason = "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip";
+export type SlipReason = "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip" | "verify_failed";
 
 export interface StoredSlipResult {
   verified: boolean;
@@ -18,10 +19,24 @@ export interface StoredSlipResult {
   transRef: string | null;
   date: string | null;
   reason: SlipReason | null;
+  /** รหัสจากผู้ให้บริการ (เช่น 1007 = รูปไม่มี QR) — null เมื่อระบบตรวจไม่ได้เลย */
+  code: number | null;
+  /** ข้อความจากผู้ให้บริการ อ่านแล้วรู้ว่าสลิปมีปัญหาอะไร */
+  message: string | null;
+  /** เหตุผลทางเทคนิคเมื่อ "ตรวจไม่ได้" (คีย์หาย ผู้ให้บริการล่ม) */
+  detail: string | null;
+  /** สลิปที่ปิดบิลไปแล้วด้วยเลขอ้างอิงเดียวกัน (เฉพาะกรณีสลิปซ้ำของจริง) */
+  usedSlipId: string | null;
   raw: unknown;
 }
 
-const slipReasons: readonly SlipReason[] = ["mismatch", "not_verified", "no_unpaid_bill", "duplicate_slip"];
+const slipReasons: readonly SlipReason[] = [
+  "mismatch",
+  "not_verified",
+  "no_unpaid_bill",
+  "duplicate_slip",
+  "verify_failed",
+];
 
 const emptySlipResult: StoredSlipResult = {
   verified: false,
@@ -29,6 +44,10 @@ const emptySlipResult: StoredSlipResult = {
   transRef: null,
   date: null,
   reason: null,
+  code: null,
+  message: null,
+  detail: null,
+  usedSlipId: null,
   raw: null,
 };
 
@@ -72,7 +91,16 @@ interface SlipOwnerAlert {
   tenantName: string;
   slipAmount: number | null;
   billTotal: number | null;
+  reasonNote: string | null;
 }
+
+const slipReasonNotes: Record<SlipReason, string> = {
+  mismatch: "ยอดในสลิปไม่ตรงกับยอดบิล",
+  not_verified: "ผู้ให้บริการตรวจสลิปไม่ผ่าน",
+  no_unpaid_bill: "ตอนรับสลิปห้องนี้ไม่มีบิลค้างให้เทียบ",
+  duplicate_slip: "ผู้ให้บริการแจ้งว่าสลิปนี้เคยถูกส่งเข้ามาแล้ว แต่ยังไม่มีบิลที่ปิดด้วยสลิปนี้",
+  verify_failed: "ระบบตรวจสลิปกับผู้ให้บริการไม่สำเร็จ ต้องตรวจด้วยมือ",
+};
 
 /** ข้อความถึงผู้เช่าเมื่อสลิปโอนเข้าบัญชีที่ไม่ใช่บัญชีรับเงินของหอ */
 const slipReceiverMismatchMessage =
@@ -120,6 +148,10 @@ export function parseSlipResult(value: string | null): StoredSlipResult {
     transRef: readText(record.transRef),
     date: readText(record.date),
     reason,
+    code: readNumber(record.code),
+    message: readText(record.message),
+    detail: readText(record.detail),
+    usedSlipId: readText(record.usedSlipId),
     raw: record.raw ?? null,
   };
 }
@@ -131,6 +163,10 @@ export function rejectedSlipResultJson(value: string | null, decidedAt: string):
     amount: stored.amount,
     transRef: stored.transRef,
     date: stored.date,
+    code: stored.code,
+    message: stored.message,
+    detail: stored.detail,
+    usedSlipId: stored.usedSlipId,
     raw: stored.raw,
   };
 
@@ -147,6 +183,17 @@ export function rejectedSlipResultJson(value: string | null, decidedAt: string):
 export function isUniqueViolation(error: unknown): boolean {
   const detail = error instanceof Error ? error.message : String(error);
   return detail.includes("UNIQUE");
+}
+
+/**
+ * สัญญาณว่าแถวนี้ยังมีแถวอื่นอ้างถึงอยู่ (foreign key)
+ *
+ * ใช้แยก "ลบไม่ได้เพราะยังมีคนอ้างถึง" ออกจาก "ลบไม่สำเร็จเพราะระบบพัง"
+ * สองอย่างนี้ต้องตอบผู้ใช้ต่างกัน (409 พร้อมทางออก vs 500)
+ */
+export function isForeignKeyViolation(error: unknown): boolean {
+  const detail = error instanceof Error ? error.message : String(error);
+  return detail.includes("FOREIGN KEY") || detail.includes("SQLITE_CONSTRAINT_FOREIGNKEY");
 }
 
 export function canonicalPaidAt(date: string | null): string {
@@ -171,17 +218,32 @@ function toSatang(amount: number): number {
   return Math.round(amount * 100);
 }
 
-function slipResultJson(result: SlipOkResult, reason: SlipReason | null): string {
+function slipResultJson(
+  result: SlipOkResult,
+  reason: SlipReason | null,
+  detail: string | null = null,
+  usedSlipId: string | null = null,
+): string {
   const payload: Record<string, unknown> = {
     verified: result.verified,
     amount: result.amount,
     transRef: result.transRef,
     date: result.date,
+    code: result.code,
+    message: result.message,
     raw: result.raw,
   };
 
   if (reason !== null) {
     payload.reason = reason;
+  }
+
+  if (detail !== null) {
+    payload.detail = detail;
+  }
+
+  if (usedSlipId !== null) {
+    payload.usedSlipId = usedSlipId;
   }
 
   return JSON.stringify(payload);
@@ -200,7 +262,7 @@ async function notifyOwnerOfSlipInReview(env: Env, familyId: string, slipId: str
     }
 
     const delivered = await pushMessage(env, ownerId, [
-      ownerSlipPendingMessage(alert.roomNumber, alert.tenantName, alert.slipAmount, alert.billTotal),
+      ownerSlipPendingMessage(alert.roomNumber, alert.tenantName, alert.slipAmount, alert.billTotal, alert.reasonNote),
     ]);
 
     console.log(JSON.stringify({ message: "slip owner alerted", slipId, delivered: delivered === true }));
@@ -218,8 +280,10 @@ async function keepSlipForReview(
   reason: SlipReason,
   bill: UnpaidBillRow | null,
   sender: SlipSenderRow,
-  receiverMismatch = false,
+  options: { receiverMismatch?: boolean; detail?: string | null; duplicateNotice?: boolean } = {},
 ): Promise<void> {
+  const receiverMismatch = options.receiverMismatch === true;
+
   await env.DB.prepare(updateSlipSql)
     .bind(
       "pending_review",
@@ -227,7 +291,7 @@ async function keepSlipForReview(
       bill?.total ?? null,
       result.amount,
       result.transRef,
-      slipResultJson(result, reason),
+      slipResultJson(result, reason, options.detail ?? null),
       slipId,
       familyId,
     )
@@ -235,14 +299,22 @@ async function keepSlipForReview(
 
   console.log(JSON.stringify({ message: "slip kept for review", slipId, lineUserId, verified: result.verified, reason, receiverMismatch }));
 
-  await pushMessage(env, lineUserId, [
-    receiverMismatch ? { type: "text", text: slipReceiverMismatchMessage } : slipPendingReviewMessage(),
-  ]);
+  const tenantMessage = receiverMismatch
+    ? { type: "text" as const, text: slipReceiverMismatchMessage }
+    : options.duplicateNotice === true
+      ? slipDuplicateReviewMessage()
+      : slipPendingReviewMessage();
+
+  await pushMessage(env, lineUserId, [tenantMessage]);
   await notifyOwnerOfSlipInReview(env, familyId, slipId, {
     roomNumber: sender.room_number,
     tenantName: sender.full_name,
     slipAmount: result.amount,
     billTotal: bill?.total ?? null,
+    reasonNote:
+      reason === "verify_failed" && options.detail != null
+        ? `${slipReasonNotes[reason]} (${options.detail})`
+        : slipReasonNotes[reason],
   });
 }
 
@@ -255,7 +327,16 @@ async function rejectDuplicateSlip(
   usedSlipId: string | null,
 ): Promise<void> {
   await env.DB.prepare(updateSlipSql)
-    .bind("rejected", null, null, result.amount, result.transRef, slipResultJson(result, "duplicate_slip"), slipId, familyId)
+    .bind(
+      "rejected",
+      null,
+      null,
+      result.amount,
+      result.transRef,
+      slipResultJson(result, "duplicate_slip", null, usedSlipId),
+      slipId,
+      familyId,
+    )
     .run();
 
   console.log(JSON.stringify({ message: "slip rejected as a duplicate transfer reference", slipId, lineUserId, usedSlipId }));
@@ -328,17 +409,42 @@ export async function handleSlipImage(
     .bind(familyId, sender.room_id, sender.id)
     .first<UnpaidBillRow>();
 
-  const result = await verifySlip(env, content.bytes, content.contentType, bill?.total ?? null);
+  const outcome = await verifySlip(env, content.bytes, content.contentType, bill?.total ?? null);
+  const result = outcome.result;
   const amount = result.amount;
   const transRef = result.transRef;
 
+  /**
+   * provider บอก "สลิปซ้ำ" ยังไม่พอที่จะปฏิเสธ
+   *
+   * เขาจำได้แค่ว่าเคยเห็นรูปนี้ ส่วนเรารู้ว่าบิลถูกปิดจริงหรือยัง — สลิปซ้ำของ
+   * จริงคือ "ปิดบิลไปแล้ว + provider ยืนยันซ้ำ" ทั้งสองเงื่อนไข ถ้าเรายังไม่มี
+   * ใบที่ matched แปลว่าเงินก้อนนั้นยังไม่ถูกใช้ปิดบิล จึงต้องเข้าคิวรอตรวจ
+   * พร้อมเลขอ้างอิง/ยอดที่อ่านได้ ไม่ใช่ปฏิเสธทิ้ง (ไม่งั้นเงินที่โอนมาจริง
+   * จะหายไปจากสายตาเจ้าของหอ) — และไม่ปิดบิลอัตโนมัติเพราะ provider ยังไม่
+   * ยืนยันว่าสลิปใบนี้ผ่าน
+   */
   if (result.duplicate) {
     const used = transRef === null
       ? null
-      : await env.DB.prepare("SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status <> 'rejected' LIMIT 1")
+      : await env.DB.prepare("SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status = 'matched' LIMIT 1")
           .bind(familyId, transRef)
           .first<{ id: string }>();
-    await rejectDuplicateSlip(env, familyId, slipId, result, userId, used?.id ?? null);
+
+    if (used !== null) {
+      await rejectDuplicateSlip(env, familyId, slipId, result, userId, used.id);
+      return;
+    }
+
+    console.log(
+      JSON.stringify({
+        message: "provider reported a duplicate but no bill was closed with this reference",
+        slipId,
+        lineUserId: userId,
+        transRef,
+      }),
+    );
+    await keepSlipForReview(env, familyId, slipId, result, userId, "duplicate_slip", bill, sender, { duplicateNotice: true });
     return;
   }
 
@@ -358,7 +464,22 @@ export async function handleSlipImage(
         providerReported: result.receiverMismatch,
       }),
     );
-    await keepSlipForReview(env, familyId, slipId, result, userId, "not_verified", bill, sender, true);
+    await keepSlipForReview(env, familyId, slipId, result, userId, "not_verified", bill, sender, { receiverMismatch: true });
+    return;
+  }
+
+  /**
+   * "ตรวจไม่ได้" ต้องแยกจาก "ตรวจแล้วไม่ผ่าน" ให้เจ้าของหอเห็นชัด
+   *
+   * สลิปที่โอนผิดบัญชีหรือยอดไม่ตรง คือคำตอบที่ผู้ให้บริการยืนยันแล้วว่ารู้เรื่อง
+   * ส่วนคีย์หาย ผู้ให้บริการล่ม หรือรูปอ่านไม่ออก คือระบบเรายังไม่ได้คำตอบ —
+   * ต้องเล่าให้ต่างกัน ไม่งั้นเจ้าของหอจะเห็นแค่ "ตรวจไม่ผ่าน" เหมือนกันหมด
+   * แล้วไม่รู้ว่าต้องไปแก้ที่ไหน (นี่คือเหตุผลที่กรณีนี้เคยหายไปกับ log)
+   */
+  if (outcome.failed) {
+    await keepSlipForReview(env, familyId, slipId, result, userId, "verify_failed", bill, sender, {
+      detail: outcome.failure,
+    });
     return;
   }
 
@@ -368,8 +489,18 @@ export async function handleSlipImage(
     return;
   }
 
+  /**
+   * ปิดบิลไปแล้วเท่านั้นจึงเรียกว่าสลิปซ้ำ
+   *
+   * เงื่อนไขเดิม (`status <> 'rejected'`) นับสลิปที่แค่ "เคยเก็บเลขอ้างอิงไว้"
+   * ด้วย ทำให้สลิปที่ provider อ่านไม่ได้รอบแรกแต่เราอ่านได้ (หรือยอดไม่ตรงแล้ว
+   * เข้าคิว) พอโอนมาอีกรอบถูกกล่าวหาว่าซ้ำทั้งที่ยังไม่มีบิลใบไหนถูกปิด —
+   * ผู้เช่าจึงถูกปฏิเสธทั้งที่เงินยังไม่ถูกใช้ปิดบิล
+   */
   if (transRef !== null) {
-    const used = await env.DB.prepare("SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status <> 'rejected' LIMIT 1")
+    const used = await env.DB.prepare(
+      "SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status = 'matched' LIMIT 1",
+    )
       .bind(familyId, transRef)
       .first<{ id: string }>();
 
@@ -401,7 +532,15 @@ export async function handleSlipImage(
     ]);
   } catch (error) {
     if (isUniqueViolation(error)) {
-      await rejectDuplicateSlip(env, familyId, slipId, result, userId, null);
+      // ด่าน unique index ยิงเพราะมีใบ matched ด้วยเลขอ้างอิงเดียวกันอยู่จริง
+      // ดึง id มาให้ครบเพื่อให้บันทึกได้ว่าไปซ้ำกับใบไหน ไม่ใช่ปล่อยเป็น null
+      const used = transRef === null
+        ? null
+        : await env.DB.prepare("SELECT id FROM slips WHERE family_id = ? AND trans_ref = ? AND status = 'matched' LIMIT 1")
+            .bind(familyId, transRef)
+            .first<{ id: string }>();
+
+      await rejectDuplicateSlip(env, familyId, slipId, result, userId, used?.id ?? null);
       return;
     }
 
@@ -423,7 +562,16 @@ export async function handleSlipImage(
       return;
     }
 
-    await keepSlipForReview(env, familyId, slipId, result, userId, "no_unpaid_bill", null, sender);
+    /**
+     * บิลที่เทียบไว้ถูกปิดไปก่อนระหว่างที่สลิปกำลังถูกตรวจ (เจ้าของกดปิดเอง
+     * หรือสลิปอีกใบปิดไปก่อน) — ต้องเก็บ bill ไว้ ไม่ใช่ทิ้งเป็น null
+     *
+     * เราเทียบสลิปกับใบนี้จริงและรู้ว่ามันคือใบไหน การทิ้งข้อมูลทำให้เจ้าของหอ
+     * เห็น "ไม่มีบิลให้เทียบ" แล้วไม่รู้ว่าสลิปนี้ตั้งใจจะปิดบิลใบใด ทั้งที่รู้อยู่
+     * (reason ยังเป็น `no_unpaid_bill` เพราะตอนตัดสินไม่มีบิลค้างเหลือแล้ว
+     * แต่ `bill_id` ไม่ null คือสัญญาณว่ามีใบที่ถูกปิดไปก่อน)
+     */
+    await keepSlipForReview(env, familyId, slipId, result, userId, "no_unpaid_bill", bill, sender);
     return;
   }
 

@@ -190,14 +190,28 @@ export function slipDuplicateMessage(): LineFlexMessage {
   ]);
 }
 
+/**
+ * ผู้ให้บริการบอกว่าสลิปซ้ำ แต่เราไม่พบบิลที่ปิดด้วยสลิปนี้
+ *
+ * ข้อความต้องไม่กล่าวหาว่า "ถูกใช้ปิดบิลไปแล้ว" เพราะเรายังไม่พบว่าถูกใช้ —
+ * และต้องบอกผู้เช่าว่าเงินไม่ได้หายไปไหน แค่รอเจ้าของหอตรวจ
+ */
+export function slipDuplicateReviewMessage(): LineFlexMessage {
+  return card("warning", "สลิปรอตรวจสอบ", "ระบบเคยเห็นสลิปใบนี้แล้ว แต่ยังไม่พบบิลที่ปิดด้วยสลิปนี้ เจ้าของหอจะตรวจสอบให้", [
+    note("ระบบเคยเห็นสลิปใบนี้แล้ว"),
+    note("ยังไม่พบบิลที่ปิดด้วยสลิปนี้ เจ้าของหอจะตรวจสอบและยืนยันผลให้อีกครั้ง"),
+  ]);
+}
+
 export function ownerSlipPendingMessage(
   roomNumber: string,
   tenantName: string,
   slipAmount: number | null,
   billTotal: number | null,
+  reasonNote: string | null = null,
 ): LineFlexMessage {
   const amountValue = slipAmount === null ? "อ่านไม่ได้" : `${bahtText(slipAmount)} บาท`;
-  const compareValue = billTotal === null ? "ยังไม่มีบิลค้างให้เทียบ" : `${bahtText(billTotal)} บาท`;
+  const compareValue = billTotal === null ? "ตอนรับสลิปไม่พบบิลค้าง" : `${bahtText(billTotal)} บาท`;
 
   return card("warning", "มีสลิปใหม่รอตรวจ", `มีสลิปใหม่รอตรวจจากห้อง ${roomNumber} คุณ${tenantName}`, [
     ...rows([
@@ -206,6 +220,7 @@ export function ownerSlipPendingMessage(
       { label: "ยอดในสลิป", value: amountValue, bold: true },
       { label: "เทียบกับยอดบิล", value: compareValue, bold: true },
     ]),
+    ...(reasonNote === null ? [] : [separator(), note(reasonNote)]),
     separator(),
     note("เปิดหน้าคิวรอตรวจเพื่อปิดบิลหรือปฏิเสธ"),
   ]);

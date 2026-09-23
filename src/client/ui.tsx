@@ -407,7 +407,8 @@ export function Drawer({ open, onClose, title, children, footer }: DrawerProps) 
 
 export interface DataTableColumn<T> {
   key: string;
-  header: string;
+  /** ข้อความหัวคอลัมน์ หรือคอนโทรลของคอลัมน์นั้น (เช่น ช่องเลือกทั้งคอลัมน์) */
+  header: ReactNode;
   align?: "left" | "right";
   render: (row: T) => ReactNode;
 }

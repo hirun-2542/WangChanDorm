@@ -356,6 +356,42 @@ function periodFromHash(): string {
   return /^\d{4}-\d{2}$/.test(requested) ? requested : "";
 }
 
+/**
+ * ช่องเลือกทั้งชุดที่กำลังแสดงอยู่ ใช้ทั้งหัวตารางและแถบด้านล่างของมือถือ
+ * จึงรับ checked/indeterminate จากภายนอก เพื่อให้ทั้งสองที่ตรงกันเสมอ
+ */
+function SelectAllCheckbox({
+  checked,
+  indeterminate,
+  disabled,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+  label: string;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <input
+      type="checkbox"
+      className="h-6 w-6 shrink-0 accent-charcoal md:h-5 md:w-5"
+      checked={checked}
+      disabled={disabled}
+      aria-label={label}
+      ref={(node) => {
+        if (node !== null) {
+          node.indeterminate = indeterminate;
+        }
+      }}
+      onChange={(event) => {
+        onToggle(event.target.checked);
+      }}
+    />
+  );
+}
+
 export function CreateWizard({
   settings,
   tenants,
@@ -572,6 +608,11 @@ export function CreateWizard({
     (entry) => entry.calc.chargeInvalid,
   );
 
+  /**
+   * โฟกัสปลายทางต้องมาจาก DOM ที่ผู้ใช้เห็นเท่านั้น — ตารางกับรายการการ์ดเรนเดอร์
+   * ข้อความผิดพลาดด้วย id เดียวกันทั้งคู่ จึงต้องหาก่อนว่าอันไหนถูกซ่อนอยู่
+   * ไม่งั้นบนมือถือจะไปโฟกัสช่องในตารางที่ display:none แล้วไม่มีอะไรเกิดขึ้น
+   */
   const focusFirstChargeError = () => {
     if (firstChargeError === undefined) {
       return;
@@ -581,7 +622,12 @@ export function CreateWizard({
     openCharges(room);
 
     window.requestAnimationFrame(() => {
-      const cell = document.getElementById(`charge-cell-${room}`);
+      const cells = document.querySelectorAll<HTMLElement>(
+        `[id="charge-cell-${room}"]`,
+      );
+      const cell =
+        [...cells].find((node) => node.offsetParent !== null) ?? cells[0];
+
       cell?.scrollIntoView({ block: "center", behavior: "smooth" });
       cell
         ?.querySelector<HTMLInputElement>('input[aria-invalid="true"]')
@@ -641,6 +687,45 @@ export function CreateWizard({
     return matchesQuery && matchesStatus;
   });
 
+  // ห้องที่ออกบิลแล้วเลือกไม่ได้ จึงไม่นับเข้าชุด "เลือกทั้งหมด"
+  const selectableVisible = visibleEntries.filter(
+    (entry) => entry.calc.status !== "billed",
+  );
+  const selectedVisible = selectableVisible.filter(
+    (entry) => entry.row.selected,
+  );
+  const allVisibleSelected =
+    selectableVisible.length > 0 &&
+    selectedVisible.length === selectableVisible.length;
+  const someVisibleSelected =
+    selectedVisible.length > 0 && !allVisibleSelected;
+
+  const setSelectedFor = (roomIds: Set<string>, selected: boolean) => {
+    setRows((prev) =>
+      prev.map((row) =>
+        roomIds.has(row.sheet.roomId) ? { ...row, selected } : row,
+      ),
+    );
+  };
+
+  const toggleAllVisible = (next: boolean) => {
+    setSelectedFor(
+      new Set(selectableVisible.map((entry) => entry.row.sheet.roomId)),
+      next,
+    );
+  };
+
+  const setSelectedOfKind = (kind: RowStatus, selected: boolean) => {
+    setSelectedFor(
+      new Set(
+        entries
+          .filter((entry) => entry.calc.status === kind)
+          .map((entry) => entry.row.sheet.roomId),
+      ),
+      selected,
+    );
+  };
+
   const activeEntry =
     entries.find((entry) => entry.row.sheet.roomId === activeRoomId) ??
     entries[0];
@@ -698,7 +783,7 @@ export function CreateWizard({
           <input
             type="text"
             inputMode="numeric"
-            className={`input-inline w-14${invalid || serverMessage !== undefined ? " border-danger" : ""}`}
+            className={`input-inline w-[72px]${invalid || serverMessage !== undefined ? " border-danger" : ""}`}
             value={value}
             aria-label={`มิเตอร์${kind === "water" ? "น้ำ" : "ไฟ"}ครั้งนี้ ห้อง ${entry.row.sheet.roomNumber}`}
             aria-invalid={invalid || serverMessage !== undefined}
@@ -768,7 +853,7 @@ export function CreateWizard({
           <input
             type="text"
             inputMode="numeric"
-            className={`input-inline w-14${message === undefined ? "" : " border-danger"}`}
+            className={`input-inline w-[72px]${message === undefined ? "" : " border-danger"}`}
             value={entry.row.flatAmount}
             aria-label={`ค่าไฟเหมาจ่าย ห้อง ${entry.row.sheet.roomNumber}`}
             aria-invalid={message !== undefined}
@@ -994,7 +1079,15 @@ export function CreateWizard({
   const columns: DataTableColumn<Entry>[] = [
     {
       key: "select",
-      header: "",
+      header: (
+        <SelectAllCheckbox
+          checked={allVisibleSelected}
+          indeterminate={someVisibleSelected}
+          disabled={selectableVisible.length === 0}
+          label="เลือกทุกห้องที่แสดงอยู่"
+          onToggle={toggleAllVisible}
+        />
+      ),
       render: (entry) => (
         <input
           type="checkbox"
@@ -1044,7 +1137,7 @@ export function CreateWizard({
     },
     {
       key: "waterMeter",
-      header: "น้ำ",
+      header: "มิเตอร์น้ำ",
       align: "right",
       render: (entry) => meterCell(entry, "water"),
     },
@@ -1056,7 +1149,7 @@ export function CreateWizard({
     },
     {
       key: "electricMeter",
-      header: "ไฟ",
+      header: "มิเตอร์ไฟ",
       align: "right",
       render: (entry) => meterCell(entry, "electric"),
     },
@@ -1098,7 +1191,7 @@ export function CreateWizard({
           <div className="flex min-w-0 items-start gap-3">
             <input
               type="checkbox"
-              className="mt-0.5 h-5 w-5 shrink-0 accent-charcoal"
+              className="mt-0.5 h-6 w-6 shrink-0 accent-charcoal"
               checked={entry.row.selected}
               disabled={billed}
               aria-label={`เลือกห้อง ${entry.row.sheet.roomNumber}`}
@@ -1311,9 +1404,23 @@ export function CreateWizard({
                   </option>
                 ))}
               </select>
-              <Badge tone="neutral" icon="pending_actions">
-                ยังไม่สร้างบิล
-              </Badge>
+              {loading ? (
+                <Badge tone="neutral" icon="pending_actions">
+                  กำลังโหลดข้อมูล
+                </Badge>
+              ) : billedEntries.length === 0 ? (
+                <Badge tone="neutral" icon="pending_actions">
+                  ยังไม่สร้างบิล
+                </Badge>
+              ) : billedEntries.length === entries.length ? (
+                <Badge tone="paid" icon="check_circle">
+                  {`ออกบิลครบแล้ว ${billedEntries.length} ห้อง`}
+                </Badge>
+              ) : (
+                <Badge tone="review" icon="receipt_long">
+                  {`ออกบิลแล้ว ${billedEntries.length} จาก ${entries.length} ห้อง`}
+                </Badge>
+              )}
               <span className="ml-auto text-xs text-fog">
                 สร้างเฉพาะห้องที่มีผู้เช่า
               </span>
@@ -1473,6 +1580,69 @@ export function CreateWizard({
                           {previewDocked
                             ? "ซ่อนตัวอย่างบิล"
                             : "แสดงตัวอย่างบิล"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-ash pt-3">
+                      <label className="flex items-center gap-2 text-sm text-charcoal md:hidden">
+                        <SelectAllCheckbox
+                          checked={allVisibleSelected}
+                          indeterminate={someVisibleSelected}
+                          disabled={selectableVisible.length === 0}
+                          label="เลือกทุกห้องที่แสดงอยู่"
+                          onToggle={toggleAllVisible}
+                        />
+                        {`เลือกที่แสดงอยู่ ${selectedVisible.length}/${selectableVisible.length}`}
+                      </label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={selectableVisible.length === 0}
+                          onClick={() => {
+                            toggleAllVisible(true);
+                          }}
+                        >
+                          {visibleEntries.length === entries.length
+                            ? "เลือกทั้งหมด"
+                            : "เลือกที่แสดงอยู่"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={selectedEntries.length === 0}
+                          onClick={() => {
+                            toggleAllVisible(false);
+                          }}
+                        >
+                          ไม่เลือกเลย
+                        </Button>
+                      </div>
+                      <div className="ml-auto flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon="done_all"
+                          disabled={ready.length === 0}
+                          aria-label={`เลือกเฉพาะห้องที่กรอกครบแล้ว ${ready.length} ห้อง`}
+                          onClick={() => {
+                            setSelectedOfKind("ready", true);
+                          }}
+                        >
+                          {`เลือกเฉพาะที่กรอกครบ ${ready.length}`}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon="block"
+                          disabled={emptyCount === 0}
+                          aria-label={`ไม่เลือกห้องที่ยังไม่กรอก ${emptyCount} ห้อง`}
+                          onClick={() => {
+                            setSelectedOfKind("empty", false);
+                          }}
+                        >
+                          {`ไม่เลือกที่ยังไม่กรอก ${emptyCount}`}
                         </Button>
                       </div>
                     </div>

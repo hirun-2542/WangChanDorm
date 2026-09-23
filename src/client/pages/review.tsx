@@ -23,19 +23,22 @@ import {
 } from "../ui";
 import { baht, billNumber, periodLabel, stampLabel } from "./bills-shared";
 
-type FilterId = "all" | "mismatch" | "not_verified";
+type FilterId = "all" | "mismatch" | "not_verified" | "verify_failed" | "duplicate_slip";
 
 const filterOptions: { id: FilterId; label: string }[] = [
   { id: "all", label: "ทั้งหมด" },
   { id: "mismatch", label: "ยอดไม่ตรง" },
   { id: "not_verified", label: "ตรวจไม่ผ่าน" },
+  { id: "verify_failed", label: "ตรวจไม่ได้" },
+  { id: "duplicate_slip", label: "สลิปซ้ำ" },
 ];
 
 const reasonLabels: Record<SlipReason, string> = {
   mismatch: "ยอดไม่ตรง",
   not_verified: "ตรวจไม่ผ่าน",
-  no_unpaid_bill: "ไม่มีบิลค้างให้เทียบ",
-  duplicate_slip: "สลิปซ้ำ",
+  no_unpaid_bill: "ไม่พบบิลค้างตอนรับสลิป",
+  duplicate_slip: "สลิปซ้ำ (ยังไม่ปิดบิล)",
+  verify_failed: "ตรวจไม่ได้",
 };
 
 const reasonTones: Record<SlipReason, BadgeTone> = {
@@ -43,6 +46,7 @@ const reasonTones: Record<SlipReason, BadgeTone> = {
   not_verified: "danger",
   no_unpaid_bill: "review",
   duplicate_slip: "review",
+  verify_failed: "review",
 };
 
 const unknownRoom = "ไม่ทราบห้อง";
@@ -141,8 +145,34 @@ function deltaBadge(delta: number | null): DeltaBadge {
     : { tone: "review", label: "สลิปเกิน" };
 }
 
-function verifyLabel(slip: Slip): string {
-  return slip.verified ? "สลิปจริง" : "SlipOK ตรวจไม่ผ่าน";
+/**
+ * เหตุผลของผลตรวจ อ่านแล้วรู้ว่าต้องทำอะไรต่อ
+ *
+ * เดิมขึ้นแค่ "SlipOK ตรวจไม่ผ่าน" ซึ่งไม่บอกอะไรเลยว่าที่ไม่ผ่านคือสลิปปลอม
+ * รูปอ่านไม่ออก หรือระบบเราติดต่อผู้ให้บริการไม่ได้ — สามอย่างนี้ต้องแก้คนละทาง
+ */
+function verifyDetail(slip: Slip): string {
+  if (slip.verified) {
+    return "สลิปจริง";
+  }
+
+  if (slip.reason === "verify_failed") {
+    return slip.verify.detail === null ? "ตรวจไม่ได้" : `ตรวจไม่ได้: ${slip.verify.detail}`;
+  }
+
+  if (slip.reason === "duplicate_slip") {
+    return slip.verify.message === null
+      ? "ผู้ให้บริการแจ้งว่าสลิปนี้เคยถูกส่งเข้ามาแล้ว"
+      : `ผู้ให้บริการแจ้งว่าซ้ำ: ${slip.verify.message}`;
+  }
+
+  if (slip.verify.message !== null) {
+    return slip.verify.code === null
+      ? `ตรวจไม่ผ่าน: ${slip.verify.message}`
+      : `ตรวจไม่ผ่าน (${slip.verify.code}): ${slip.verify.message}`;
+  }
+
+  return "ตรวจไม่ผ่าน";
 }
 
 function transRefLabel(slip: Slip): string {
@@ -513,7 +543,7 @@ export function ReviewPage() {
                         สลิปโอนเงินที่ผู้เช่าส่งมา
                       </span>
                       <Badge tone={selected.verified ? "paid" : "danger"}>
-                        {verifyLabel(selected)}
+                        {selected.verified ? "สลิปจริง" : "ตรวจไม่ผ่าน"}
                       </Badge>
                     </div>
                     <a
@@ -531,19 +561,39 @@ export function ReviewPage() {
                     <p className="mt-2 text-xs text-fog">{`กดที่รูปเพื่อเปิดสลิปขนาดเต็ม · โอนเมื่อ ${transferLabel(selected)}`}</p>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2">
-                    <span className="text-sm text-steel">ผลตรวจจาก SlipOK</span>
-                    <span className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        tone={selected.verified ? "paid" : "danger"}
-                        icon={selected.verified ? "verified" : "error"}
-                      >
-                        {selected.verified ? "สลิปจริง" : "ตรวจไม่ผ่าน"}
-                      </Badge>
-                      <span className="num text-xs text-fog">
-                        {transRefLabel(selected)}
+                  <div className="rounded-lg border border-ash px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span className="text-sm text-steel">ผลตรวจจาก SlipOK</span>
+                      <span className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          tone={selected.verified ? "paid" : "danger"}
+                          icon={selected.verified ? "verified" : "error"}
+                        >
+                          {selected.verified ? "สลิปจริง" : "ตรวจไม่ผ่าน"}
+                        </Badge>
+                        <span className="num text-xs text-fog">
+                          {transRefLabel(selected)}
+                        </span>
                       </span>
-                    </span>
+                    </div>
+                    {!selected.verified && (
+                      <p className="mt-2 text-sm text-charcoal">{verifyDetail(selected)}</p>
+                    )}
+                    {selected.reason === "verify_failed" && (
+                      <p className="mt-1 text-xs text-fog">
+                        ระบบติดต่อผู้ให้บริการตรวจสลิปไม่ได้ จึงยังยืนยันไม่ได้ว่า
+                        สลิปจริงหรือไม่ — ตรวจรูปเทียบกับรายการเดินบัญชีเองแล้วตัดสิน
+                      </p>
+                    )}
+                    {selected.reason === "duplicate_slip" && (
+                      <p className="mt-1 text-xs text-fog">
+                        ผู้ให้บริการยืนยันว่าสลิปใบนี้เคยถูกส่งเข้ามาแล้ว
+                        แต่ระบบไม่พบบิลที่ปิดด้วยสลิปนี้
+                        {selected.verify.usedSlipId === null
+                          ? " — ตรวจยอดกับรายการเดินบัญชีก่อนตัดสิน"
+                          : " — มีสลิปที่ปิดบิลด้วยเลขอ้างอิงเดียวกันอยู่ ตรวจว่าใช่ใบเดียวกันหรือไม่"}
+                      </p>
+                    )}
                   </div>
 
                   <div className="rounded-lg border border-ash p-4">
@@ -580,9 +630,11 @@ export function ReviewPage() {
                       <p className="text-xs text-fog">บิลที่นำมาเทียบ</p>
                       {selected.bill === null ? (
                         <p className="mt-1 text-sm text-charcoal">
-                          สลิปนี้ไม่มีบิลให้เทียบ
-                          เพราะตอนส่งสลิปห้องนี้ยังไม่มีบิลค้าง
-                          หรือบิลถูกลบไปแล้ว
+                          สลิปนี้ไม่มีบิลให้เทียบ — ตอนบอทรับสลิป
+                          ห้องนี้ไม่มีบิลค้างที่ยังไม่จ่าย
+                          (สลิปอาจมาถึงก่อนออกบิล หรือบิลถูกรับชำระไปก่อนแล้ว)
+                          ปิดบิลด้วยสลิปนี้จากตรงนี้ไม่ได้
+                          ให้ปฏิเสธสลิปแล้วปิดบิลด้วยมือจากหน้าบิล
                         </p>
                       ) : (
                         <>
@@ -597,6 +649,13 @@ export function ReviewPage() {
                           <p className="mt-0.5 text-xs text-fog">
                             {`รอบบิล ${periodLabel(selected.bill.period)} · เลขที่ใบแจ้งหนี้ ${billNumber(selected.bill)}`}
                           </p>
+                          {selected.reason === "no_unpaid_bill" && (
+                            <p className="mt-1 text-xs text-fog">
+                              บิลใบนี้ถูกปิดไปก่อนที่ระบบจะตรวจสลิปเสร็จ
+                              จึงไม่ถูกนับเป็นการปิดอัตโนมัติจากสลิปนี้ —
+                              ตรวจว่าเป็นการชำระครั้งเดียวกันหรือไม่ก่อนตัดสิน
+                            </p>
+                          )}
                         </>
                       )}
                     </div>

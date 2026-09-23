@@ -480,6 +480,42 @@ async function claimEvents(env: Env, events: readonly unknown[]): Promise<unknow
   return fresh;
 }
 
+/**
+ * ประมวลผลเหตุการณ์หนึ่งแบบเบื้องหลัง โดยไม่ปล่อยให้ความล้มเหลวหายไป
+ *
+ * เหตุการณ์ถูกจองสิทธิ์ไว้แล้วก่อนตอบ 200 จึงไม่มีทางที่ LINE จะส่งเหตุการณ์
+ * เดิมกลับมาให้ลองใหม่ (redelivery ปิดอยู่โดยค่าเริ่มต้น) จึงต้อง log ให้ครบ
+ * และปล่อยสิทธิ์คืน เพื่อให้กดส่งซ้ำด้วยมือหรือเปิด redelivery ในอนาคตทำงานได้
+ * จริง งานที่ล้มกลางคันต้องไม่ถูกมองว่า "ทำไปแล้ว"
+ */
+async function runEvent(env: Env, family: string, origin: string, event: unknown): Promise<void> {
+  const record = asRecord(event);
+  const webhookEventId = record === null ? "" : readString(record, "webhookEventId");
+
+  try {
+    await handleEvent(env, family, origin, event);
+  } catch (error) {
+    const detail = failureDetail(error);
+    console.error(
+      JSON.stringify({ message: "line webhook failed", webhookEventId, error: detail }),
+    );
+
+    if (webhookEventId !== "") {
+      try {
+        await env.DB.prepare("DELETE FROM line_events WHERE id = ?").bind(webhookEventId).run();
+      } catch (releaseError) {
+        console.error(
+          JSON.stringify({
+            message: "line event release failed",
+            webhookEventId,
+            error: failureDetail(releaseError),
+          }),
+        );
+      }
+    }
+  }
+}
+
 lineWebhook.post("/", async (c) => {
   const rawBody = await c.req.text();
   const signature = c.req.header("x-line-signature") ?? "";
@@ -528,50 +564,17 @@ lineWebhook.post("/", async (c) => {
     return c.json({ ok: true }, 200);
   }
 
-  // ประมวลผลก่อนตอบเสมอ (ไม่ใช้ waitUntil ทิ้งไว้เบื้องหลัง) เพราะ LINE ส่งซ้ำ
-  // ตามสถานะการตอบกลับของคำขอนี้เท่านั้น ถ้าตอบ 200 ไปก่อนแล้วค่อยประมวลผล
-  // ทีหลัง ไม่ว่าจะปล่อยสิทธิ์คืนยังไง LINE ก็ไม่มีทางรู้ว่าต้องส่งซ้ำ
+  // ตอบ 200 ให้ LINE ทันทีแล้วทำงานเบื้องหลัง
   //
-  // ล้มเหลวที่นับว่าควรให้ส่งซ้ำคือเฉพาะข้อผิดพลาดที่ throw ออกมาจริง (เช่น
-  // เขียนฐานข้อมูลไม่สำเร็จ) เท่านั้น ไม่ใช่แค่ส่งข้อความตอบกลับไม่สำเร็จ
-  // เพราะการเปลี่ยนสถานะ (ผูกผู้เช่า, ใช้รหัสเจ้าของ, บันทึกสลิป) มักสำเร็จ
-  // ไปแล้วก่อนถึงขั้นตอบกลับ ให้ LINE ส่งซ้ำจะไม่ได้ส่งข้อความเดิมซ้ำอยู่ดี
-  // (เจอเงื่อนไข "ทำไปแล้ว" แล้วเงียบ) และสำหรับสลิปยิ่งเสี่ยงสร้างซ้ำ
-  let hadFailure = false;
-
+  // เดิมประมวลผล inline ก่อนตอบ ซึ่งกินเวลาหลายวินาที (ดาวน์โหลดรูป + R2 +
+  // ตรวจสลิปกับ SlipOK) เกินเวลาที่ LINE รอ — invocation ถูกตัดกลางทางแล้ว
+  // งานที่ทำค้างไว้หายไปครึ่งๆ กลางๆ โดยไม่มีใครรู้ (สลิป 2026-09-21 ถูกสร้าง
+  // แถวแล้วแต่ verify_result เป็น NULL ตลอดกาล และ LINE ไม่ส่งซ้ำให้เพราะ
+  // redelivery ปิดอยู่โดยค่าเริ่มต้น) ดังนั้น "ตอบให้ทัน" คือสิ่งที่ต้องมาก่อน
+  // ผลลัพธ์ของงาน ส่วนความคืบหน้าของงานอาศัย claimEvents ที่จองสิทธิ์ไว้แล้ว
+  // ตั้งแต่ก่อนตอบ และ waitUntil ที่การันตีว่า Worker จะไม่ถูกฆ่ากลางทาง
   for (const event of fresh) {
-    try {
-      await handleEvent(webhookEnv, family, origin, event);
-    } catch (error) {
-      hadFailure = true;
-      console.error(
-        JSON.stringify({ message: "line webhook failed", error: failureDetail(error) }),
-      );
-
-      // ปล่อยสิทธิ์คืนให้เหตุการณ์นี้เพื่อให้การส่งซ้ำของ LINE (จาก response
-      // ที่ไม่ใช่ 2xx ด้านล่าง) ประมวลผลใหม่ได้จริง ไม่ใช่ถูกมองว่า "เคย
-      // ประมวลผลไปแล้ว" ทั้งที่จริงล้มเหลวตั้งแต่ครั้งแรก
-      const record = asRecord(event);
-      const webhookEventId = record === null ? "" : readString(record, "webhookEventId");
-
-      if (webhookEventId !== "") {
-        try {
-          await webhookEnv.DB.prepare("DELETE FROM line_events WHERE id = ?").bind(webhookEventId).run();
-        } catch (releaseError) {
-          console.error(
-            JSON.stringify({
-              message: "line event release failed",
-              webhookEventId,
-              error: failureDetail(releaseError),
-            }),
-          );
-        }
-      }
-    }
-  }
-
-  if (hadFailure) {
-    return c.json(errorBody("INTERNAL", "ประมวลผลบางเหตุการณ์ไม่สำเร็จ"), 500);
+    c.executionCtx.waitUntil(runEvent(webhookEnv, family, origin, event));
   }
 
   return c.json({ ok: true }, 200);

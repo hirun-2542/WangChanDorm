@@ -72,6 +72,7 @@ interface RoomStatPayload {
   hasPendingSlip: boolean;
   lastBilledPeriod: string | null;
   behindPeriods: number;
+  arrears: { periods: string[]; amount: number };
 }
 
 interface DashboardPayload {
@@ -406,6 +407,56 @@ describe("GET /api/stats/dashboard", () => {
     expect(octoberStatus.get("P142")).toBe("unbilled");
     expect(octoberStatus.get("P143")).toBe("vacant");
     expect(octoberPayload.kpis.unbilledRooms).toBe(1);
+  });
+
+  /**
+   * กฎของหอ: คิดบิลเป็นรายเดือน และบิลค้างของงวดก่อนไม่มีผลกับการออกบิลงวดใหม่
+   * แต่ "ห้องไหนค้าง" ต้องไม่หายไปจากสายตาเจ้าของหอ — behindPeriods บอกแค่ว่า
+   * ยังไม่ออกบิลของงวดนั้น ส่วน arrears บอกว่าเงินของงวดก่อนยังไม่เข้า
+   */
+  it("records a room's arrears even while its current period is billed and unpaid", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("Q221", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+
+    const july = await generateOne("2026-07", room.room.id, { waterCurrent: 5, electricCurrent: 5 });
+    const august = await generateOne("2026-08", room.room.id, { waterCurrent: 7, electricCurrent: 7 });
+    const september = await generateOne("2026-09", room.room.id, { waterCurrent: 9, electricCurrent: 9 });
+
+    // จ่ายแต่งวด 2026-07 ที่เก่าสุด
+    await markPaid(july.id);
+
+    const sept = pick((await dashboard("2026-09")).rooms, (item) => item.roomNumber === "Q221");
+    expect(sept.status).toBe("unpaid");
+    expect(sept.behindPeriods).toBe(0);
+    expect(sept.arrears.periods).toEqual(["2026-08"]);
+    expect(sept.arrears.amount).toBe(august.total);
+
+    // ดูงวด 2026-07: บิลของงวดนั้นจ่ายแล้วจึงไม่มีอะไรค้าง และงวดถัดไปไม่ถูกนับเป็นค้าง
+    const julyView = pick((await dashboard("2026-07")).rooms, (item) => item.roomNumber === "Q221");
+    expect(julyView.status).toBe("paid");
+    expect(julyView.arrears.periods).toEqual([]);
+    expect(julyView.arrears.amount).toBe(0);
+
+    // งวด 2026-08 ยังไม่จ่าย และ 2026-07 จ่ายแล้ว จึงไม่มี arrears ก่อนหน้านั้น
+    const augustView = pick((await dashboard("2026-08")).rooms, (item) => item.roomNumber === "Q221");
+    expect(augustView.status).toBe("unpaid");
+    expect(augustView.arrears.periods).toEqual([]);
+
+    expect(september.total).toBeGreaterThan(0);
+  });
+
+  it("never counts the requested period itself as arrears", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("Q222", { rent: 3500, waterMeterInit: 0, electricMeterInit: 0 });
+
+    await generateOne("2026-08", room.room.id, { waterCurrent: 5, electricCurrent: 5 });
+
+    const payload = await dashboard("2026-08");
+    const stat = pick(payload.rooms, (item) => item.roomNumber === "Q222");
+
+    expect(stat.status).toBe("unpaid");
+    expect(stat.arrears.periods).toEqual([]);
+    expect(stat.arrears.amount).toBe(0);
   });
 
   it("reports the newest billed period and how many periods each occupied room is behind it", async () => {

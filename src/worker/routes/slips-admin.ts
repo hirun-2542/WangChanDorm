@@ -91,7 +91,19 @@ interface SlipPayload {
   slipAmount: number | null;
   bill: BillPayload | null;
   verified: boolean;
-  verify: { verified: boolean; transRef: string | null; date: string | null };
+  /**
+   * ผลตรวจจากผู้ให้บริการพร้อมเหตุผล — หน้า รอตรวจ ใช้ `code`/`message`
+   * บอกว่า "ตรวจไม่ผ่านจากอะไร" และ `detail` บอกเมื่อระบบตรวจไม่ได้เลย
+   */
+  verify: {
+    verified: boolean;
+    transRef: string | null;
+    date: string | null;
+    code: number | null;
+    message: string | null;
+    detail: string | null;
+    usedSlipId: string | null;
+  };
   transferAt: string | null;
 }
 
@@ -126,7 +138,15 @@ function toSlipPayload(row: SlipRow): SlipPayload {
     slipAmount: row.amount,
     bill: toBillPayload(row),
     verified: stored.verified,
-    verify: { verified: stored.verified, transRef: row.trans_ref ?? stored.transRef, date: stored.date },
+    verify: {
+      verified: stored.verified,
+      transRef: row.trans_ref ?? stored.transRef,
+      date: stored.date,
+      code: stored.code,
+      message: stored.message,
+      detail: stored.detail,
+      usedSlipId: stored.usedSlipId,
+    },
     transferAt: stored.date,
   };
 }

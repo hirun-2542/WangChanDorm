@@ -440,10 +440,15 @@ export function DashboardPage() {
               <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
                 {rooms.map((room) => {
                   const meta = roomStatusMeta[roomStatusOf(room)];
+                  const arrearsLabel =
+                    room.arrears.periods.length === 0
+                      ? null
+                      : `ค้างจากงวด ${room.arrears.periods.map(periodLabel).join(", ")} รวม ${baht(room.arrears.amount)} บาท`;
                   const label = [
                     `ห้อง ${room.roomNumber}`,
                     meta.word,
                     room.hasPendingSlip ? "มีสลิปรอตรวจ" : null,
+                    arrearsLabel,
                   ]
                     .filter((part) => part !== null)
                     .join(" · ");
@@ -462,6 +467,11 @@ export function DashboardPage() {
                         {room.hasPendingSlip && (
                           <Badge tone="review" icon="fact_check">
                             รอตรวจ
+                          </Badge>
+                        )}
+                        {room.arrears.periods.length > 0 && (
+                          <Badge tone="danger" icon="history">
+                            {`ค้าง ${room.arrears.periods.length} งวด`}
                           </Badge>
                         )}
                       </a>

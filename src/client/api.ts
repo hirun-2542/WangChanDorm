@@ -632,7 +632,11 @@ export async function sendBills(
 export type SlipStatus = "pending_review" | "matched" | "rejected";
 
 export type SlipReason =
-  "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip";
+  | "mismatch"
+  | "not_verified"
+  | "no_unpaid_bill"
+  | "duplicate_slip"
+  | "verify_failed";
 
 export type SlipResolveAction = "settle" | "reject";
 
@@ -654,7 +658,15 @@ export interface Slip {
   slipAmount: number | null;
   bill: SlipBill | null;
   verified: boolean;
-  verify: { verified: boolean; transRef: string | null; date: string | null };
+  verify: {
+    verified: boolean;
+    transRef: string | null;
+    date: string | null;
+    code: number | null;
+    message: string | null;
+    detail: string | null;
+    usedSlipId: string | null;
+  };
   transferAt: string | null;
 }
 
@@ -749,6 +761,13 @@ export interface DashboardRoom {
   hasPendingSlip: boolean;
   lastBilledPeriod: string | null;
   behindPeriods: number;
+  /** บิลค้างของงวดก่อน ๆ ที่ยังไม่ได้รับเงิน (ไม่นับงวดที่กำลังดูอยู่) */
+  arrears: DashboardArrears;
+}
+
+export interface DashboardArrears {
+  periods: string[];
+  amount: number;
 }
 
 export interface DashboardStats {

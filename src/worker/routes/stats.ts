@@ -74,7 +74,30 @@ interface RoomStat {
   hasPendingSlip: boolean;
   lastBilledPeriod: string | null;
   behindPeriods: number;
+  /**
+   * บิลค้างของงวดก่อน ๆ ที่ยังไม่ได้รับเงิน — แยกจากสถานะของงวดที่กำลังดูอยู่
+   *
+   * `behindPeriods` บอกแค่ว่าห้องนี้ "ไม่ได้ออกบิล" มากี่งวด ซึ่งอ่านเป็น
+   * "ไม่มีอะไรค้าง" เมื่อห้องนั้นมีบิลของงวดปัจจุบันแล้ว ทั้งที่อาจค้างเงิน
+   * ของงวดก่อนอยู่ สองตัวนี้จึงตอบคนละคำถามและต้องมีทั้งคู่
+   */
+  arrears: RoomArrears;
 }
+
+interface RoomArrears {
+  periods: string[];
+  amount: number;
+}
+
+interface ArrearsRow {
+  room_id: string;
+  period: string;
+  amount: number;
+}
+
+/** บิลค้างของทุกห้องที่เก่ากว่างวดที่กำลังดู — นับทุกงวด ไม่ใช่แค่ใบล่าสุด */
+const arrearsSql =
+  "SELECT room_id, period, total AS amount FROM bills WHERE family_id = ? AND status = 'unpaid' AND period < ? ORDER BY room_id, period";
 
 const lastBilledPeriodSql =
   "(SELECT b2.period FROM bills b2 WHERE b2.family_id = r.family_id AND b2.room_id = r.id ORDER BY b2.period DESC LIMIT 1)";
@@ -124,13 +147,23 @@ stats.get("/dashboard", async (c) => {
     const family = familyId(c);
     const revenueStart = shiftPeriod(period, -(revenueMonths - 1));
 
-    const [roomResult, billResult, slipResult, revenueResult, latestResult] = await Promise.all([
+    const [roomResult, billResult, slipResult, revenueResult, latestResult, arrearsResult] = await Promise.all([
       c.env.DB.prepare(roomsSql).bind(period, family).all<RoomStatsRow>(),
       c.env.DB.prepare(billsSql).bind(family, period).all<BillStatsRow>(),
       c.env.DB.prepare(pendingSlipsSql).bind(family, period).all<PendingSlipRow>(),
       c.env.DB.prepare(revenueSql).bind(family, revenueStart, period).all<RevenueRow>(),
       c.env.DB.prepare(latestBilledPeriodSql).bind(family).all<{ period: string }>(),
+      c.env.DB.prepare(arrearsSql).bind(family, period).all<ArrearsRow>(),
     ]);
+
+    const arrearsByRoom = new Map<string, RoomArrears>();
+
+    for (const row of arrearsResult.results) {
+      const entry = arrearsByRoom.get(row.room_id) ?? { periods: [], amount: 0 };
+      entry.periods.push(row.period);
+      entry.amount += row.amount;
+      arrearsByRoom.set(row.room_id, entry);
+    }
 
     const latestBilledPeriod = latestResult.results[0]?.period ?? null;
 
@@ -204,6 +237,7 @@ stats.get("/dashboard", async (c) => {
         hasPendingSlip: room.bill_id !== null && pendingSlipBillIds.has(room.bill_id),
         lastBilledPeriod: room.last_billed_period,
         behindPeriods,
+        arrears: arrearsByRoom.get(room.id) ?? { periods: [], amount: 0 },
       };
     });
 
