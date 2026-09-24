@@ -1,14 +1,8 @@
 import { setRealtimeConnectionId } from "./api";
+import type { BillPaidNotice } from "./notifications";
 
-export interface BillPaidNotice {
-  billId: string;
-  roomNumber: string;
-  tenantName: string;
-  period: string;
-  total: number;
-  methodLabel: string;
-  paidAt: string;
-}
+// ชนิดข้อมูลอยู่ที่ notifications.ts (โมดูลข้อมูลล้วน) แล้ว re-export ให้ผู้เรียกเดิม
+export type { BillPaidNotice } from "./notifications";
 
 export interface RealtimeHandlers {
   onBillPaid: (notice: BillPaidNotice) => void;

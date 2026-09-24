@@ -3,6 +3,15 @@ import { AccountButton } from "./account";
 import { useAuth } from "./auth";
 import { announceBillsChanged, announceReviewQueueChanged, fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
 import { ErrorBoundary } from "./error-boundary";
+import { NotificationButton } from "./notification-button";
+import {
+  markAllRead,
+  notificationOf,
+  notificationText,
+  unreadCount,
+  withNotification,
+  type AppNotification,
+} from "./notifications";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
 import { FamilyPage } from "./pages/family";
@@ -195,6 +204,13 @@ function Shell() {
   const [panelDismissed, setPanelDismissed] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
   const [realtimeToast, setRealtimeToast] = useState<string | null>(null);
+  /**
+   * รายการแจ้งเตือนในหน่วยความจำของแท็บ — รับจาก WebSocket เท่านั้น
+   *
+   * Toast ยังอยู่ เพราะเป็นสิ่งที่ทำให้รู้ตัวทันทีโดยไม่ต้องไปกดปุ่มกระดิ่ง
+   * ส่วนรายการนี้ทำให้ "รู้ตัวช้า" ไม่กลายเป็น "ไม่รู้เลย"
+   */
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   // โหมดสาธิตมาจาก AuthProvider แล้ว (ตรวจคู่กับการตรวจเซสชันตั้งแต่เฟรมแรก)
   // ไม่ต้องยิง /api/demo/status ซ้ำที่นี่ ซึ่งเดิมทำให้ยิงสองครั้งต่อการโหลดหนึ่งครั้ง
   const { demoMode } = useAuth();
@@ -226,8 +242,9 @@ function Shell() {
   useEffect(() => {
     return startRealtime({
       onBillPaid: (notice) => {
-        setRealtimeToast(
-          `ห้อง ${notice.roomNumber} ชำระแล้ว ${notice.total.toLocaleString("en-US")} บาท`,
+        setRealtimeToast(notificationText(notice));
+        setNotifications((previous) =>
+          withNotification(previous, notificationOf(notice)),
         );
         announceBillsChanged();
         announceReviewQueueChanged();
@@ -516,6 +533,17 @@ function Shell() {
           </div>
 
           <div className="ml-auto flex items-center gap-3">
+            <NotificationButton
+              variant="full"
+              items={notifications}
+              unread={unreadCount(notifications)}
+              onOpen={() => {
+                setNotifications((previous) => markAllRead(previous));
+              }}
+              onClear={() => {
+                setNotifications([]);
+              }}
+            />
             <PendingLink className="icon-btn" badge={pendingReviewCount} label="รอตรวจสลิป" />
             <AccountButton variant="full" />
           </div>
@@ -523,6 +551,17 @@ function Shell() {
 
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2.5 border-b border-ash bg-canvas-white px-4 md:hidden">
           <Monogram />
+          <NotificationButton
+            variant="icon"
+            items={notifications}
+            unread={unreadCount(notifications)}
+            onOpen={() => {
+              setNotifications((previous) => markAllRead(previous));
+            }}
+            onClear={() => {
+              setNotifications([]);
+            }}
+          />
           <PendingLink className="icon-btn ml-auto h-11 w-11" badge={pendingReviewCount} label="รอตรวจสลิป" />
           <AccountButton variant="icon" />
         </header>
