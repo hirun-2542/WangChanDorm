@@ -67,8 +67,62 @@ export function clearedGoogleStateCookie(secure: boolean): string {
   return flags.join("; ");
 }
 
-/** อ่าน state ที่เราตั้งไว้เอง; SameSite=Lax ทำให้คุกกี้ยังถูกส่งตอน Google เด้งกลับมา */
-export function readGoogleStateCookie(header: string | undefined): string | null {
+/**
+ * คุกกี้พา "ที่หมายปลายทาง" ข้าม Google OAuth
+ *
+ * ต้องเป็นคุกกี้ ไม่ใช่ query ใน `state` เพราะ fragment ของแอปนี้ (`#bills/…`)
+ * ไม่ถูกส่งไปเซิร์ฟเวอร์เลยตอนเบราว์เซอร์พาไป Google — ที่หมายจึงต้องฝากฝั่ง
+ * เซิร์ฟเวอร์ของเราเอง และคุกกี้ตัวนี้ก็ต้องมีอายุสั้นเท่า state เพราะเป็นข้อมูล
+ * ของรอบล็อกอินครั้งเดียว
+ *
+ * แยกจาก `googleStateCookie` โดยตั้งใจ: state ต้องเทียบเท่ากับ nonce ที่ Google
+ * ส่งกลับเท่านั้น การยัดข้อมูลอื่นปนลงไปทำให้การเทียบพร่ามัวโดยไม่ได้อะไร
+ */
+export const googleReturnCookieName = "wangchan_google_next";
+
+export function googleReturnCookie(returnPath: string, secure: boolean): string {
+  const flags = [
+    `${googleReturnCookieName}=${encodeURIComponent(returnPath)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${stateSeconds}`,
+  ];
+
+  if (secure) {
+    flags.push("Secure");
+  }
+
+  return flags.join("; ");
+}
+
+export function clearedGoogleReturnCookie(secure: boolean): string {
+  const flags = [`${googleReturnCookieName}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
+
+  if (secure) {
+    flags.push("Secure");
+  }
+
+  return flags.join("; ");
+}
+
+/** อ่านที่หมายที่ฝากไว้ — ค่าที่ถอดรหัสไม่ได้ถือว่าไม่มี (ไม่ throw) */
+export function readGoogleReturnCookie(header: string | undefined): string | null {
+  const raw = readCookieValue(header, googleReturnCookieName);
+
+  if (raw === null) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** อ่านค่าคุกกี้ตามชื่อ; SameSite=Lax ทำให้คุกกี้ยังถูกส่งตอน Google เด้งกลับมา */
+function readCookieValue(header: string | undefined, name: string): string | null {
   if (header === undefined) {
     return null;
   }
@@ -80,13 +134,18 @@ export function readGoogleStateCookie(header: string | undefined): string | null
       continue;
     }
 
-    if (part.slice(0, separator).trim() === googleStateCookieName) {
+    if (part.slice(0, separator).trim() === name) {
       const value = part.slice(separator + 1).trim();
       return value === "" ? null : value;
     }
   }
 
   return null;
+}
+
+/** อ่าน state ที่เราตั้งไว้เอง; SameSite=Lax ทำให้คุกกี้ยังถูกส่งตอน Google เด้งกลับมา */
+export function readGoogleStateCookie(header: string | undefined): string | null {
+  return readCookieValue(header, googleStateCookieName);
 }
 
 interface UserinfoBody {

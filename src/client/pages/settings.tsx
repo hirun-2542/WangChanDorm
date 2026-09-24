@@ -10,11 +10,15 @@ import {
 import {
   ApiError,
   fetchDormCharges,
+  fetchLineChannel,
   fetchSettings,
   regenerateOwnerCode,
   saveDormCharges,
+  setLineWebhook,
+  unlinkOwnerLine,
   updateSettings,
   type DormChargeInput,
+  type LineChannelStatus,
   type PromptpayType,
   type Settings,
 } from "../api";
@@ -581,6 +585,7 @@ export function SettingsPage() {
   const [dormName, setDormName] = useState("");
   const [ownerName, setOwnerName] = useState("");
   const [ownerPhone, setOwnerPhone] = useState("");
+  const [ownerLineId, setOwnerLineId] = useState("");
   const [waterRate, setWaterRate] = useState("");
   const [electricRate, setElectricRate] = useState("");
   const [payType, setPayType] = useState<PromptpayType>("phone");
@@ -592,6 +597,10 @@ export function SettingsPage() {
   const [banks, setBanks] = useState<Bank[]>([]);
   const [code, setCode] = useState("");
   const [confirmRegen, setConfirmRegen] = useState(false);
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
+  const [channel, setChannel] = useState<LineChannelStatus | null>(null);
+  const [settingWebhook, setSettingWebhook] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   // ตัวจริงที่กันกดรัว: state ใช้แค่ปิดปุ่ม เพราะอ่านค่าไม่ทันในคลิกเดียวกัน
   const regeneratingRef = useRef(false);
@@ -605,6 +614,7 @@ export function SettingsPage() {
     setDormName(data.dormName);
     setOwnerName(data.ownerName);
     setOwnerPhone(data.ownerPhone);
+    setOwnerLineId(data.ownerLineId);
     setWaterRate(String(data.defaultWaterRate));
     setElectricRate(String(data.defaultElectricRate));
     setPayType(data.promptpayType === "citizen-id" ? "citizen-id" : "phone");
@@ -621,10 +631,13 @@ export function SettingsPage() {
     setLoadError(null);
 
     try {
-      const [data, charges] = await Promise.all([
+      const [data, charges, channelStatus] = await Promise.all([
         fetchSettings(),
         fetchDormCharges(),
+        // สถานะช่อง LINE เป็นข้อมูลเสริม — ดึงไม่ได้ก็ไม่ทำให้หน้าล้ม
+        fetchLineChannel().catch(() => null),
       ]);
+      setChannel(channelStatus);
       applySettings(data);
       setChargeRows(
         charges.map((charge) => ({
@@ -718,6 +731,13 @@ export function SettingsPage() {
   const ownerPhoneDigits = ownerPhone.replace(/[\s-]/g, "");
   const ownerPhoneValid =
     ownerPhoneDigits === "" || /^0\d{9}$/.test(ownerPhoneDigits);
+  // LINE ID: "@" นำหน้าได้ ตัวที่เหลือ a–z 0–9 . _ - ยาว 4–30 (ตรงกับด่านฝั่ง server)
+  // และห้ามเป็น id ของ OA หอเอง — ผู้เช่าคุยกับ OA นั้นอยู่แล้ว
+  const ownerLineIdBody = ownerLineId.trim().replace(/^@/, "");
+  const ownerLineIdIsDormOa = ownerLineIdBody.toLowerCase() === "490secnd";
+  const ownerLineIdValid =
+    ownerLineIdBody === "" ||
+    (!ownerLineIdIsDormOa && /^[A-Za-z0-9._-]{4,30}$/.test(ownerLineIdBody));
   const bankDigits = bankNumber.replace(/\D/g, "");
   const bankNumberValid =
     bankDigits === "" || (bankDigits.length >= 10 && bankDigits.length <= 15);
@@ -739,6 +759,7 @@ export function SettingsPage() {
     hasPayoutDestination &&
     bankNumberValid &&
     ownerPhoneValid &&
+    ownerLineIdValid &&
     waterValue !== null &&
     waterValue > 0 &&
     electricValue !== null &&
@@ -822,6 +843,7 @@ export function SettingsPage() {
         dormName: dormName.trim(),
         ownerName: ownerName.trim(),
         ownerPhone: ownerPhone.trim(),
+        ownerLineId: ownerLineId.trim(),
         defaultWaterRate: waterValue ?? 0,
         defaultElectricRate: electricValue ?? 0,
         promptpayType: payType,
@@ -866,6 +888,41 @@ export function SettingsPage() {
     }
   };
 
+  const unlink = async () => {
+    setUnlinking(true);
+
+    try {
+      await unlinkOwnerLine();
+      const refreshed = await fetchSettings();
+      applySettings(refreshed);
+      setConfirmUnlink(false);
+      setToast("เลิกเชื่อม LINE แล้ว — รหัสเดิมถูกยกเลิก ต้องออกรหัสใหม่ถ้าจะเชื่อมอีก");
+    } catch (error) {
+      setConfirmUnlink(false);
+      setToast(
+        error instanceof ApiError ? error.message : "เลิกเชื่อม LINE ไม่สำเร็จ",
+      );
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
+  const setWebhook = async () => {
+    setSettingWebhook(true);
+
+    try {
+      const endpoint = await setLineWebhook();
+      setChannel(await fetchLineChannel().catch(() => null));
+      setToast(`ตั้ง webhook เป็น ${endpoint} แล้ว`);
+    } catch (error) {
+      setToast(
+        error instanceof ApiError ? error.message : "ตั้ง webhook ไม่สำเร็จ",
+      );
+    } finally {
+      setSettingWebhook(false);
+    }
+  };
+
   const regenCode = async () => {
     // ออกซ้ำสองครั้งจะได้รหัสสองใบและใบแรกใช้ไม่ได้ทันที ต้องกันกดรัว
     // ต้องกันด้วย ref เพราะ state ยังไม่ทันอัปเดตภายในคีย์เดียวกัน
@@ -898,6 +955,19 @@ export function SettingsPage() {
   };
 
   const ownerConnected = settings?.ownerLineConnected ?? false;
+  const ownerBot = settings?.lineBot ?? null;
+
+  /**
+   * ใครกำลังเชื่อมอยู่ — `ownerLineDisplayName` เป็น null เมื่อยังไม่ผูก และ ""
+   * เมื่อผูกแล้วแต่ยังไม่รู้ชื่อ (เช่น profile เรียกไม่ได้) ซึ่งเป็นคนละความหมาย
+   * กัน จึงต้องแยกคำตอบ ไม่ใช่แสดง "ไม่ทราบ" เหมือนกันทั้งคู่
+   */
+  const ownerNameWho =
+    settings?.ownerLineDisplayName === null || settings?.ownerLineDisplayName === undefined
+      ? ""
+      : settings.ownerLineDisplayName === ""
+        ? "เชื่อมด้วยบัญชี LINE ที่ยังอ่านชื่อไม่ได้"
+        : `เชื่อมด้วยบัญชี ${settings.ownerLineDisplayName}`;
 
   return (
     <div className="pb-24">
@@ -1263,39 +1333,111 @@ export function SettingsPage() {
               <Section
                 id="settings-line"
                 title="LINE เจ้าของ"
-                description="ใช้รับสลิปและแจ้งเตือนไปยัง LINE ของเจ้าของหอ"
+                description="สองเรื่องนี้ต่างกัน: บัญชีที่รับแจ้งเตือนจากระบบ กับ LINE ส่วนตัวที่ผู้เช่าใช้ติดต่อคุณ"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
+                <div className="grid gap-4">
+                  <Field
+                    label="LINE ส่วนตัวของเจ้าของ"
+                    value={ownerLineId}
+                    onChange={setOwnerLineId}
+                    placeholder="@somchai"
+                    helper="ผู้เช่าจะได้ค่านี้ในข้อความ ติดต่อเจ้าของ พร้อมปุ่มคัดลอก — ใช้ช่องนี้ช่องเดียว ไม่ใช่ OA ของหอ"
+                    error={
+                      fieldError("ownerLineId") ??
+                      (ownerLineIdIsDormOa
+                        ? "นี่คือ LINE ของ OA หอ ไม่ใช่ LINE ส่วนตัวของคุณ"
+                        : ownerLineIdValid
+                          ? undefined
+                          : "ใช้ตัวอักษรอังกฤษ ตัวเลข จุด ขีด หรือ _ ยาว 4–30 ตัว")
+                    }
+                  />
+                </div>
+                {/* คนละเรื่องกับ LINE ส่วนตัวด้านบน — อันนี้คือการผูกบัญชีเข้ากับ OA ของหอ */}
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash px-3 py-2.5">
                   <div className="min-w-0">
                     <span className="block text-sm text-charcoal">
-                      สถานะการเชื่อมต่อ
+                      บัญชีที่รับแจ้งเตือนจากบอท
                     </span>
                     <span className="block text-xs text-fog">
-                      แจ้งเตือนสลิปรอตรวจและสรุปผลการส่งบิลจะส่งมาที่ LINE นี้
+                      แจ้งเตือนสลิปรอตรวจและสรุปผลการส่งบิลจะส่งมาที่บัญชีนี้ — ต้องเพิ่มเพื่อน OA ของหอก่อน
                     </span>
+                    {ownerConnected && (
+                      <span className="block text-xs text-steel">
+                        {ownerNameWho}
+                      </span>
+                    )}
                   </div>
-                  <Badge
-                    tone={ownerConnected ? "paid" : "vacant"}
-                    icon={ownerConnected ? "check_circle" : "link_off"}
-                  >
-                    {ownerConnected ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
-                  </Badge>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Badge
+                      tone={ownerConnected ? "paid" : "vacant"}
+                      icon={ownerConnected ? "check_circle" : "link_off"}
+                    >
+                      {ownerConnected ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
+                    </Badge>
+                    {ownerConnected && (
+                      <Button
+                        variant="danger-soft"
+                        size="sm"
+                        icon="link_off"
+                        disabled={unlinking}
+                        onClick={() => {
+                          setConfirmUnlink(true);
+                        }}
+                      >
+                        เลิกเชื่อม
+                      </Button>
+                    )}
+                  </div>
                 </div>
+
+                {/*
+                  บอกให้ชัดว่า OA ของหอคือตัวไหน — ก่อนหน้านี้สั่งให้ "เพิ่มเพื่อน OA
+                  ของหอ" โดยไม่มีที่ไหนบอกชื่อ เจ้าของจึงทำตามไม่ได้ถ้าไม่ได้จำเอง
+                  ค่ามาจาก LINE ตรง ๆ (settings.lineBot) จึงไม่ต้องมีใครกรอก
+                */}
+                {ownerBot !== null && ownerBot.basicId !== "" && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ash bg-paper-mist px-3 py-2.5">
+                    <div className="min-w-0">
+                      <span className="block text-xs text-fog">OA ของหอ</span>
+                      <span className="block text-sm text-charcoal">
+                        {ownerBot.displayName === "" ? ownerBot.basicId : `${ownerBot.displayName} · ${ownerBot.basicId}`}
+                      </span>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon="content_copy"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(ownerBot.basicId)
+                          .then(() => {
+                            setToast(`คัดลอก ${ownerBot.basicId} แล้ว`);
+                          })
+                          .catch(() => {
+                            setToast("คัดลอกไม่สำเร็จ เลือกข้อความแล้วคัดลอกเองได้");
+                          });
+                      }}
+                    >
+                      คัดลอก
+                    </Button>
+                  </div>
+                )}
 
                 {!ownerConnected && (
                   <p className="mt-3 text-xs text-steel">
-                    พิมพ์รหัสด้านล่างในแชท LINE
-                    บอทเพื่อเชื่อมและรับการแจ้งเตือนจากระบบ
+                    {ownerBot !== null && ownerBot.basicId !== ""
+                      ? "วิธีเชื่อม: เพิ่มเพื่อน OA ข้างบน แล้วพิมพ์รหัสด้านล่างในแชทนั้น"
+                      : "วิธีเชื่อม: เพิ่มเพื่อน OA ของหอ แล้วพิมพ์รหัสด้านล่างในแชทนั้น (ยังดึงชื่อ OA จาก LINE ไม่ได้ — เปิดใช้ LINE Messaging API ก่อน)"}
                   </p>
                 )}
 
-                <div className="mt-4 rounded-lg border border-ash p-4">
+                <div className="mt-3 rounded-lg border border-ash p-4">
                   <p className="text-xs text-fog">รหัสเชื่อมต่อ 6 หลัก</p>
                   <p className="num mt-1 text-2xl tracking-[0.3em] text-charcoal">
                     {code}
                   </p>
                   <p className="mt-1 text-xs text-steel">
-                    ให้เจ้าของหอพิมพ์รหัสนี้ในแชท LINE บอทเพื่อยืนยันตัวตน
+                    พิมพ์รหัสนี้ในแชท OA ของหอ (บอท) จากบัญชี LINE ของคุณ — รหัสใช้ได้ครั้งเดียวและหมดอายุใน 15 นาที
                   </p>
                   <Button
                     variant="secondary"
@@ -1327,10 +1469,101 @@ export function SettingsPage() {
                     configured={settings.integrations.slipOkConfigured}
                   />
                 </ul>
-                <p className="mt-3 text-xs text-fog">
-                  ระบบเก็บคีย์การเชื่อมต่อไว้ฝั่งเซิร์ฟเวอร์
-                  จึงไม่แสดงคีย์ในหน้านี้
-                </p>
+
+                {/*
+                  เปลี่ยน OA = เปลี่ยน secret ฝั่งเซิร์ฟเวอร์ (ทำให้จากเบราว์เซอร์
+                  ไม่ได้โดยไม่เก็บ token ไว้ในฐานข้อมูล) สิ่งที่ทำได้และพลาดบ่อย
+                  คือตั้ง webhook ให้ชี้กลับมาที่ Worker นี้ ซึ่งเป็นสาเหตุที่
+                  "บอทเงียบ" แบบไร้ร่องรอย จึงแสดงปลายทางที่ LINE ตั้งไว้จริง
+                  เทียบกับที่ควรเป็น และให้กดตั้งได้ในคลิกเดียว
+                */}
+                <div className="mt-4 rounded-lg border border-ash p-4">
+                  <p className="text-xs font-medium text-charcoal">ช่อง LINE ที่ใช้อยู่</p>
+                  {settings.integrations.lineConfigured ? (
+                    <>
+                      <dl className="mt-2 grid gap-2 text-xs">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <dt className="text-fog">OA ที่ token ชี้อยู่</dt>
+                          <dd className="text-charcoal">
+                            {channel === null || channel.bot === null
+                              ? "อ่านจาก LINE ไม่ได้"
+                              : channel.bot.displayName === ""
+                                ? channel.bot.basicId
+                                : `${channel.bot.displayName} · ${channel.bot.basicId}`}
+                          </dd>
+                        </div>
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <dt className="text-fog">Channel secret</dt>
+                          <dd className="text-charcoal">
+                            {channel === null
+                              ? "—"
+                              : channel.secretConfigured
+                                ? "ตั้งไว้แล้ว"
+                                : "ยังไม่ได้ตั้ง"}
+                          </dd>
+                        </div>
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <dt className="text-fog">Webhook ที่ LINE ตั้งไว้</dt>
+                          <dd className="max-w-[60ch] break-all text-charcoal">
+                            {channel === null || channel.webhook === null
+                              ? "อ่านจาก LINE ไม่ได้"
+                              : channel.webhook.endpoint === ""
+                                ? "ยังไม่ได้ตั้ง"
+                                : channel.webhook.endpoint}
+                          </dd>
+                        </div>
+                      </dl>
+
+                      {channel !== null && !channel.webhookPointsHere && (
+                        <div className="mt-3 rounded-lg border border-ash bg-status-review-bg px-3 py-2.5">
+                          <p className="text-xs text-status-review-fg">
+                            webhook ยังไม่ชี้มาที่ระบบนี้ — ข้อความที่ผู้เช่าพิมพ์จะไม่ถึงบอท
+                            (พิมพ์รหัสเชื่อมแล้วจะดูเหมือนไม่มีอะไรเกิดขึ้น)
+                          </p>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            icon="webhook"
+                            className="mt-2"
+                            disabled={settingWebhook}
+                            onClick={() => {
+                              void setWebhook();
+                            }}
+                          >
+                            {settingWebhook ? "กำลังตั้ง" : "ตั้ง webhook ให้ระบบนี้"}
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="mt-2 text-xs text-steel">
+                      ยังไม่ได้ตั้ง LINE_CHANNEL_ACCESS_TOKEN — เปลี่ยน OA ได้โดยรัน
+                      <code className="mx-1 rounded bg-paper-mist px-1 py-0.5">
+                        wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+                      </code>
+                      แล้วตั้ง webhook ให้ชี้มาที่
+                      <code className="ml-1 rounded bg-paper-mist px-1 py-0.5">
+                        {channel?.expectedWebhookEndpoint ?? "/webhook/line"}
+                      </code>
+                    </p>
+                  )}
+                  <p className="mt-3 text-xs text-fog">
+                    เปลี่ยน OA: รัน
+                    <code className="mx-1 rounded bg-paper-mist px-1 py-0.5">
+                      wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+                    </code>
+                    และ
+                    <code className="mx-1 rounded bg-paper-mist px-1 py-0.5">
+                      LINE_CHANNEL_SECRET
+                    </code>
+                    แล้วกลับมากดตั้ง webhook ที่นี่ · ผู้เช่าที่ผูกไว้จะใช้ต่อได้ถ้า OA ใหม่อยู่ใน
+                    LINE Provider เดิม (userId ผูกกับ provider ไม่ใช่ช่อง) ถ้าย้าย provider
+                    ต้องให้ผู้เช่าพิมพ์เลขห้อง + เบอร์ 4 ตัวท้ายใหม่
+                    {channel !== null && channel.liffId !== "" && (
+                      <> · อย่าลืมแก้ LIFF_ID ถ้าเปลี่ยน LIFF app</>
+                    )}
+                  </p>
+                </div>
               </Section>
             </>
           )}
@@ -1392,6 +1625,43 @@ export function SettingsPage() {
         <p className="text-sm text-steel">
           เมื่อยืนยันแล้ว รหัสเดิม {code} จะถูกยกเลิกทันที
           และใช้เชื่อมต่อไม่ได้อีก ต้องใช้รหัสใหม่เท่านั้น
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={confirmUnlink}
+        onClose={() => {
+          setConfirmUnlink(false);
+        }}
+        title="ยืนยันเลิกเชื่อม LINE"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              disabled={unlinking}
+              onClick={() => {
+                setConfirmUnlink(false);
+              }}
+            >
+              ยกเลิก
+            </Button>
+            <Button
+              variant="primary"
+              icon="link_off"
+              disabled={unlinking}
+              onClick={() => {
+                void unlink();
+              }}
+            >
+              {unlinking ? "กำลังเลิกเชื่อม" : "เลิกเชื่อม"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-steel">
+          หลังเลิกเชื่อม ระบบจะไม่ส่งแจ้งเตือนสลิปรอตรวจหรือสรุปการส่งบิลไปที่ LINE อีก
+          และรหัสเชื่อมต่อเดิมจะถูกยกเลิก — ถ้าต้องการเชื่อมใหม่
+          ให้เพิ่มเพื่อน OA แล้วใช้รหัสใหม่ที่หน้าตั้งค่าจะแสดงให้อีกครั้ง
         </p>
       </Dialog>
 

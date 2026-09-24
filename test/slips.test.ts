@@ -351,6 +351,29 @@ function post(url: string, payload: Record<string, unknown>): Promise<Response> 
   );
 }
 
+/**
+ * ยิงคำขอผ่าน app.fetch แล้วรอ waitUntil ให้จบก่อนคืนค่า
+ *
+ * SELF.fetch ไม่รอ ctx.waitUntil ให้ แต่การแจ้งเตือนเจ้าของตอนปิดบิลถูกส่งจาก
+ * waitUntil (ตั้งใจ ไม่ให้ความล้มเหลวของการส่งทำให้คำขอปิดบิลล้ม) เทสต์ที่ต้อง
+ * ยืนยันว่ามี push ถึงเจ้าของจริงจึงต้องรอตรงนี้ ไม่งั้น assert จะแข่งกับการส่ง
+ */
+async function postSettled(url: string, payload: Record<string, unknown>): Promise<Response> {
+  const ctx = createExecutionContext();
+  const response = await app.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { ...(withAuth(session).headers as Record<string, string>), "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+    env,
+    ctx,
+  );
+  await waitOnExecutionContext(ctx);
+
+  return response;
+}
+
 async function putRates(water: number, electric: number): Promise<void> {
   const response = await SELF.fetch(
     settingsUrl,
@@ -447,8 +470,15 @@ async function listQueue(query = ""): Promise<QueueSlip[]> {
   return (await response.json<{ ok: boolean; slips: QueueSlip[] }>()).slips;
 }
 
+/**
+ * ตัดสินสลิปแล้วรอ waitUntil ให้จบก่อนคืนค่า
+ *
+ * การแจ้งเตือนเจ้าของตอนปิดบิลจากคิวถูกส่งจาก waitUntil เทสต์ที่ยืนยันว่ามี
+ * push ถึงเจ้าของจริงจึงต้องรอ ไม่ใช่ปล่อยให้ SELF.fetch คืนค่าก่อนที่การส่ง
+ * จะวิ่ง (การ push ถึงผู้เช่ายัง await inline อยู่แล้ว จึงไม่กระทบเทสต์เดิม)
+ */
 function resolveSlip(id: string, payload: Record<string, unknown>): Promise<Response> {
-  return post(`${slipsUrl}/${id}/resolve`, payload);
+  return postSettled(`${slipsUrl}/${id}/resolve`, payload);
 }
 
 async function linkOwner(lineUserId: string): Promise<void> {
@@ -515,9 +545,13 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   env.SLIPOK_API_KEY = "test-slipok-api-key";
   env.SLIPOK_BRANCH_ID = slipOkBranchId;
+  // เจ้าของที่ผูกไว้เป็น state ของครอบครัว ไม่ใช่ของเทสต์ — ถ้าไม่ล้าง เทสต์
+  // ถัดไปจะได้การ์ดของเจ้าของที่ตัวเองไม่ได้ตั้งใจให้มี แล้ว assertion พังแบบ
+  // ขึ้นกับลำดับการรัน
+  await unlinkOwner();
   vi.restoreAllMocks();
 });
 
@@ -1744,6 +1778,60 @@ describe("owner alert for slips that land in review", () => {
   });
 });
 
+describe("owner alert for a bill closed automatically by a matching slip", () => {
+  it("pushes the owner a paid card with the room and the amount, and notifies no tenant twice", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S231", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมชาย สลิปปิดอัตโนมัติ");
+    await linkTenantByRoomNumber("S231", "U-auto-1", "สมชาย สลิปปิดอัตโนมัติ");
+    await linkOwner("U-auto-boss");
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-AUTO-1");
+
+    expect((await sendSlip("U-auto-1", "msg-auto-1")).status).toBe(200);
+    expect((await billOf("2026-09", bill.id)).status).toBe("paid");
+
+    // ผู้เช่าได้การ์ดยืนยันของตัวเองหนึ่งใบเท่านั้น
+    expect(pushMessages().filter((push) => push.to === "U-auto-1")).toHaveLength(1);
+    expectPushed("U-auto-1", "กันยายน 2569", "3,550", "ปิดบิลเรียบร้อย");
+
+    const ownerPushes = pushMessages().filter((push) => push.to === "U-auto-boss");
+    expect(ownerPushes).toHaveLength(1);
+
+    const card = first(first(ownerPushes).messages);
+    expect(card.type).toBe("flex");
+
+    const text = pushTextFor("U-auto-boss");
+    expect(text).toContain("รับชำระแล้ว");
+    expect(text).toContain("S231");
+    expect(text).toContain("สมชาย สลิปปิดอัตโนมัติ");
+    expect(text).toContain("3,550");
+    expect(text).toContain("สลิปอัตโนมัติ");
+    expect(text).toContain("กันยายน 2569");
+  });
+
+  it("skips the owner push entirely when the owner has no LINE link", async () => {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber: "S232", rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, "สมหญิง ไม่มีเจ้าของ");
+    await linkTenantByRoomNumber("S232", "U-auto-2", "สมหญิง ไม่มีเจ้าของ");
+    await unlinkOwner();
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, "TR-AUTO-2");
+
+    expect((await sendSlip("U-auto-2", "msg-auto-2")).status).toBe(200);
+    expect((await billOf("2026-09", bill.id)).status).toBe("paid");
+    expect(pushMessages().map((push) => push.to)).toEqual(["U-auto-2"]);
+  });
+});
+
 describe("GET /api/slips", () => {
   it("lists only pending review slips by default and carries every field the queue renders", async () => {
     await putRates(18, 7);
@@ -1880,7 +1968,7 @@ describe("POST /api/slips/:id/resolve", () => {
     expect(stored.bill_total).toBe(3550);
 
     expectPushed("U-resolve-1", "กันยายน 2569", "3,550", "ปิดบิลเรียบร้อย");
-    expect(pushStringsFor("U-boss-6")).toEqual([]);
+    expectPushed("U-boss-6", "รับชำระแล้ว", "S206", "ยืนยันจากคิวรอตรวจ", "3,550");
     expect(queueIds(await listQueue())).not.toContain(slip.id);
   });
 
@@ -2114,6 +2202,133 @@ describe("POST /api/slips/:id/resolve", () => {
     const invalidBody = await invalid.json<ErrorBody>();
     expect(invalidBody.error.code).toBe("VALIDATION");
     expect(invalidBody.error.field).toBe("action");
+  });
+});
+
+describe("GET /slips/p/:file signed link", () => {
+  /** เก็บป้ายและ uri ของปุ่มทั้งหมดในการ์ด — ไม่มีใน flexStrings เพราะอยู่ใน action */
+  function buttonUris(message: LineMessage): { label: string; uri: string }[] {
+    const found: { label: string; uri: string }[] = [];
+
+    function walk(node: unknown): void {
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          walk(item);
+        }
+
+        return;
+      }
+
+      if (typeof node !== "object" || node === null) {
+        return;
+      }
+
+      const record = node as Record<string, unknown>;
+
+      if (record.type === "uri" && typeof record.uri === "string" && typeof record.label === "string") {
+        found.push({ label: record.label, uri: record.uri });
+        return;
+      }
+
+      for (const value of Object.values(record)) {
+        walk(value);
+      }
+    }
+
+    walk(message.contents);
+
+    return found;
+  }
+
+  /** ส่งสลิปที่ยอดตรงเพื่อปิดบิลอัตโนมัติ แล้วคืน URL ลายเซ็นที่ส่งถึงเจ้าของ */
+  async function linkedOwnerSlipUrl(roomNumber: string, tenantName: string, ownerUserId: string, lineUserId: string): Promise<string> {
+    await putRates(18, 7);
+    const room = await newRoom({ roomNumber, rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await newTenant(room.id, tenantName);
+    await linkTenantByRoomNumber(roomNumber, lineUserId, tenantName);
+    await linkOwner(ownerUserId);
+
+    const bill = await generateBill(room.id, { waterCurrent: 12, electricCurrent: 22 });
+    expect(bill.total).toBe(3550);
+
+    outboundCalls = [];
+    slipOkBody = verifiedBody(3550, `TR-${roomNumber}`);
+
+    const response = await sendSlip(lineUserId, `msg-${roomNumber}`);
+    expect(response.status).toBe(200);
+    expect((await billOf("2026-09", bill.id)).status).toBe("paid");
+
+    const ownerText = pushTextFor(ownerUserId);
+    expect(ownerText).toContain("รับชำระแล้ว");
+    expect(ownerText).toContain("สลิปอัตโนมัติ");
+
+    const card = pushMessages().filter((push) => push.to === ownerUserId).flatMap((push) => push.messages)[0];
+    expect(card?.type).toBe("flex");
+
+    const buttons = buttonUris(card ?? { type: "flex" });
+    expect(buttons.map((button) => button.label)).toEqual(["ดูสลิป", "เปิดบิลในเว็บ"]);
+
+    const slipButton = buttons.find((button) => button.label === "ดูสลิป");
+
+    if (slipButton === undefined) {
+      throw new Error("expected a ดูสลิป button in the owner card");
+    }
+
+    return slipButton.uri;
+  }
+
+  it("serves the slip to a browser without a session and rejects a tampered signature", async () => {
+    const url = await linkedOwnerSlipUrl("S221", "สมชาย ลิงก์สลิป", "U-boss-link", "U-slip-link");
+    const parsed = new URL(url);
+
+    expect(parsed.pathname.startsWith("/slips/p/")).toBe(true);
+    expect(parsed.searchParams.get("e")).not.toBeNull();
+    expect(parsed.searchParams.get("s")).not.toBeNull();
+
+    // ไม่มีคุกกี้ — เบราว์เซอร์ในแอป LINE เปิดแบบนี้
+    const opened = await SELF.fetch(parsed.href);
+    expect(opened.status).toBe(200);
+    expect(opened.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await opened.arrayBuffer())).toEqual(slipImageBytes);
+
+    const signature = parsed.searchParams.get("s") ?? "";
+    const tampered = new URL(parsed.href);
+    tampered.searchParams.set("s", `${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}`);
+
+    const rejected = await SELF.fetch(tampered.href);
+    expect(rejected.status).toBe(404);
+    expect((await rejected.json<ErrorBody>()).error.code).toBe("NOT_FOUND");
+  });
+
+  it("answers 404 for an expired link and for a forged expiry", async () => {
+    const url = await linkedOwnerSlipUrl("S222", "สมหญิง ลิงก์หมดอายุ", "U-boss-expiry", "U-slip-expiry");
+    const parsed = new URL(url);
+
+    const expired = new URL(parsed.href);
+    expired.searchParams.set("e", String(Math.floor(Date.now() / 1000) - 1));
+
+    const expiredResponse = await SELF.fetch(expired.href);
+    expect(expiredResponse.status).toBe(404);
+    expect((await expiredResponse.json<ErrorBody>()).error.message).toContain("หมดอายุ");
+
+    const forged = new URL(parsed.href);
+    forged.searchParams.set("e", String(Math.floor(Date.now() / 1000) + 86_400));
+
+    const forgedResponse = await SELF.fetch(forged.href);
+    expect(forgedResponse.status).toBe(404);
+    expect((await forgedResponse.json<ErrorBody>()).error.message).not.toContain("หมดอายุ");
+  });
+
+  it("still requires a session on the original /slips/:file route", async () => {
+    const url = await linkedOwnerSlipUrl("S223", "สมปอง เส้นทางเดิม", "U-boss-both", "U-slip-both");
+    const key = new URL(url).pathname.split("/")[3] ?? "";
+
+    const anonymous = await SELF.fetch(`${slipBaseUrl}/${key}`);
+    expect(anonymous.status).toBe(401);
+
+    const withSession = await SELF.fetch(`${slipBaseUrl}/${key}`, withAuth(session));
+    expect(withSession.status).toBe(200);
+    expect(withSession.headers.get("cache-control")).toBe("private, no-store");
   });
 });
 

@@ -14,6 +14,8 @@ const lineMessagesUrl = "https://dorm.test/api/line/messages";
 
 const lineReplyUrl = "https://api.line.me/v2/bot/message/reply";
 const lineProfileUrl = "https://api.line.me/v2/bot/profile";
+const lineBotInfoUrl = "https://api.line.me/v2/bot/info";
+const lineWebhookEndpointUrl = "https://api.line.me/v2/bot/channel/webhook/endpoint";
 
 const dormName = "หอพักทดสอบ";
 
@@ -43,8 +45,11 @@ interface SettingsPayload {
   dormName: string;
   ownerName: string;
   ownerPhone: string;
+  ownerLineId: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
+  ownerLineDisplayName: string | null;
+  lineBot: { displayName: string; basicId: string } | null;
 }
 
 interface SettingsBody {
@@ -168,6 +173,12 @@ function textEvent(userId: string, replyToken: string, text: string, eventId = u
 let session: TestSession;
 let outboundCalls: OutboundCall[] = [];
 let profileDisplayName = "ผู้ใช้ LINE ทดสอบ";
+let botInfoDisplayName = "Chumsaeng (DEV)";
+let botInfoBasicId = "@490secnd";
+let botInfoFails = false;
+let webhookEndpoint = "https://wangchan-dorm.nodhk2545.workers.dev/webhook/line";
+let webhookActive = true;
+let webhookEndpointFails = false;
 let replyFails = false;
 
 function replyCalls(): OutboundCall[] {
@@ -337,6 +348,12 @@ afterEach(() => {
 beforeEach(() => {
   outboundCalls = [];
   profileDisplayName = "ผู้ใช้ LINE ทดสอบ";
+  botInfoDisplayName = "Chumsaeng (DEV)";
+  botInfoBasicId = "@490secnd";
+  botInfoFails = false;
+  webhookEndpoint = "https://wangchan-dorm.nodhk2545.workers.dev/webhook/line";
+  webhookActive = true;
+  webhookEndpointFails = false;
   replyFails = false;
 
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
@@ -354,6 +371,39 @@ beforeEach(() => {
       const userId = url.slice(lineProfileUrl.length + 1);
       return Promise.resolve(
         new Response(JSON.stringify({ userId, displayName: profileDisplayName }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }
+
+    // OA ของหอ — ใช้บอกเจ้าของว่าต้องเพิ่มเพื่อนตัวไหนก่อนพิมพ์รหัส
+    if (url === lineBotInfoUrl) {
+      if (botInfoFails) {
+        return Promise.resolve(new Response("failed", { status: 500 }));
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({ displayName: botInfoDisplayName, basicId: botInfoBasicId, userId: "U-bot" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }
+
+    // webhook endpoint: GET อ่านค่าที่ตั้งไว้, PUT บันทึกแทนค่าเดิม (จำลอง LINE)
+    if (url === lineWebhookEndpointUrl) {
+      if (webhookEndpointFails) {
+        return Promise.resolve(new Response("failed", { status: 500 }));
+      }
+
+      if ((init?.method ?? "GET") === "PUT") {
+        const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { endpoint?: string };
+        webhookEndpoint = typeof parsed.endpoint === "string" ? parsed.endpoint : webhookEndpoint;
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoint: webhookEndpoint, active: webhookActive }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -958,9 +1008,83 @@ describe("LINE rich menu keywords", () => {
     expectFlexMessage(contact);
     const text = flexText(contact);
     expect(text).toContain("สมศักดิ์ ใจดี");
-    expect(text).toContain("ยังไม่ได้บันทึกเบอร์โทร");
+    expect(text).toContain("ยังไม่ได้บันทึกช่องทางติดต่อไว้");
     expect(text).toContain("กรุณาฝากคำถามไว้ในแชทนี้แล้วรอการติดต่อกลับ");
     expect(text).not.toMatch(/เบอร์โทร\s*\d/);
+  });
+
+  it("sends the owner's LINE id with a copy button so a tenant can add them", async () => {
+    const room = await newRoom("K308");
+    await newTenant(room.id, "เมย์ LINE");
+    await linkRoom("U-keyword-lineid", "K308");
+
+    const saved = await putSettings({
+      ownerName: "สมศักดิ์ ใจดี",
+      ownerPhone: "081-234-5678",
+      ownerLineId: "@somchai_owner",
+    });
+    expect(saved.status).toBe(200);
+
+    outboundCalls.length = 0;
+    const response = await postWebhook(lineEvents([textEvent("U-keyword-lineid", "tok-keyword-lineid", "ติดต่อเจ้าของ")]));
+    expect(response.status).toBe(200);
+
+    const [contact] = replyMessages();
+    expectFlexMessage(contact);
+    const text = flexText(contact);
+    expect(text).toContain("LINE ส่วนตัวของเจ้าของ");
+    expect(text).toContain("@somchai_owner");
+    // เบอร์โทรยังอยู่ครบ — LINE เป็นช่องทางเพิ่ม ไม่ใช่ตัวแทน
+    expect(text).toContain("0812345678");
+
+    // ปุ่มคัดลอกต้องพาค่าเดียวกันไปวางในคลิปบอร์ด ไม่ใช่แค่แสดงข้อความ
+    const json = JSON.stringify(contact);
+    expect(json).toContain('"type":"clipboard"');
+    expect(json).toContain('"clipboardText":"@somchai_owner"');
+  });
+
+  it("shows only the LINE id when the owner has no phone, and rejects a malformed LINE id", async () => {
+    const saved = await putSettings({ ownerName: "สมศักดิ์ ใจดี", ownerPhone: "", ownerLineId: "@somchai_owner" });
+    expect(saved.status).toBe(200);
+
+    outboundCalls.length = 0;
+    await postWebhook(lineEvents([textEvent("U-keyword-lineonly", "tok-keyword-lineonly", "ติดต่อเจ้าของ")]));
+
+    const [contact] = replyMessages();
+    const text = flexText(contact);
+    expect(text).toContain("@somchai_owner");
+    expect(text).not.toContain("ยังไม่ได้บันทึกช่องทางติดต่อไว้");
+
+    const bad = await putSettings({ ownerLineId: "มีช่องว่าง ไม่ได้" });
+    expect(bad.status).toBe(400);
+    expect((await bad.json<{ error: { field: string } }>()).error.field).toBe("ownerLineId");
+
+    const tooShort = await putSettings({ ownerLineId: "@ab" });
+    expect(tooShort.status).toBe(400);
+  });
+
+  it("normalises a pasted LINE id by stripping quotes and spaces", async () => {
+    const saved = await putSettings({ ownerLineId: '  "@somchai_owner"  ' });
+    expect(saved.status).toBe(200);
+
+    expect(((await saved.json<{ settings: { ownerLineId: string } }>()).settings).ownerLineId).toBe("@somchai_owner");
+  });
+
+  it("refuses the dorm's own OA id as the owner's personal LINE", async () => {
+    // OA ของหอคือบัญชีที่ผู้เช่ากำลังคุยด้วย การ์ดที่ส่ง id นี้กลับไปจึงไร้ประโยชน์
+    const withAt = await putSettings({ ownerLineId: "@490secnd" });
+    expect(withAt.status).toBe(400);
+    const body = await withAt.json<{ error: { field: string; message: string } }>();
+    expect(body.error.field).toBe("ownerLineId");
+    expect(body.error.message).toContain("OA หอ");
+
+    // ไม่ใส่ @ ก็ต้องถูกปฏิเสธเหมือนกัน (ตัด @ ที่ผู้ใช้มักคัดลอกมาทิ้งก่อนเทียบ)
+    expect((await putSettings({ ownerLineId: "490secnd" })).status).toBe(400);
+
+    // ค่าที่บันทึกไว้เดิมต้องไม่ถูกทับด้วยคำขอที่ถูกปฏิเสธ
+    const saved = await putSettings({ ownerLineId: "@somchai_owner" });
+    expect(saved.status).toBe(200);
+    expect((await readSettings()).ownerLineId).toBe("@somchai_owner");
   });
 
   it("answers ลงทะเบียน with the registration link for a linked tenant", async () => {
@@ -972,10 +1096,17 @@ describe("LINE rich menu keywords", () => {
     const response = await postWebhook(lineEvents([textEvent("U-keyword-register", "tok-keyword-register", "ลงทะเบียน")]));
     expect(response.status).toBe(200);
 
-    const [link] = replyMessages();
+    const links = replyMessages();
+    const [link] = links;
     expectFlexMessage(link);
     expect(flexText(link)).toContain("ลิงก์ลงทะเบียนผู้เช่า");
     expect(flexText(link)).toContain(registerUrl);
+    /**
+     * หน้านี้ต้องเปิด **ใน** แอป LINE เพราะใช้ `liff.isInClient()` และส่ง access
+     * token ของ LIFF ไปยืนยัน — ห้ามเติม openExternalBrowser ไม่งั้นฟอร์มจะขึ้น
+     * "เปิดฟอร์มนี้จากในแอป LINE เท่านั้น" แล้วลงทะเบียนไม่ได้เลย
+     */
+    expect(JSON.stringify(link)).not.toContain("openExternalBrowser");
   });
 
   it("points บิลของฉัน and ลงทะเบียน from an unlinked user at registration and records no pending row", async () => {
@@ -1008,6 +1139,168 @@ describe("LINE rich menu keywords", () => {
 
     expect(outboundCalls).toEqual([]);
     expect(await pendingFor("U-keyword-plain")).toBeUndefined();
+  });
+});
+
+describe("dorm OA identity shown in settings", () => {
+  /** cache ของ OA อยู่ในตาราง meta ซึ่งไม่ถูกล้างระหว่างเทสต์ — ต้องล้างเอง */
+  async function clearBotInfoCache(): Promise<void> {
+    await env.DB.prepare("DELETE FROM meta WHERE key = 'line_bot_info'").run();
+  }
+
+  it("reports the OA name and basic id fetched from LINE so the owner knows what to add", async () => {
+    await clearBotInfoCache();
+    const settings = await readSettings();
+    expect(settings.lineBot).toEqual({ displayName: "Chumsaeng (DEV)", basicId: "@490secnd" });
+  });
+
+  it("caches the OA info instead of calling LINE on every settings load", async () => {
+    await clearBotInfoCache();
+    await readSettings();
+    const callsAfterFirst = outboundCalls.filter((call) => call.url === lineBotInfoUrl).length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    outboundCalls.length = 0;
+    await readSettings();
+    await readSettings();
+    expect(outboundCalls.filter((call) => call.url === lineBotInfoUrl)).toEqual([]);
+  });
+
+  it("reuses the cached OA info when LINE later fails", async () => {
+    await clearBotInfoCache();
+    const warm = await readSettings();
+    expect(warm.lineBot?.basicId).toBe("@490secnd");
+
+    // cache ยังไม่หมดอายุ → ดึงไม่ได้ก็ยังตอบค่าเดิมได้ ไม่ใช่หายไปเฉย ๆ
+    botInfoFails = true;
+    const stillThere = await readSettings();
+    expect(stillThere.lineBot?.basicId).toBe("@490secnd");
+  });
+
+  it("falls back to a usable answer when LINE cannot be reached", async () => {
+    await clearBotInfoCache();
+    // ดึงไม่ได้ครั้งแรก → ต้องไม่ล้ม และต้องไม่แสดงค่าปลอม
+    botInfoFails = true;
+    const first = await readSettings();
+    expect(first.lineBot).toBeNull();
+    // ค่าอื่นยังอ่านได้ปกติ (หน้าตั้งค่าไม่ล้มทั้งหน้าเพราะ LINE ล่ม)
+    expect(first.dormName).not.toBe("");
+
+    // ค่าที่ดึงไม่ได้ต้องไม่ถูก cache ทิ้ง — พอ LINE กลับมาแล้วต้องได้ค่าจริง
+    botInfoFails = false;
+    const recovered = await readSettings();
+    expect(recovered.lineBot?.basicId).toBe("@490secnd");
+  });
+});
+
+describe("owner unlink and LINE channel status", () => {
+  async function linkOwnerDirect(lineUserId: string, displayName: string): Promise<void> {
+    await env.DB.prepare(
+      "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'owner_line_user_id', ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value",
+    )
+      .bind(session.familyId, lineUserId)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO line_pending (line_user_id, family_id, display_name, last_message, last_seen_at) VALUES (?, ?, ?, NULL, datetime('now')) ON CONFLICT(line_user_id) DO UPDATE SET display_name = excluded.display_name",
+    )
+      .bind(lineUserId, session.familyId, displayName)
+      .run();
+  }
+
+  async function unlink(): Promise<Response> {
+    return SELF.fetch(`${settingsUrl}/owner-link`, withAuth(session, { method: "DELETE" }));
+  }
+
+  it("says who is connected, not just that someone is", async () => {
+    await linkOwnerDirect("U-owner-who", "สมชาย เจ้าของหอ");
+
+    const settings = await readSettings();
+    expect(settings.ownerLineConnected).toBe(true);
+    expect(settings.ownerLineDisplayName).toBe("สมชาย เจ้าของหอ");
+  });
+
+  it("reports null (not an empty name) when nobody is connected", async () => {
+    await env.DB.prepare("DELETE FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(session.familyId)
+      .run();
+
+    const settings = await readSettings();
+    expect(settings.ownerLineConnected).toBe(false);
+    expect(settings.ownerLineDisplayName).toBeNull();
+  });
+
+  it("clears the link, the pending row and the old code so an old code cannot re-link", async () => {
+    await linkOwnerDirect("U-owner-unlink", "สมหญิง เลิกเชื่อม");
+    const regenerated = await SELF.fetch(`${settingsUrl}/owner-code`, withAuth(session, { method: "POST" }));
+    const { ownerLinkCode: oldCode } = await regenerated.json<{ ok: boolean; ownerLinkCode: string }>();
+    expect(oldCode).toMatch(/^\d{6}$/);
+
+    const response = await unlink();
+    expect(response.status).toBe(200);
+
+    const after = await readSettings();
+    expect(after.ownerLineConnected).toBe(false);
+    expect(after.ownerLineDisplayName).toBeNull();
+
+    /**
+     * `readSettings()` ข้างบนทำให้หน้าตั้งค่าออกรหัสใหม่ให้เอง (ตามตรรกะใน
+     * loadSettings: ยังไม่ผูก + ไม่มีรหัสที่ใช้ได้ → ออกให้) จึงต้องตรวจว่า
+     * "รหัสเดิมถูกยกเลิก" ไม่ใช่ "ไม่มีรหัสเลย" — และ userId ต้องว่างจริง
+     */
+    const unlinkedOwnerRow = await env.DB.prepare(
+      "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+    )
+      .bind(session.familyId)
+      .first<{ value: string }>();
+    expect(unlinkedOwnerRow?.value).toBe("");
+
+    const freshCodeRow = await env.DB.prepare(
+      "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_link_code'",
+    )
+      .bind(session.familyId)
+      .first<{ value: string }>();
+    expect(freshCodeRow?.value).not.toBe(oldCode);
+
+    // pending ของบัญชีเดิมต้องไม่ค้าง (ไม่งั้นหน้าจอจะยังโชว์ชื่อที่ผูกอยู่)
+    expect(await pendingFor("U-owner-unlink")).toBeUndefined();
+
+    // รหัสเดิมต้องใช้ไม่ได้ทันที ไม่งั้นคนถือรหัสเก่าผูกกลับเข้ามาได้เอง
+    outboundCalls.length = 0;
+    await postWebhook(lineEvents([textEvent("U-owner-intruder", "tok-owner-intruder", oldCode)]));
+    const ownerRow = await env.DB.prepare(
+      "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+    )
+      .bind(session.familyId)
+      .first<{ value: string }>();
+    expect(ownerRow?.value).toBe("");
+
+    // และหน้าตั้งค่าต้องออกรหัสใหม่ให้ หลังไม่มีรหัสที่ใช้ได้และยังไม่ผูก
+    const fresh = await readSettings();
+    expect(fresh.ownerLinkCode).toMatch(/^\d{6}$/);
+    expect(fresh.ownerLinkCode).not.toBe(oldCode);
+  });
+
+  it("reports which OA the token points at and whether the webhook points back here", async () => {
+    const response = await SELF.fetch(`${settingsUrl}/line-channel`, withAuth(session));
+    expect(response.status).toBe(200);
+
+    const { channel } = await response.json<{
+      channel: {
+        tokenConfigured: boolean;
+        secretConfigured: boolean;
+        bot: { displayName: string; basicId: string } | null;
+        webhook: { endpoint: string; active: boolean } | null;
+        webhookPointsHere: boolean;
+        expectedWebhookEndpoint: string;
+      };
+    }>();
+
+    expect(channel.tokenConfigured).toBe(true);
+    expect(channel.secretConfigured).toBe(true);
+    expect(channel.bot?.basicId).toBe("@490secnd");
+    expect(channel.expectedWebhookEndpoint).toBe("https://dorm.test/webhook/line");
+    // LINE ตั้ง webhook ไว้ที่ production ในเทสต์ (mock) → ต้องบอกว่าไม่ตรง ไม่ใช่เงียบ
+    expect(channel.webhookPointsHere).toBe(false);
   });
 });
 
@@ -1152,6 +1445,7 @@ interface LineMessageKindPayload {
 interface LineMessagesBody {
   ok: boolean;
   source: { period: string; roomNumber: string; tenantName: string } | null;
+  lastSent: { sentAt: string; roomNumber: string; period: string } | null;
   messages: LineMessageKindPayload[];
 }
 
@@ -1258,5 +1552,49 @@ describe("GET /api/line/messages", () => {
     expect(linkedText).toContain("ส่งไม่สำเร็จ 0 ใบ");
     expect(linkedText).toContain("ส่งบิลไม่ครบทุกห้อง");
     expect(linkedText).not.toContain("M402");
+  });
+
+  it("reports the most recent real bill send so the page can answer 'when'", async () => {
+    await clearBills();
+
+    const withoutSend = await readLineMessages();
+    expect(withoutSend.lastSent).toBeNull();
+
+    const firstRoom = await newRoom("M501");
+    await newTenant(firstRoom.id, "สมปอง ส่งก่อน");
+    await generateBill(firstRoom.id, "2026-05");
+
+    const room = await newRoom("M502");
+    const tenant = await newTenant(room.id, "วิภา ส่งทีหลัง");
+    const bill = await generateBill(room.id, "2026-06");
+    await env.DB.prepare("UPDATE tenants SET line_user_id = ? WHERE id = ?").bind("U-m502", tenant.id).run();
+
+    const sentAt = "2026-06-05 03:00:00";
+    await env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?").bind(sentAt, bill.id).run();
+    await env.DB.prepare("UPDATE bills SET sent_at = ? WHERE family_id = ? AND period = ?")
+      .bind("2026-05-01 03:00:00", session.familyId, "2026-05")
+      .run();
+
+    const body = await readLineMessages();
+    expect(body.lastSent).toEqual({ sentAt, roomNumber: "M502", period: "2026-06" });
+  });
+
+  it("keeps the sample provenance separate from the send time", async () => {
+    await clearBills();
+
+    const room = await newRoom("M503");
+    await newTenant(room.id, "อรทัย คนละเรื่อง");
+    const bill = await generateBill(room.id, "2026-07");
+
+    const unsent = await readLineMessages();
+    // `source` บอกว่าใช้บิลใบไหนเป็นตัวอย่าง ไม่ได้แปลว่าส่งแล้ว
+    expect(unsent.source?.roomNumber).toBe("M503");
+    expect(unsent.lastSent).toBeNull();
+
+    await env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?").bind("2026-07-09 02:30:00", bill.id).run();
+
+    const sent = await readLineMessages();
+    expect(sent.lastSent?.roomNumber).toBe("M503");
+    expect(sent.lastSent?.sentAt).toBe("2026-07-09 02:30:00");
   });
 });

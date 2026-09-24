@@ -416,6 +416,87 @@ describe("invite preview", () => {
   });
 });
 
+describe("deep link survives Google sign-in", () => {
+  /** เริ่มล็อกอินโดยแนบที่หมาย แล้วคืนทุกอย่างที่ callback ต้องใช้ */
+  async function startWithNext(next: string | null) {
+    const query = next === null ? "" : `?next=${encodeURIComponent(next)}`;
+    const response = await SELF.fetch(`${base}/api/auth/google/start${query}`, { redirect: "manual" });
+    const location = response.headers.get("location") ?? "";
+    const state = new URL(location).searchParams.get("state") ?? "";
+    const cookies = response.headers.getSetCookie();
+
+    return {
+      state,
+      // ส่งคุกกี้ทั้งชุดกลับเหมือนเบราว์เซอร์จริง (state + ที่หมาย)
+      cookie: cookies.map((value) => value.split(";")[0] ?? "").join("; "),
+      cookies,
+    };
+  }
+
+  it("returns the owner to the bill they clicked from LINE, not the dashboard", async () => {
+    const target = "#bills/detail/fc7fee96-fa3e-5250-8cbe-4d7b3c097387";
+    const { state, cookie, cookies } = await startWithNext(target);
+
+    // ที่หมายต้องถูกฝากในคุกกี้ ไม่ใช่ query (fragment ไม่รอด OAuth)
+    expect(cookies.some((value) => value.includes("wangchan_google_next="))).toBe(true);
+
+    stubGoogle({ email: ownerEmail, name: "เจ้าของหอ" });
+
+    const response = await SELF.fetch(
+      `${base}/api/auth/google/callback?code=abc&state=${encodeURIComponent(state)}`,
+      { headers: { cookie }, redirect: "manual" },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(`${base}/${target}`);
+    // เซสชันต้องยังถูกตั้งอยู่ ไม่งั้นเด้งไปบิลแล้วเจอหน้าเข้าสู่ระบบอีก
+    expect(response.headers.getSetCookie().some((value) => value.includes("wangchan_session="))).toBe(true);
+  });
+
+  it("still lands home when no destination was asked for", async () => {
+    const { state, cookie } = await startWithNext(null);
+    stubGoogle({ email: ownerEmail, name: "เจ้าของหอ" });
+
+    const response = await SELF.fetch(
+      `${base}/api/auth/google/callback?code=abc&state=${encodeURIComponent(state)}`,
+      { headers: { cookie }, redirect: "manual" },
+    );
+
+    expect(response.headers.get("location")).toBe(`${base}/`);
+  });
+
+  it("ignores a destination that is not a fragment, so it can never redirect off-site", async () => {
+    // ผู้โจมตีแก้คุกกี้เองได้ — ค่าที่ไม่ใช่ #... ต้องไม่ถูกนำมาใช้แม้แต่กรณีเดียว
+    const response = await SELF.fetch(
+      `${base}/api/auth/google/callback?code=abc&state=whatever`,
+      {
+        headers: { cookie: "wangchan_google_next=https%3A%2F%2Fevil.example%2Fsteal" },
+        redirect: "manual",
+      },
+    );
+
+    const location = response.headers.get("location") ?? "";
+    expect(location.startsWith(`${base}/`)).toBe(true);
+    expect(location).not.toContain("evil.example");
+  });
+
+  it("keeps the destination on failure so a retry still reaches the bill", async () => {
+    const target = "#bills/detail/abc-123";
+    const response = await SELF.fetch(
+      `${base}/api/auth/google/callback?error=access_denied&state=whatever`,
+      {
+        headers: { cookie: `wangchan_google_next=${encodeURIComponent(target)}` },
+        redirect: "manual",
+      },
+    );
+
+    const location = response.headers.get("location") ?? "";
+    expect(location).toContain("reason=denied");
+    // ต้องฝากต่อไปให้หน้าเข้าสู่ระบบใช้ประกอบลิงก์ลองใหม่
+    expect(decodeURIComponent(location)).toContain(target);
+  });
+});
+
 describe("family membership", () => {
   // ทุกเทสต์ใช้ครอบครัวของตัวเอง เพราะหนึ่งครอบครัวรับได้ 2 คน (เพดานของผลิตภัณฑ์)
   // การยืมครอบครัวเดิมจะทำให้เทสต์หลัง ๆ เจอ "ครอบครัวเต็ม" แทนที่จะทดสอบสิ่งที่ตั้งใจ
@@ -429,6 +510,10 @@ describe("family membership", () => {
 
     const { invite } = await invited.json<{ invite: { token: string; url: string } }>();
     expect(invite.url).toContain("#invite/");
+    // ผู้รับคำเชิญต้องเข้าสู่ระบบด้วย Google — ลิงก์ที่เปิดใน LINE จะพาไปเจอ
+    // หน้า "Access blocked" เว้นแต่สั่งให้ LINE เปิดเบราว์เซอร์ของเครื่อง
+    expect(invite.url).toContain("openExternalBrowser=1");
+    expect(invite.url.indexOf("openExternalBrowser=1")).toBeLessThan(invite.url.indexOf("#"));
 
     const stored = await env.DB.prepare("SELECT COUNT(*) AS n FROM family_invites WHERE token_hash = ?")
       .bind(invite.token)

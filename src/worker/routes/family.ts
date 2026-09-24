@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { lineMessageUrl } from "../lib/line-link";
 import type { AppEnv } from "../lib/auth";
 import { familyId, maxFamilyMembers, requireAuth, requireRole, sameOriginOnly } from "../lib/auth";
 import { hashToken, newSessionToken, revokeUserSessions } from "../lib/session";
@@ -198,7 +199,7 @@ family.post("/invites", requireRole("owner"), async (c) => {
         role,
         expiresAt,
         token,
-        url: `${new URL(c.req.url).origin}/#invite/${token}`,
+        url: lineMessageUrl(`${new URL(c.req.url).origin}/#invite/${token}`),
       },
     },
     201,

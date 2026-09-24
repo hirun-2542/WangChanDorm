@@ -2,11 +2,70 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   ApiError,
   fetchInvitePreview,
-  googleSignInPath,
+  googleSignInUrl,
   type InvitePreview,
 } from "../api";
 import { Button, Card, Monogram, Skeleton } from "../ui";
 import { dateLabel } from "./bills-shared";
+
+/**
+ * เตือนเมื่อเปิดหน้านี้ในเบราว์เซอร์ในแอป LINE
+ *
+ * Google **ปฏิเสธ** คำขอ OAuth ที่มาจาก embedded webview (ตอบ disallowed_useragent
+ * ตั้งแต่ ก.ค. 2023) กดปุ่มด้านล่างจึงเจอหน้า "Access blocked" ของ Google ทันที
+ * ไม่ใช่ความผิดพลาดของผู้ใช้และเขาแก้เองไม่ได้ถ้าไม่รู้ — จึงบอกให้เปิดในเบราว์เซอร์
+ * ปกติ และให้ปุ่มคัดลอกลิงก์สำหรับวางใน Safari/Chrome
+ *
+ * ลิงก์ที่บอทส่งมาเติม `openExternalBrowser=1` แล้วจึงไม่ตกมาที่นี่ แต่คนที่จำ URL
+ * เอง เปิดจากประวัติ หรือกดลิงก์เก่ายังเจอเคสนี้ได้
+ */
+function useLineInAppBrowser(): boolean {
+  const [inLine, setInLine] = useState(false);
+
+  useEffect(() => {
+    // LINE ต่อท้าย UA ของ WebView ตัวเองด้วย "Line/" ทุกแพลตฟอร์ม
+    setInLine(/\bLine\//.test(navigator.userAgent));
+  }, []);
+
+  return inLine;
+}
+
+function LineBrowserNotice({ detail }: { detail: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div
+      className="flex items-start gap-2 rounded-lg border border-status-review-fg/30 bg-status-review-bg px-3 py-2.5 text-xs"
+      role="alert"
+    >
+      <span className="ms text-[16px] text-status-review-fg" aria-hidden="true">
+        warning
+      </span>
+      <span className="min-w-0">
+        <span className="block text-status-review-fg">
+          เปิดหน้านี้ในเบราว์เซอร์ของเครื่องก่อนเข้าสู่ระบบ
+        </span>
+        <span className="mt-0.5 block text-steel">{detail}</span>
+        <button
+          type="button"
+          className="mt-1.5 text-electric-blue underline underline-offset-2"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(window.location.href)
+              .then(() => {
+                setCopied(true);
+              })
+              .catch(() => {
+                // คัดลอกไม่ได้ก็ไม่เป็นไร ที่อยู่ยังอยู่ในแถบที่อยู่ของเบราว์เซอร์
+              });
+          }}
+        >
+          {copied ? "คัดลอกลิงก์แล้ว" : "คัดลอกลิงก์นี้"}
+        </button>
+      </span>
+    </div>
+  );
+}
 
 /** กล่องข้อผิดพลาดระดับหน้า — ทุกหน้าของการเข้าสู่ระบบใช้ร่วมกัน */
 function FormNotice({
@@ -110,6 +169,9 @@ function AuthLayout({
  * เป็นปุ่มทึบสีเข้ม ไม่ใช่ปุ่มขอบจางแบบเดิม เพราะเมื่อไม่มีช่องกรอกอีเมลกับ
  * รหัสผ่านอีกแล้ว มันคือการกระทำเดียวที่หน้านี้มี (DESIGN.md: หนึ่งการกระทำ
  * หลักต่อหนึ่งหน้าจอ)
+ *
+ * ถ้าตอนนี้มีที่หมายอยู่ใน fragment (เช่นเปิดจากปุ่ม "เปิดบิลในเว็บ" ในแชท LINE)
+ * ต้องแนบไปด้วย ไม่งั้นล็อกอินเสร็จแล้วจะตกไปที่แดชบอร์ดและที่หมายหายไป
  */
 function GoogleButton({ label }: { label: string }) {
   return (
@@ -118,7 +180,7 @@ function GoogleButton({ label }: { label: string }) {
       className="w-full justify-center"
       icon="account_circle"
       onClick={() => {
-        window.location.href = googleSignInPath;
+        window.location.href = googleSignInUrl(window.location.hash);
       }}
     >
       {label}
@@ -128,15 +190,24 @@ function GoogleButton({ label }: { label: string }) {
 
 export function AuthScreen() {
   const googleNotice = useGoogleFailureNotice();
+  const lineBrowser = useLineInAppBrowser();
 
   return (
     <AuthLayout
       title="เข้าสู่ระบบ"
       description="ใช้บัญชี Google ที่ผูกกับหอนี้"
     >
-      {googleNotice !== null && <FormNotice message={googleNotice} />}
+      {lineBrowser && (
+        <LineBrowserNotice detail="Google ไม่อนุญาตให้เข้าสู่ระบบจากเบราว์เซอร์ในแอป LINE จึงต้องเปิดลิงก์นี้ใน Safari หรือ Chrome แทน" />
+      )}
 
-      <div className={googleNotice === null ? "" : "mt-4"}>
+      {googleNotice !== null && (
+        <div className={lineBrowser ? "mt-3" : ""}>
+          <FormNotice message={googleNotice} />
+        </div>
+      )}
+
+      <div className={lineBrowser || googleNotice !== null ? "mt-4" : ""}>
         <GoogleButton label="เข้าสู่ระบบด้วย Google" />
       </div>
 
@@ -157,6 +228,7 @@ export function InviteAcceptScreen({
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
+  const lineBrowser = useLineInAppBrowser();
 
   /**
    * ถามข้อมูลคำเชิญก่อนให้กดปุ่ม
@@ -243,6 +315,12 @@ export function InviteAcceptScreen({
           <dd className="num text-charcoal">{dateLabel(preview.expiresAt)}</dd>
         </div>
       </dl>
+
+      {lineBrowser && (
+        <div className="mt-4">
+          <LineBrowserNotice detail="ลิงก์คำเชิญเปิดจากแอป LINE ได้ แต่การเข้าสู่ระบบด้วย Google ต้องทำใน Safari หรือ Chrome — คัดลอกลิงก์นี้ไปเปิดในเบราว์เซอร์ของเครื่อง" />
+        </div>
+      )}
 
       <div className="mt-4">
         <GoogleButton label="เข้าสู่ระบบด้วย Google" />

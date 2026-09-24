@@ -19,6 +19,9 @@ const apiTarget = "http://127.0.0.1:8787";
 const apiProxy = {
   target: apiTarget,
   changeOrigin: false,
+  // ต้องเปิด ไม่งั้น vite ไม่ส่งต่อ upgrade request ของ /api/realtime
+  // แล้ว WebSocket จะต่อไม่ติดตอน npm run dev (production เป็น origin เดียวกัน)
+  ws: true,
 };
 
 export default defineConfig({

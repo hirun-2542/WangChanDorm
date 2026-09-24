@@ -2,13 +2,17 @@ import { Hono } from "hono";
 import type { AppEnv } from "../lib/auth";
 import { isSecureRequest, maxFamilyMembers, requireAuth, sameOriginOnly } from "../lib/auth";
 import {
+  clearedGoogleReturnCookie,
   clearedGoogleStateCookie,
   exchangeGoogleCode,
   googleAuthorizeUrl,
   googleRedirectUri,
+  googleReturnCookie,
   googleStateCookie,
+  readGoogleReturnCookie,
   readGoogleStateCookie,
 } from "../lib/google";
+import { safeReturnPath } from "../../shared/return-path";
 import {
   clearedSessionCookie,
   createSession,
@@ -166,29 +170,51 @@ auth.get("/google/start", (c) => {
     return c.redirect("/?auth=error&reason=google_disabled");
   }
 
+  const secure = isSecureRequest(c);
   const state = newSessionToken();
   const redirectUri = googleRedirectUri(c.req.url);
   const response = c.redirect(googleAuthorizeUrl(clientId, redirectUri, state));
 
-  response.headers.append("set-cookie", googleStateCookie(state, isSecureRequest(c)));
+  response.headers.append("set-cookie", googleStateCookie(state, secure));
+
+  /**
+   * ที่หมายปลายทาง (fragment ของแอป) ฝากในคุกกี้แยก — ลิงก์ที่บอทส่งมาให้เจ้าของ
+   * เปิดบิลจะพาไป `#bills/detail/<id>` และต้องรอดข้าม OAuth กลับมาให้ได้
+   */
+  const returnPath = safeReturnPath(c.req.query("next"));
+
+  if (returnPath !== null) {
+    response.headers.append("set-cookie", googleReturnCookie(returnPath, secure));
+  }
 
   return response;
 });
 
 /**
- * สร้างคำตอบเด้งกลับหน้าแรก
+ * สร้างคำตอบเด้งกลับหน้าแรก (หรือ fragment ที่ฝากไว้) ตามคำขอเดิม
  *
  * สร้างเองแทน Response.redirect() เพราะ Response.redirect() ให้ header ที่แก้ไม่ได้
  * (immutable) จึงต่อคุกกี้เข้าไปด้วยไม่ได้ — จะ throw ตอนรัน
+ *
+ * `returnPath` ถูกตรวจด้วย `safeReturnPath` ก่อนฝากไว้แล้ว และที่นี่ตรวจซ้ำอีกชั้น
+ * เพราะคุกกี้เป็นข้อมูลที่ผู้ใช้แก้เองได้
  */
-function redirectHome(origin: string, params: Record<string, string>, cookies: string[]): Response {
+function redirectHome(
+  requestUrl: string,
+  params: Record<string, string>,
+  cookies: string[],
+  returnPath: string | null = null,
+): Response {
+  const origin = new URL(requestUrl).origin;
   const target = new URL("/", origin);
 
   for (const [key, value] of Object.entries(params)) {
     target.searchParams.set(key, value);
   }
 
-  const headers = new Headers({ location: target.toString() });
+  const safe = safeReturnPath(returnPath);
+  const location = safe === null ? target.toString() : `${target.toString()}${safe}`;
+  const headers = new Headers({ location });
 
   for (const cookie of cookies) {
     headers.append("set-cookie", cookie);
@@ -197,21 +223,43 @@ function redirectHome(origin: string, params: Record<string, string>, cookies: s
   return new Response(null, { status: 302, headers });
 }
 
-/** เด้งกลับหน้าแรกพร้อมรหัสสาเหตุ ให้หน้าเว็บแปลเป็นข้อความไทย */
-function googleError(c: { req: { url: string } }, reason: string, secure: boolean): Response {
-  return redirectHome(
-    new URL(c.req.url).origin,
-    { auth: "error", reason },
-    [clearedGoogleStateCookie(secure)],
-  );
+/**
+ * เด้งกลับหน้าแรกพร้อมรหัสสาเหตุ ให้หน้าเว็บแปลเป็นข้อความไทย
+ *
+ * ฝาก `next` ต่อไปด้วย เพราะล้มเหลวกลางทาง (ผู้ใช้กดยกเลิก เลือกบัญชีผิด) ไม่ควร
+ * ทำให้ที่หมายหาย — กดลองใหม่จากหน้าเข้าสู่ระบบต้องไปถึงบิลใบเดิมได้
+ */
+function googleError(
+  c: { req: { url: string } },
+  reason: string,
+  secure: boolean,
+  returnPath: string | null,
+): Response {
+  const params: Record<string, string> = { auth: "error", reason };
+
+  if (safeReturnPath(returnPath) !== null) {
+    params.next = returnPath ?? "";
+  }
+
+  return redirectHome(c.req.url, params, [
+    clearedGoogleStateCookie(secure),
+    clearedGoogleReturnCookie(secure),
+  ], returnPath);
 }
 
-/** ล็อกอินสำเร็จ: ตั้งคุกกี้เซสชันแล้วกลับหน้าแรก พร้อมล้าง state ที่ใช้แล้ว */
-function googleSuccess(c: { req: { url: string } }, token: string, secure: boolean): Response {
-  return redirectHome(new URL(c.req.url).origin, {}, [
-    sessionCookie(token, secure),
-    clearedGoogleStateCookie(secure),
-  ]);
+/** ล็อกอินสำเร็จ: ตั้งคุกกี้เซสชันแล้วกลับหน้าแรก (หรือบิลที่ฝากไว้) */
+function googleSuccess(
+  c: { req: { url: string } },
+  token: string,
+  secure: boolean,
+  returnPath: string | null,
+): Response {
+  return redirectHome(
+    c.req.url,
+    {},
+    [sessionCookie(token, secure), clearedGoogleStateCookie(secure), clearedGoogleReturnCookie(secure)],
+    returnPath,
+  );
 }
 
 auth.get("/google/callback", async (c) => {
@@ -220,8 +268,10 @@ auth.get("/google/callback", async (c) => {
   const secure = isSecureRequest(c);
   const expectedState = readGoogleStateCookie(c.req.header("cookie"));
   const state = c.req.query("state") ?? "";
+  // ที่หมายที่ฝากไว้ตอนเริ่มล็อกอิน — ต้องอ่านก่อนล้างคุกกี้
+  const returnPath = safeReturnPath(readGoogleReturnCookie(c.req.header("cookie")));
 
-  const fail = (reason: string): Response => googleError(c, reason, secure);
+  const fail = (reason: string): Response => googleError(c, reason, secure, returnPath);
 
   if (clientId === "" || clientSecret === "") {
     return fail("google_disabled");
@@ -264,7 +314,7 @@ auth.get("/google/callback", async (c) => {
 
     const token = await createSession(c.env.DB, existing.user_id, existing.family_id);
 
-    return googleSuccess(c, token, secure);
+    return googleSuccess(c, token, secure, returnPath);
   }
 
   // ยังไม่มีบัญชี: รับได้เฉพาะอีเมลเจ้าของที่ตั้งค่าไว้ หรืออีเมลที่มีคำเชิญค้าง
@@ -276,7 +326,7 @@ auth.get("/google/callback", async (c) => {
     if (claimed !== "taken") {
       const token = await createSession(c.env.DB, claimed.userId, claimed.familyId);
 
-      return googleSuccess(c, token, secure);
+      return googleSuccess(c, token, secure, returnPath);
     }
   }
 
@@ -321,7 +371,7 @@ auth.get("/google/callback", async (c) => {
 
   const token = await createSession(c.env.DB, created.id, invite.family_id);
 
-  return googleSuccess(c, token, secure);
+  return googleSuccess(c, token, secure, returnPath);
 });
 
 

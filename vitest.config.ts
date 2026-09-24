@@ -18,6 +18,7 @@ export default defineConfig(async () => {
             SLIPOK_API_KEY: "",
             SLIPOK_BRANCH_ID: "",
             OWNER_EMAIL: "owner@example.com",
+            SLIP_LINK_SECRET: "test-slip-link-secret",
             GOOGLE_CLIENT_ID: "test-google-client-id.apps.googleusercontent.com",
             GOOGLE_CLIENT_SECRET: "test-google-client-secret",
           },

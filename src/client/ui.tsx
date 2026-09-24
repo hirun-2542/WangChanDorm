@@ -420,16 +420,28 @@ export interface DataTableProps<T> {
   emptyMessage?: string;
   minWidth?: number;
   wrapClassName?: string;
+  /**
+   * ให้แถวหัวตารางค้างบนจอเมื่อเลื่อนหน้า
+   *
+   * ต้องเป็น opt-in เพราะการทำให้ sticky ได้ต้องให้ตัว wrapper เองเป็น scroll
+   * container (มี `overflow: auto` อยู่แล้วเพื่อรองรับตารางที่กว้างเกินจอ) —
+   * ถ้าตารางไม่ต้องเลื่อนแนวนอน ผู้ใช้จะเห็นหัวค้างใต้แถบหัวหน้าแอปตามต้องการ
+   * แต่ถ้าตารางกว้างเกินจอ หัวจะค้างเทียบกับ scrollport ของตาราง (ยังอ่านได้
+   * ขณะเลื่อนดูคอลัมน์อื่น) ซึ่งเป็นพฤติกรรมที่ต้องการสำหรับตารางกว้างอยู่แล้ว
+   */
+  stickyHeader?: boolean;
 }
 
-export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = "ไม่พบข้อมูล", minWidth = 720, wrapClassName }: DataTableProps<T>) {
+export function DataTable<T>({ columns, rows, getRowKey, emptyMessage = "ไม่พบข้อมูล", minWidth = 720, wrapClassName, stickyHeader = false }: DataTableProps<T>) {
   if (rows.length === 0) {
     return <p className="px-3 py-8 text-center text-sm text-fog">{emptyMessage}</p>;
   }
 
   return (
-    <div className={wrapClassName === undefined ? "table-wrap table-wrap-scroll" : `table-wrap table-wrap-scroll ${wrapClassName}`}>
-      <table className="table" style={{ minWidth: `${minWidth}px` }}>
+    <div
+      className={`table-wrap table-wrap-scroll ${stickyHeader ? "table-wrap-sticky" : ""} ${wrapClassName ?? ""}`.trim()}
+    >
+      <table className={stickyHeader ? "table table-sticky-head" : "table"} style={{ minWidth: `${minWidth}px` }}>
         <thead>
           <tr>
             {columns.map((column) => (

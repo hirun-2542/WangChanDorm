@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 import {
   ApiError,
   fetchLineMessages,
+  type LineLastSent,
   type LineMessageKind,
   type LineMessageSource,
 } from "../api";
@@ -23,6 +24,63 @@ function isArrowKey(key: string): boolean {
     key === "ArrowLeft" ||
     key === "ArrowUp"
   );
+}
+
+/**
+ * `bills.sent_at` เก็บเป็น SQLite datetime ("YYYY-MM-DD HH:MM:SS" UTC) หรือ ISO
+ * จึงต้องเติม `Z` ก่อน parse ไม่งั้นเบราว์เซอร์ที่ UTC+7 จะตีความผิดเป็นเวลาไทย
+ */
+function formatSentAt(value: string): string {
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const parsed = new Date(normalized.endsWith("Z") ? normalized : `${normalized}Z`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString("th-TH", {
+    timeZone: "Asia/Bangkok",
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+/** จุดตัดเดียวกับ `lg:` ของ Tailwind ที่เปลี่ยน tablist เป็นแนวตั้ง */
+const desktopTabsQuery = "(min-width: 1024px)";
+
+/**
+ * ตัวกรองผู้รับ — แกนที่เจ้าของหอสนใจที่สุดในหน้านี้
+ *
+ * การ์ดของผู้เช่ากับของเจ้าของปนกันในลิสต์เดียวตามลำดับที่ server ส่งมา
+ * (การ์ดเจ้าของอยู่ตำแหน่ง 3, 10, 11) จึงต้องมีทางกรองให้ถึงของตัวเองในคลิกเดียว
+ */
+type AudienceFilter = "all" | "tenant" | "owner";
+
+const audienceFilters = [
+  { value: "all", label: "ทั้งหมด" },
+  { value: "tenant", label: "ถึงผู้เช่า" },
+  { value: "owner", label: "ถึงเจ้าของ" },
+] as const;
+
+function useDesktopTabs(): boolean {
+  const [desktop, setDesktop] = useState<boolean>(() =>
+    typeof window === "undefined" ? true : window.matchMedia(desktopTabsQuery).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(desktopTabsQuery);
+    const update = () => {
+      setDesktop(media.matches);
+    };
+
+    media.addEventListener("change", update);
+
+    return () => {
+      media.removeEventListener("change", update);
+    };
+  }, []);
+
+  return desktop;
 }
 
 type FlexRecord = Record<string, unknown>;
@@ -60,7 +118,15 @@ type PreviewItem =
       size: string | null;
       color: string | null;
     }
-  | { kind: "note"; text: string; size: string | null; color: string | null }
+  | { kind: "note"; text: string; size: string | null; color: string | null; align: "start" | "center" | "end" | null; bold: boolean }
+  /**
+   * กล่องแนวนอนที่ลูกไม่ใช่ข้อความล้วน (เช่น [vertical box + ปุ่มคัดลอก])
+   *
+   * ของจริงใน LINE เรนเดอร์ลูกตามสัดส่วน `flex` ของแต่ละตัว จึงต้องคงเป็นแถว
+   * แนวนอน ไม่ใช่แตกเป็นรายการซ้อนกันในแนวตั้ง — ไม่งั้นปุ่มจะถูกยืดเต็มความกว้าง
+   * กลายเป็นคนละเรื่องกับที่ผู้เช่าเห็น
+   */
+  | { kind: "row-group"; cells: RowGroupCell[] }
   | { kind: "separator" }
   | { kind: "image"; url: string; size: string | null }
   | {
@@ -72,6 +138,12 @@ type PreviewItem =
       color: string;
       style: string;
     };
+
+/** ช่องหนึ่งในกล่องแนวนอน — `flex` ของ LINE ตัดสินว่าใครกินพื้นที่มากกว่ากัน */
+interface RowGroupCell {
+  items: PreviewItem[];
+  flex: number | null;
+}
 
 /** ขนาดตัวอักษรของ Flex — LINE กำหนดเป็นชื่อ ไม่ใช่ px */
 const textSizes: Record<string, number> = {
@@ -117,6 +189,19 @@ function colorOf(node: FlexRecord): string | null {
   const value = node.color;
 
   return typeof value === "string" ? value : null;
+}
+
+/** การจัดแนวนอนของข้อความใน Flex — LINE รับ "start" | "center" | "end" */
+function alignOf(node: FlexRecord): "start" | "center" | "end" | null {
+  const value = node.align;
+
+  return value === "start" || value === "center" || value === "end" ? value : null;
+}
+
+function numberOf(node: FlexRecord, key: string): number | null {
+  const value = node[key];
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function readHeader(node: FlexRecord | null): PreviewHeader {
@@ -168,6 +253,8 @@ function collectItems(nodes: unknown, items: PreviewItem[]): void {
             text,
             size: stringField(raw, "size") || null,
             color: colorOf(raw),
+            align: alignOf(raw),
+            bold: raw.weight === "bold",
           });
         }
 
@@ -224,28 +311,32 @@ function collectItems(nodes: unknown, items: PreviewItem[]): void {
             break;
           }
 
-          // กล่องแนวนอนที่มีอย่างอื่นปน (เช่น ปุ่มคัดลอก) — ไล่เก็บทีละลูกตามลำดับ
+          /**
+           * กล่องแนวนอนที่ลูกไม่ใช่ข้อความล้วน (เช่น [box ข้อความ + ปุ่มคัดลอก])
+           *
+           * LINE จัดเรียงลูกตามสัดส่วน `flex` ของแต่ละตัว ปุ่มที่ประกาศ `flex: 0`
+           * จึงอยู่ท้ายบรรทัดที่ความกว้างตามเนื้อหา เดิมโค้ดไล่เก็บลูกทีละตัวลง
+           * vertical grid ทำให้ปุ่มถูกยืดเต็มความกว้างทั้งแถบ — บิดของจริงมาก
+           * ทั้งที่หน้าที่ของพรีวิวคือบอกว่าการ์ดหน้าตาเป็นอย่างไร
+           */
+          const cells: RowGroupCell[] = [];
+
           for (const child of children) {
             if (!isRecord(child)) {
               continue;
             }
 
-            if (child.type === "text") {
-              const text = stringField(child, "text");
+            const cellItems: PreviewItem[] = [];
+            collectItems([child], cellItems);
 
-              if (text !== "") {
-                items.push({
-                  kind: "note",
-                  text,
-                  size: stringField(child, "size") || null,
-                  color: colorOf(child),
-                });
-              }
-
-              continue;
+            if (cellItems.length > 0) {
+              cells.push({ items: cellItems, flex: numberOf(child, "flex") });
             }
+          }
 
-            collectItems([child], items);
+          if (cells.length > 0) {
+            items.push({ kind: "row-group", cells });
+            break;
           }
 
           break;
@@ -261,24 +352,55 @@ function collectItems(nodes: unknown, items: PreviewItem[]): void {
           text: `ไม่รองรับโหนด ${typeof type === "string" ? type : "ไม่ทราบชนิด"}`,
           size: null,
           color: null,
+          align: null,
+          bold: false,
         });
         break;
     }
   }
 }
 
-function PreviewItemView({ item }: { item: PreviewItem }) {
+/**
+ * `inline` = อยู่ภายในแถวแนวนอน (row-group) จึงต้องไม่ยืดเต็มความกว้าง
+ * ของ LINE จริง ๆ ปุ่มที่ประกาศ `flex: 0` จะกว้างเท่าเนื้อหา ไม่ใช่เต็มแถว
+ */
+function PreviewItemView({
+  item,
+  inline = false,
+}: {
+  item: PreviewItem;
+  inline?: boolean;
+}) {
   switch (item.kind) {
     case "separator":
       return <div className="my-0.5 border-t border-ash" />;
 
+    case "row-group":
+      return (
+        <div className="flex items-center gap-3">
+          {item.cells.map((cell, index) => (
+            <div
+              key={`cell-${index}`}
+              className={cell.flex === null || cell.flex === 0 ? "shrink-0" : "min-w-0 flex-1"}
+            >
+              {cell.items.map((cellItem, cellIndex) => (
+                <PreviewItemView key={`cell-${index}-${cellIndex}`} item={cellItem} inline />
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+
     case "note":
       return (
         <p
-          className="text-xs text-fog"
+          // Flex `weight: "bold"` ต้องได้น้ำหนักเดียวกับแถวข้อมูลที่ประกาศ bold
+          className={`text-fog ${item.bold ? "font-semibold" : ""}`}
           style={{
-            ...sizeStyle(textSizes, item.size),
+            // LINE ไม่ระบุ size = sm (14px) ไม่ใช่ 12px
+            ...sizeStyle(textSizes, item.size ?? "sm"),
             color: item.color ?? undefined,
+            textAlign: item.align ?? undefined,
           }}
         >
           {item.text}
@@ -287,10 +409,10 @@ function PreviewItemView({ item }: { item: PreviewItem }) {
 
     case "row":
       return (
-        <div className="flex items-start justify-between gap-3 text-sm">
-          <span className="text-steel">{item.label}</span>
+        <div className="flex items-start justify-between gap-3">
+          <span className="text-sm text-steel">{item.label}</span>
           <span
-            className={`num text-right ${item.bold ? "font-medium" : ""}`}
+            className={`num text-right ${item.bold ? "font-semibold" : ""}`}
             style={{
               ...sizeStyle(textSizes, item.size),
               color: item.color ?? "#171717",
@@ -333,16 +455,11 @@ function PreviewItemView({ item }: { item: PreviewItem }) {
 
       if (item.actionType === "clipboard") {
         return (
-          <button
-            type="button"
-            className="rounded-lg border border-pebble bg-canvas-white px-4 py-2 text-center text-sm font-medium text-charcoal"
-            title={`คัดลอก ${item.clipboardText}`}
-            onClick={() => {
-              void navigator.clipboard.writeText(item.clipboardText);
-            }}
-          >
-            {label}
-          </button>
+          <PreviewButton
+            label={label}
+            clipboardText={item.clipboardText}
+            inline={inline}
+          />
         );
       }
 
@@ -352,7 +469,7 @@ function PreviewItemView({ item }: { item: PreviewItem }) {
             href={href}
             target="_blank"
             rel="noreferrer"
-            className="text-sm text-charcoal underline underline-offset-2"
+            className={`text-sm text-charcoal underline underline-offset-2 ${inline ? "inline-block" : "block"}`}
           >
             {label}
           </a>
@@ -365,7 +482,9 @@ function PreviewItemView({ item }: { item: PreviewItem }) {
             href={href}
             target="_blank"
             rel="noreferrer"
-            className="rounded-lg border border-pebble px-4 py-2 text-center text-sm font-medium text-charcoal"
+            className={`rounded-lg border border-pebble px-3 py-1.5 text-center text-sm font-medium text-charcoal ${
+              inline ? "inline-block" : "block"
+            }`}
           >
             {label}
           </a>
@@ -377,9 +496,12 @@ function PreviewItemView({ item }: { item: PreviewItem }) {
           href={href}
           target="_blank"
           rel="noreferrer"
-          className="rounded-lg px-4 py-2 text-center text-sm font-medium text-white"
+          className={`rounded-lg px-4 py-2 text-center text-sm font-medium text-white ${
+            inline ? "inline-block" : "block"
+          }`}
           style={{
-            backgroundColor: item.color === "" ? "#2563eb" : item.color,
+            // ค่า fallback ต้องตรงกับสีปุ่มหลักที่ server ส่งจริง (ink)
+            backgroundColor: item.color === "" ? "#171717" : item.color,
           }}
         >
           {label}
@@ -387,6 +509,76 @@ function PreviewItemView({ item }: { item: PreviewItem }) {
       );
     }
   }
+}
+
+/**
+ * ปุ่มคัดลอกของการ์ดตัวอย่าง — ทำตาม convention เดียวกับ settings.tsx/family.tsx
+ *
+ * ต้องบอกว่าคัดลอกแล้วได้ก็ต่อเมื่อเบราว์เซอร์คัดลอกให้จริง และต้องบอกด้วยว่า
+ * ล้มเหลว เพราะผู้ใช้ที่กดแล้วเงียบจะกดซ้ำหรือไม่กล้าใช้ปุ่มนี้อีก
+ */
+function PreviewButton({
+  label,
+  clipboardText,
+  inline,
+}: {
+  label: string;
+  clipboardText: string;
+  inline: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+
+  useEffect(() => {
+    if (!copied && !copyFailed) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setCopied(false);
+      setCopyFailed(false);
+    }, 2000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied, copyFailed]);
+
+  const text = copied ? "คัดลอกแล้ว" : copyFailed ? "คัดลอกไม่สำเร็จ" : label;
+
+  return (
+    <button
+      type="button"
+      className={`rounded-lg border px-3 py-1.5 text-center text-sm font-medium ${
+        inline ? "inline-block" : "w-full"
+      } ${
+        copyFailed
+          ? "border-danger/40 bg-danger-soft text-danger"
+          : "border-pebble bg-canvas-white text-charcoal"
+      }`}
+      aria-label={`คัดลอก ${clipboardText}`}
+      onClick={() => {
+        // บอกว่าคัดลอกแล้วได้ก็ต่อเมื่อเบราว์เซอร์คัดลอกให้จริง
+        void navigator.clipboard
+          .writeText(clipboardText)
+          .then(() => {
+            setCopyFailed(false);
+            setCopied(true);
+          })
+          .catch(() => {
+            setCopied(false);
+            setCopyFailed(true);
+          });
+      }}
+    >
+      <span className="flex items-center justify-center gap-1.5">
+        <span className="ms text-[16px]" aria-hidden="true">
+          {copied ? "check" : copyFailed ? "error" : "content_copy"}
+        </span>
+        {text}
+      </span>
+    </button>
+  );
 }
 
 function FlexPreview({ message }: { message: LineMessageKind["message"] }) {
@@ -456,6 +648,9 @@ export function LinePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeKey, setActiveKey] = useState("");
+  const [lastSent, setLastSent] = useState<LineLastSent | null>(null);
+  const [audience, setAudience] = useState<AudienceFilter>("all");
+  const desktopTabs = useDesktopTabs();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -465,9 +660,11 @@ export function LinePage() {
       const result = await fetchLineMessages();
       setMessages(result.messages);
       setSource(result.source);
+      setLastSent(result.lastSent);
     } catch (loadError) {
       setMessages([]);
       setSource(null);
+      setLastSent(null);
       setError(
         loadError instanceof ApiError
           ? loadError.message
@@ -482,7 +679,17 @@ export function LinePage() {
     void load();
   }, [load]);
 
-  const active = messages.find((item) => item.key === activeKey) ?? messages[0];
+  const ownerCount = messages.filter((item) => item.audience === "owner").length;
+  const tenantCount = messages.length - ownerCount;
+  const visible = audience === "all" ? messages : messages.filter((item) => item.audience === audience);
+
+  /**
+   * การ์ดที่แสดงต้องอยู่ในชุดที่กรองไว้เสมอ
+   *
+   * `activeKey` จำการ์ดที่เคยเลือกไว้ ถ้าผู้ใช้สลับตัวกรองแล้วการ์ดนั้นหลุดออกจากชุด
+   * จะต้องตกกลับไปใบแรกของชุดใหม่ ไม่ใช่ค้างอยู่ที่การ์ดที่มองไม่เห็น
+   */
+  const active = (activeKey === "" ? undefined : visible.find((item) => item.key === activeKey)) ?? visible[0];
 
   const onTabKeyDown = (
     event: KeyboardEvent<HTMLButtonElement>,
@@ -495,8 +702,8 @@ export function LinePage() {
     event.preventDefault();
     const step =
       event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
-    const nextIndex = (index + step + messages.length) % messages.length;
-    const next = messages[nextIndex];
+    const nextIndex = (index + step + visible.length) % visible.length;
+    const next = visible[nextIndex];
 
     if (next !== undefined) {
       setActiveKey(next.key);
@@ -508,9 +715,7 @@ export function LinePage() {
     ? "กำลังโหลดข้อความ"
     : error !== null
       ? "โหลดข้อความไม่สำเร็จ"
-      : source === null
-        ? `${messages.length} ข้อความที่บอทส่งเป็นข้อความการ์ด Flex`
-        : `${messages.length} ข้อความที่บอทส่งเป็นข้อความการ์ด Flex · ตัวอย่างจากบิลห้อง ${source.roomNumber} เดือน ${periodLabel(source.period)}`;
+      : `${messages.length} ข้อความที่บอทส่งเป็นข้อความการ์ด Flex`;
 
   return (
     <div>
@@ -527,29 +732,43 @@ export function LinePage() {
         </Card>
       ) : error !== null ? (
         <Card>
-          <EmptyState
-            icon="cloud_off"
-            title="โหลดข้อความ LINE ไม่สำเร็จ"
-            description={error}
-            action={
-              <Button
-                variant="secondary"
-                icon="refresh"
-                onClick={() => {
-                  void load();
-                }}
-              >
-                ลองใหม่
-              </Button>
-            }
-          />
+          {/* ข่าวร้ายต้องถูกประกาศ ไม่ใช่แค่เปลี่ยนข้อความบนจอ */}
+          <div role="alert">
+            <EmptyState
+              icon="cloud_off"
+              title="โหลดข้อความ LINE ไม่สำเร็จ"
+              description={error}
+              action={
+                <Button
+                  variant="secondary"
+                  icon="refresh"
+                  onClick={() => {
+                    void load();
+                  }}
+                >
+                  ลองใหม่
+                </Button>
+              }
+            />
+          </div>
         </Card>
       ) : active === undefined ? (
         <Card>
           <EmptyState
             icon="chat_bubble"
             title="ยังไม่มีข้อความที่บอทส่ง"
-            description="ข้อความการ์ด Flex ของบอทจะแสดงที่นี่เมื่อระบบเริ่มส่งให้ผู้เช่าหรือเจ้าของ"
+            description="ข้อความการ์ด Flex ของบอทจะแสดงที่นี่เมื่อระบบเริ่มส่งให้ผู้เช่าหรือเจ้าของ — เริ่มจากการออกบิลและกดส่งบิลให้ผู้เช่า"
+            action={
+              <Button
+                variant="secondary"
+                icon="receipt_long"
+                onClick={() => {
+                  window.location.hash = "#bills";
+                }}
+              >
+                ไปหน้าบิล
+              </Button>
+            }
           />
         </Card>
       ) : (
@@ -559,12 +778,58 @@ export function LinePage() {
               title="ข้อความที่บอทส่ง"
               description="เลือกเพื่อดูว่าใครได้รับ เมื่อไร และข้อความหน้าตาเป็นอย่างไร"
             />
+            {/*
+              ตัวกรองแบบ segmented — pattern เดียวกับหน้ารอตรวจและหน้าบิล
+              (role="group" + aria-pressed + bg-status-unpaid-bg ของตัวที่เลือก)
+              ยอดนับอยู่ในป้ายจึงรู้ทันทีว่ามีของเจ้าของกี่ใบโดยไม่ต้องเปิดดู
+            */}
+            <div
+              role="group"
+              aria-label="กรองตามผู้รับ"
+              className="mb-3 flex gap-1 rounded-lg border border-ash p-1"
+            >
+              {audienceFilters.map((option) => {
+                const selected = option.value === audience;
+                const count =
+                  option.value === "all"
+                    ? messages.length
+                    : option.value === "owner"
+                      ? ownerCount
+                      : tenantCount;
+
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={selected}
+                    className={`btn btn-sm flex-1 ${selected ? "bg-status-unpaid-bg font-medium text-deep-sapphire" : "text-steel hover:bg-paper-mist"}`}
+                    onClick={() => {
+                      setAudience(option.value);
+                    }}
+                  >
+                    {`${option.label} ${count}`}
+                  </button>
+                );
+              })}
+            </div>
+            {visible.length === 0 ? (
+              <p className="py-6 text-center text-sm text-steel">
+                ไม่มีข้อความที่ส่งถึง
+                {audience === "owner" ? "เจ้าของหอ" : "ผู้เช่า"}
+              </p>
+            ) : null}
             <div
               role="tablist"
               aria-label="ข้อความ LINE ที่บอทส่ง"
+              /**
+               * ที่ ≥1024px รายการเรียงเป็นแนวตั้ง (lg:flex-col) แต่ค่า default ของ
+               * tablist คือ horizontal จึงต้องประกาศ orientation ตามที่ผู้ใช้เห็น
+               * ไม่ใช่ตามสไตล์ — คอมโพเนนต์นี้เลื่อนด้วยลูกศรทั้ง 4 ทิศอยู่แล้ว
+               */
+              aria-orientation={desktopTabs ? "vertical" : "horizontal"}
               className="flex gap-2 overflow-x-auto pb-1 pr-6 [mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent)] lg:flex-col lg:overflow-visible lg:pb-0 lg:pr-0 lg:[mask-image:none]"
             >
-              {messages.map((item, index) => {
+              {visible.map((item, index) => {
                 const selected = item.key === active.key;
 
                 return (
@@ -592,7 +857,11 @@ export function LinePage() {
                       <span className="text-sm font-medium text-charcoal">
                         {item.title}
                       </span>
-                      <span className="chip">
+                      {/*
+                        chip ใช้พื้น paper-mist เหมือนแถวที่ถูกเลือก จึงกลืนหาย
+                        พอดีในแถวที่สำคัญที่สุด — สลับเป็นพื้นขาว+ขอบบนแถวนั้น
+                      */}
+                      <span className={`chip ${selected ? "chip-on-selected" : ""}`}>
                         {item.audience === "owner" ? "เจ้าของ" : "ผู้เช่า"}
                       </span>
                     </span>
@@ -613,8 +882,14 @@ export function LinePage() {
                 title={active.title}
                 description={active.trigger}
                 actions={
+                  /*
+                    ผู้รับเป็น "แกน" ไม่ใช่ "สถานะ" จึงต้องไม่ยืมสีสถานะ — เดิมใช้
+                    tone review (อำพัน) ซึ่งเป็นสีเดียวกับ badge รอตรวจในเมนูข้าง
+                    ทำให้อำพันหมายสองอย่าง; แยกด้วยข้อความ+ไอคอนแทนสี
+                  */
                   <Badge
-                    tone={active.audience === "owner" ? "review" : "neutral"}
+                    tone="neutral"
+                    icon={active.audience === "owner" ? "notifications_active" : "notifications"}
                   >
                     {active.audience === "owner"
                       ? "ถึงเจ้าของหอ"
@@ -622,6 +897,16 @@ export function LinePage() {
                   </Badge>
                 }
               />
+
+              {/*
+                หน้านี้สัญญาว่าตอบ "ใครได้รับ เมื่อไร" จึงต้องมีเวลาจริง
+                ต่างจาก `source` ที่บอกแค่ว่าใช้บิลใบไหนเป็นตัวอย่าง
+              */}
+              <p className="mb-3 text-xs text-steel">
+                {lastSent === null
+                  ? "ยังไม่มีการส่งบิลในระบบ"
+                  : `ส่งบิลล่าสุด ${formatSentAt(lastSent.sentAt)} · ห้อง ${lastSent.roomNumber} เดือน ${periodLabel(lastSent.period)}`}
+              </p>
 
               <div className="rounded-2xl bg-paper-mist p-4">
                 <div className="mx-auto max-w-[520px]">
@@ -633,8 +918,10 @@ export function LinePage() {
                       notifications
                     </span>
                     <div className="min-w-0">
-                      <p className="text-[11px] text-fog">
-                        ข้อความแจ้งเตือนที่ผู้เช่าเห็นก่อนเปิด
+                      <p className="text-xs text-fog">
+                        {active.audience === "owner"
+                          ? "ข้อความแจ้งเตือนที่เจ้าของหอเห็นก่อนเปิด"
+                          : "ข้อความแจ้งเตือนที่ผู้เช่าเห็นก่อนเปิด"}
                       </p>
                       <p className="text-xs text-charcoal">
                         {active.message.altText}
@@ -643,9 +930,12 @@ export function LinePage() {
                   </div>
                   <FlexPreview message={active.message} />
                 </div>
-                <p className="mt-2 text-center text-[11px] text-steel">
+                <p className="mt-2 text-center text-xs text-steel">
                   ข้อความการ์ด Flex ที่บอทส่งจริง · ส่งถึง
                   {active.audience === "owner" ? "เจ้าของหอ" : "ผู้เช่า"}
+                  {source === null
+                    ? ""
+                    : ` · เนื้อหาตัวอย่างจากบิลห้อง ${source.roomNumber} เดือน ${periodLabel(source.period)}`}
                 </p>
               </div>
             </div>

@@ -357,6 +357,15 @@
     white-space: nowrap;
   }
 
+  /*
+   * chip บนแถวที่ถูกเลือก — พื้นของแถวนั้นเป็น paper-mist เท่ากับพื้น chip
+   * ปกติ สลับเป็นพื้นขาว+เส้นขอบเพื่อให้ยังอ่านผู้รับออกในแถวที่สำคัญที่สุด
+   */
+  .chip-on-selected {
+    background-color: var(--color-canvas-white);
+    border: 1px solid var(--color-ash);
+  }
+
   .icon-btn {
     position: relative;
     display: inline-flex;
@@ -473,10 +482,64 @@
     background-attachment: local, local, scroll, scroll;
   }
 
-  /* The header row is opaque white by default, which would cut the shadow off
-     above the first body row. */
+  /*
+   * The header row is opaque white by default, which would cut the shadow off
+   * above the first body row.
+   */
   .table-wrap-scroll .table th {
     background-color: transparent;
+  }
+
+  /*
+   * ตารางที่ให้หัวค้างบนจอ
+   *
+   * `position: sticky` ยึดกับ scrollport ที่ใกล้ที่สุด ถ้า wrapper เป็น scroll
+   * container (มี overflow: auto) หัวจะค้างกับ "กรอบตาราง" ไม่ใช่หน้าเว็บ
+   * แต่ถ้าปลด overflow ทิ้ง ตารางที่กว้างเกินจอ (คอลัมน์รวม 1120px) จะถูกตัด
+   * จนคอลัมน์ "จัดการ" หายไป กดปุ่มไม่ได้ — แย่กว่าไม่มี sticky
+   *
+   * จึงใช้คนละโหมดตามพื้นที่จริง:
+   *   - กรอบแคบกว่าตาราง → ให้ตารางเลื่อนในกรอบตัวเอง (overflow: auto) และ
+   *     จำกัดความสูงไว้เท่าจอ (ลบที่ให้แถบหัวหน้าแอป + หัวการ์ด) หัวค้างบนสุด
+   *     ของกรอบตลอด — เลื่อนดูข้อมูลได้โดยไม่ต้องละสายตาจากหัวคอลัมน์
+   *   - กรอบกว้างพอ (≥1500px) → ใช้ overflow-x: clip ซึ่งไม่สร้าง scroll
+   *     container หัวจึงค้างกับหน้าเว็บจริง เลื่อนครั้งเดียว ไม่มี scrollbar ซ้อน
+   */
+  .table-wrap-sticky {
+    max-height: calc(100dvh - 13rem);
+    overflow: auto;
+  }
+
+  .table-wrap-scroll .table-sticky-head th {
+    background-color: var(--color-canvas-white);
+  }
+
+  .table-sticky-head th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  /*
+   * 1500px = คอลัมน์รวม 1120 + sidebar 232 + padding — จุดที่ตารางพอดีกรอบ
+   * `clip` ใช้คู่กับ `visible` ได้ (ต่างจาก auto ที่บังคับให้อีกแกนเป็น auto)
+   */
+  @media (min-width: 1500px) {
+    .table-wrap-sticky {
+      max-height: none;
+      overflow: visible;
+      overflow-x: clip;
+    }
+
+    /*
+     * ต้องค้างที่ 4rem (64px) ให้ตรงกับความสูงแถบหัวหน้าแอป (h-16) พอดี
+     *
+     * ถ้าเผื่อมากกว่านั้น (เช่น 5rem) จะเกิดช่อง 64–80px ที่แถวข้อมูลทะลุขึ้นมา
+     * ให้เห็นเหนือหัวตาราง เพราะแถบหัวแอปทึบคลุมแค่ 0–64px เท่านั้น
+     */
+    .table-sticky-head th {
+      top: 4rem;
+    }
   }
 
   .table {

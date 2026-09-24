@@ -1,6 +1,14 @@
-import { SELF, env } from "cloudflare:test";
+import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import app from "../src/worker/index";
 import { billsFocusHash, billsFocusOf, billsFocusTarget } from "../src/client/api";
+import {
+  ownerBillPaidMessage,
+  slipDuplicateMessage,
+  slipInstructionMessage,
+  slipMatchedMessage,
+  slipPendingReviewMessage,
+} from "../src/worker/line/messages";
 import { configurePayout, createFamily, signIn, withAuth, type TestSession } from "./auth-helper";
 import { flexText } from "./flex";
 
@@ -200,6 +208,29 @@ function markPaid(id: string, payload: Record<string, unknown>): Promise<Respons
   return post(`${billsUrl}/${id}/mark-paid`, payload);
 }
 
+/**
+ * ปิดบิลแล้วรอ waitUntil ให้จบก่อนคืนค่า
+ *
+ * SELF.fetch ไม่รอ ctx.waitUntil ให้ แต่การแจ้งเตือนเจ้าของถูกส่งจาก waitUntil
+ * (ตั้งใจ ไม่ให้ความล้มเหลวของการส่งทำให้คำขอปิดบิลล้ม) เทสต์ที่ยืนยันว่ามี
+ * push ถึงเจ้าของจริงจึงต้องรอตรงนี้ ไม่งั้น assertion จะแข่งกับการส่ง
+ */
+async function markPaidSettled(id: string, payload: Record<string, unknown>): Promise<Response> {
+  const ctx = createExecutionContext();
+  const response = await app.fetch(
+    new Request(`${billsUrl}/${id}/mark-paid`, {
+      method: "POST",
+      headers: { ...(withAuth(session).headers as Record<string, string>), "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+    env,
+    ctx,
+  );
+  await waitOnExecutionContext(ctx);
+
+  return response;
+}
+
 async function generatedBill(roomId: string, entry: Record<string, unknown>): Promise<BillPayload> {
   const response = await generate({ period: "2026-09", entries: [{ roomId, ...entry }] });
   expect(response.status).toBe(201);
@@ -302,7 +333,7 @@ describe("monthly bill generation", () => {
     expect(bill.waterCurrent).toBe(13.4);
     expect(bill.waterUnits).toBeCloseTo(3.4);
     expect(bill.waterRate).toBe(17.5);
-    expect(bill.waterAmount).toBe(Math.round(bill.waterUnits * bill.waterRate));
+    expect(bill.waterAmount).toBe(Math.ceil(bill.waterUnits * bill.waterRate));
     expect(bill.waterAmount).toBe(60);
     expect(bill.electricMode).toBe("meter");
     expect(bill.electricPrevious).toBe(20);
@@ -712,7 +743,7 @@ describe("bill management", () => {
     expect(patched.waterCurrent).toBe(20);
     expect(patched.waterUnits).toBeCloseTo(10);
     expect(patched.waterRate).toBe(17.5);
-    expect(patched.waterAmount).toBe(Math.round(10 * 17.5));
+    expect(patched.waterAmount).toBe(Math.ceil(10 * 17.5));
     expect(patched.electricPrevious).toBe(20);
     expect(patched.electricCurrent).toBe(30);
     expect(patched.electricUnits).toBeCloseTo(10);
@@ -1069,7 +1100,7 @@ describe("bill management", () => {
 
   it("rejects an impossible paid timestamp but stores a valid one as given", async () => {
     await putRates(18, 7);
-    const room = await occupiedRoom("B242", { waterMeterInit: 100, electricMeterInit: 200 });
+    const room = await occupiedRoom("B261", { waterMeterInit: 100, electricMeterInit: 200 });
     const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 215 });
 
     const impossible = await markPaid(bill.id, { method: "cash", paidAt: "2026-02-30T10:00Z" });
@@ -1285,7 +1316,8 @@ describe("owner send summary", () => {
     expect(text).toContain("0 ห้อง");
     expect(text).not.toContain("S401");
     expect(text).not.toContain("S402");
-    expect(JSON.stringify(message.contents)).toContain("#ECFDF5");
+    // โทนสำเร็จ = token paid ของแอป (#dcfce7) ไม่ใช่พาสเทลชุดเก่า
+    expect(JSON.stringify(message.contents)).toContain("#dcfce7");
   });
 
   it("pushes the owner one warning card naming the rooms that failed or were skipped", async () => {
@@ -1327,7 +1359,8 @@ describe("owner send summary", () => {
     expect(text).toContain("S411");
     expect(text).toContain("S412");
     expect(text).toContain("ผู้เช่า S412");
-    expect(JSON.stringify(message.contents)).toContain("#FFFBEB");
+    // โทนเตือน = token review ของแอป (#fff7e6)
+    expect(JSON.stringify(message.contents)).toContain("#fff7e6");
   });
 });
 
@@ -1382,6 +1415,183 @@ describe("room-scoped ดูบิล link", () => {
     expect(billsFocusOf("#bills")).toBeNull();
     expect(billsFocusOf("#bills?period=2026-08")).toBeNull();
     expect(billsFocusOf("#tenants?room=208&period=2026-08")).toBeNull();
+  });
+});
+
+describe("owner alert when a bill is closed by hand", () => {
+  const linePushUrl = "https://api.line.me/v2/bot/message/push";
+  const ownerUserId = "U-owner-mark-paid";
+
+  interface OutboundPush {
+    url: string;
+    to: string;
+    messages: Record<string, unknown>[];
+  }
+
+  let pushes: OutboundPush[] = [];
+
+  function pushesTo(lineUserId: string): OutboundPush[] {
+    return pushes.filter((push) => push.url === linePushUrl && push.to === lineUserId);
+  }
+
+  async function linkOwner(): Promise<void> {
+    await env.DB.prepare(
+      "INSERT INTO settings (family_id, key, value, updated_at) VALUES (?, 'owner_line_user_id', ?, datetime('now')) ON CONFLICT(family_id, key) DO UPDATE SET value = excluded.value",
+    )
+      .bind(session.familyId, ownerUserId)
+      .run();
+  }
+
+  beforeEach(() => {
+    pushes = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const raw = typeof init?.body === "string" ? init.body : "";
+      const payload =
+        raw === ""
+          ? { to: "", messages: [] as Record<string, unknown>[] }
+          : (JSON.parse(raw) as { to: string; messages: Record<string, unknown>[] });
+
+      pushes.push({ url, to: payload.to, messages: payload.messages });
+
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } }));
+    });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await env.DB.prepare("DELETE FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'")
+      .bind(session.familyId)
+      .run();
+  });
+
+  it("sends the owner one card with the room, the amount and no slip button for a cash payment", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("H901", { rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+    await linkOwner();
+
+    const bill = await generatedBill(room.id, { waterCurrent: 12, electricCurrent: 24 });
+    // 3500 ค่าเช่า + 2 ยูนิตน้ำ (18) + 4 ยูนิตไฟ (7)
+    expect(bill.total).toBe(3564);
+
+    const response = await markPaidSettled(bill.id, { method: "cash", paidAt: "2026-09-24T07:05:00.000Z" });
+    expect(response.status).toBe(200);
+
+    const owner = pushesTo(ownerUserId);
+    expect(owner).toHaveLength(1);
+
+    const message = first(first(owner).messages);
+    expect(message.type).toBe("flex");
+    expect(typeof message.altText).toBe("string");
+
+    const text = flexText(message);
+    expect(text).toContain("รับชำระแล้ว");
+    expect(text).toContain("H901");
+    expect(text).toContain("3,564");
+    expect(text).toContain("กันยายน 2569");
+    expect(text).toContain("เงินสด");
+    // ป้ายปุ่มอยู่ใน action ไม่ใช่ text จึงตรวจจาก JSON ของการ์ดทั้งใบ
+    const actions = JSON.stringify(message.contents);
+    expect(actions).toContain("เปิดบิลในเว็บ");
+    /**
+     * ลิงก์ต้องมี openExternalBrowser=1 และอยู่ **ก่อน** fragment
+     * ไม่งั้น LINE เปิดใน in-app browser ซึ่ง Google บล็อก OAuth → กดแล้วใช้ไม่ได้
+     */
+    expect(actions).toContain(`https://dorm.test/?openExternalBrowser=1#bills/detail/${bill.id}?period=2026-09`);
+    expect(actions.indexOf("openExternalBrowser=1")).toBeLessThan(actions.indexOf("#bills/detail/"));
+    // ไม่มีสลิปให้ดู จึงต้องไม่มีปุ่มที่กดแล้วเจอ 404
+    expect(actions).not.toContain("ดูสลิป");
+    // การ์ดรับชำระแล้วใช้โทนสำเร็จ = token paid ของแอป
+    expect(JSON.stringify(message.contents)).toContain("#dcfce7");
+  });
+
+  it("label the transfer method as a manual record and still answer 200 when the owner has no LINE link", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("H902", { rent: 3500, waterMeterInit: 10, electricMeterInit: 20 });
+
+    const bill = await generatedBill(room.id, { waterCurrent: 12, electricCurrent: 24 });
+    const response = await markPaidSettled(bill.id, { method: "transfer" });
+
+    expect(response.status).toBe(200);
+    expect(pushesTo(ownerUserId)).toEqual([]);
+    expect(pushes.filter((push) => push.url === linePushUrl)).toEqual([]);
+  });
+});
+
+describe("line card theme follows the app's status tokens", () => {
+  it("uses each app status token on the matching tone, with no legacy pastel left", () => {
+    // การ์ดจริงหนึ่งใบต่อโทน — ตรวจจาก payload ที่บอทส่งจริง
+    const cards = [
+      { background: "#dcfce7", title: "#15803d", card: slipMatchedMessage(3500, "2026-09") },
+      { background: "#dbeaff", title: "#1e40af", card: slipInstructionMessage() },
+      { background: "#fff7e6", title: "#b45309", card: slipPendingReviewMessage() },
+      { background: "#fef2f2", title: "#b91c1c", card: slipDuplicateMessage() },
+    ];
+
+    for (const { background, title, card } of cards) {
+      const header = card.contents.header as Record<string, unknown>;
+
+      expect(header.backgroundColor).toBe(background);
+      expect(JSON.stringify(header)).toContain(title);
+      // พื้นพาสเทลชุดเก่าต้องไม่หลงเหลือในระบบ
+      expect(JSON.stringify(card.contents)).not.toContain("#ECFDF5");
+      expect(JSON.stringify(card.contents)).not.toContain("#EFF6FF");
+      expect(JSON.stringify(card.contents)).not.toContain("#FFFBEB");
+    }
+  });
+
+  it("paints every primary button with the app's ink, not electric blue", () => {
+    const withButton = ownerBillPaidMessage({
+      roomNumber: "A101",
+      tenantName: "สมชาย ทดสอบ",
+      period: "2026-09",
+      total: 3500,
+      methodLabel: "เงินสด",
+      paidAtLabel: "24 ก.ย. 2569 14:05",
+      billUrl: "https://dorm.test/#bills/detail/b1",
+      slipUrl: "https://dorm.test/slips/p/k.png?e=1&s=abc",
+    });
+
+    const json = JSON.stringify(withButton.contents);
+    expect(json).toContain("#171717");
+    // น้ำเงินเป็น "สีเน้น" ใน DESIGN.md ไม่ใช่สีปุ่ม
+    expect(json).not.toContain("#2563eb");
+  });
+});
+
+describe("bill charges always round up", () => {
+  it("rounds a fractional water charge up instead of to the nearest baht", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B260", { rent: 3500, waterRate: 10.13, waterMeterInit: 100, electricMeterInit: 200 });
+
+    // 3 หน่วย × 10.13 = 30.39 → ปัดครึ่งได้ 30 แต่ปัดขึ้นต้องได้ 31
+    // (เศษต่ำกว่า .5 คือจุดที่สองกฎให้ผลต่างกันจริง)
+    const bill = await generatedBill(room.id, { waterCurrent: 103, electricCurrent: 205 });
+    expect(bill.waterUnits).toBeCloseTo(3);
+    expect(Math.round(3 * 10.13)).toBe(30);
+    expect(bill.waterAmount).toBe(31);
+  });
+
+  it("rounds a fractional electric charge up and keeps the total consistent", async () => {
+    await putRates(18, 6.25);
+    const room = await occupiedRoom("B263", { rent: 3500, electricRate: 6.25, waterMeterInit: 10, electricMeterInit: 20 });
+
+    // 5 หน่วย × 6.25 = 31.25 → ปัดครึ่งได้ 31 แต่ปัดขึ้นต้องได้ 32
+    const bill = await generatedBill(room.id, { waterCurrent: 12, electricCurrent: 25 });
+    expect(bill.electricUnits).toBeCloseTo(5);
+    expect(Math.round(5 * 6.25)).toBe(31);
+    expect(bill.electricAmount).toBe(32);
+    expect(bill.total).toBe(3500 + Math.ceil(2 * 18) + 32);
+  });
+
+  it("keeps a charge that divides evenly unchanged", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("B264", { rent: 3500, waterRate: 18, waterMeterInit: 10, electricMeterInit: 20 });
+
+    const bill = await generatedBill(room.id, { waterCurrent: 13, electricCurrent: 25 });
+    expect(bill.waterAmount).toBe(3 * 18);
+    expect(bill.electricAmount).toBe(5 * 7);
   });
 });
 

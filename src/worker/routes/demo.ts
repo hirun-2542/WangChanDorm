@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { safeReturnPath } from "../../shared/return-path";
 import type { AppEnv } from "../lib/auth";
 import { isSecureRequest } from "../lib/auth";
 import { demoModeOn } from "../line/api";
@@ -397,7 +398,15 @@ demo.get("/enter", async (c) => {
     }
 
     const secure = isSecureRequest(c);
-    const headers = new Headers({ location: new URL("/", c.req.url).toString() });
+    const target = new URL("/", c.req.url);
+
+    /**
+     * ที่หมายที่ฝากมา (เช่น `#bills/detail/…` จากปุ่มเปิดบิล) — ต้องพาไปให้ถึง
+     * ไม่งั้นคนที่เปิดลิงก์บิลบน Worker เดโมจะตกไปที่แดชบอร์ดทุกครั้ง
+     */
+    const returnPath = safeReturnPath(c.req.query("next"));
+    const location = returnPath === null ? target.toString() : `${target.toString()}${returnPath}`;
+    const headers = new Headers({ location });
     headers.append("set-cookie", sessionCookie(token, secure));
 
     return new Response(null, { status: 302, headers });

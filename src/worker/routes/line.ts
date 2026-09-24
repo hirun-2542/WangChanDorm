@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { type AppEnv, familyId } from "../lib/auth";
+import { billDetailUrl } from "../lib/line-link";
 import { handleSlipImage } from "../lib/slips";
 import { bankThaiName } from "../lib/banks";
 import { failureDetail, fetchProfile, lineFamilyId, replyMessage } from "../line/api";
@@ -13,6 +14,7 @@ import {
   contactOwnerMessage,
   linkedMessage,
   notMatchedMessage,
+  ownerBillPaidMessage,
   ownerLinkedMessage,
   ownerSendSummaryMessage,
   ownerSlipPendingMessage,
@@ -29,6 +31,7 @@ import {
   welcomeMessage,
 } from "../line/messages";
 import { verifyLineSignature } from "../line/signature";
+import { paidAtLabel } from "../lib/paid-notify";
 import {
   asRecord,
   errorBody,
@@ -287,11 +290,12 @@ async function handleTextMessage(
   if (trimmed === contactOwnerKeyword) {
     const ownerName = (await readSetting(env, family, "owner_name")) ?? "";
     const ownerPhone = (await readSetting(env, family, "owner_phone")) ?? "";
+    const ownerLineId = (await readSetting(env, family, "owner_line_id")) ?? "";
 
     await replyMessage(
       env,
       replyToken,
-      contactOwnerMessage(ownerName, ownerPhone),
+      contactOwnerMessage(ownerName, ownerPhone, ownerLineId),
     );
     return;
   }
@@ -426,6 +430,7 @@ async function handleEvent(
     await handleSlipImage(
       env,
       family,
+      origin,
       userId,
       replyToken,
       readString(message, "id"),
@@ -843,6 +848,35 @@ async function loadOwnerSendSummary(
   };
 }
 
+interface LastSentRow {
+  sent_at: string;
+  room_number: string;
+  period: string;
+}
+
+/**
+ * การส่งบิลครั้งล่าสุดของหอ — ใช้ตอบ "ส่งไปถึงหรือยัง" บนหน้าแคตตาล็อกข้อความ
+ *
+ * อ่านจาก bills.sent_at ซึ่งเป็นความจริงเดียวที่ระบบมีเกี่ยวกับ "ส่งแล้ว"
+ * (ตาราง line_events เก็บแค่การจองสิทธิ์ประมวลผล webhook ขาเข้า ไม่ใช่ขาออก)
+ */
+async function loadLastBillSentAt(
+  env: Env,
+  family: string,
+): Promise<{ sentAt: string; roomNumber: string; period: string } | null> {
+  const row = await env.DB.prepare(
+    `SELECT b.sent_at, r.room_number, b.period FROM bills b JOIN rooms r ON r.id = b.room_id WHERE b.family_id = ? AND b.sent_at IS NOT NULL ORDER BY b.sent_at DESC LIMIT 1`,
+  )
+    .bind(family)
+    .first<LastSentRow>();
+
+  if (row === null) {
+    return null;
+  }
+
+  return { sentAt: row.sent_at, roomNumber: row.room_number, period: row.period };
+}
+
 lineAdmin.get("/messages", async (c) => {
   const family = familyId(c);
 
@@ -851,6 +885,7 @@ lineAdmin.get("/messages", async (c) => {
     const dormName = (await readSetting(c.env, family, "dorm_name")) ?? defaultDormName;
     const ownerName = (await readSetting(c.env, family, "owner_name")) ?? "";
     const ownerPhone = (await readSetting(c.env, family, "owner_phone")) ?? "";
+    const ownerLineId = (await readSetting(c.env, family, "owner_line_id")) ?? "";
     const promptpayId = (await readSetting(c.env, family, "promptpay_id")) ?? "";
     const promptpayName = (await readSetting(c.env, family, "promptpay_name")) ?? "";
     const bankName = bankThaiName((await readSetting(c.env, family, "bank_name")) ?? "");
@@ -879,6 +914,23 @@ lineAdmin.get("/messages", async (c) => {
         trigger:
           "ส่งเมื่อสลิปยอดตรงปิดบิลอัตโนมัติ หรือเจ้าของกดปิดบิลจากคิวรอตรวจ",
         message: slipMatchedMessage(sample.bill.total, sample.bill.period),
+      });
+      messages.push({
+        key: "owner_bill_paid",
+        title: "แจ้งเจ้าของว่ามีการชำระ",
+        audience: "owner",
+        trigger:
+          "ส่งเมื่อบิลถูกปิดทุกกรณี — สลิปปิดอัตโนมัติ ปิดจากคิวรอตรวจ หรือเจ้าของกดปิดเอง",
+        message: ownerBillPaidMessage({
+          roomNumber: sample.bill.roomNumber,
+          tenantName: sample.bill.tenantName,
+          period: sample.bill.period,
+          total: sample.bill.total,
+          methodLabel: "สลิปอัตโนมัติ",
+          paidAtLabel: paidAtLabel(new Date().toISOString()),
+          billUrl: billDetailUrl(origin, sample.bill.id, sample.bill.period),
+          slipUrl: null,
+        }),
       });
     }
 
@@ -927,7 +979,7 @@ lineAdmin.get("/messages", async (c) => {
       title: "ติดต่อเจ้าของหอ",
       audience: "tenant",
       trigger: "ส่งเมื่อผู้เช่าพิมพ์คำว่า ติดต่อเจ้าของ",
-      message: contactOwnerMessage(ownerName, ownerPhone),
+      message: contactOwnerMessage(ownerName, ownerPhone, ownerLineId),
     });
 
     if (sample !== null) {
@@ -966,6 +1018,12 @@ lineAdmin.get("/messages", async (c) => {
                 roomNumber: sample.bill.roomNumber,
                 tenantName: sample.bill.tenantName,
               },
+        /**
+         * เวลาที่บอทส่งข้อความจริงครั้งล่าสุด — หน้าที่นี้ถูกใช้ตอบคำถาม
+         * "ส่งไปถึงหรือยัง" ไม่ใช่แค่ "หน้าตาเป็นอย่างไร" จึงต้องมีของจริง
+         * ไม่ใช่ให้ผู้ใช้เดาจากคำโปรย
+         */
+        lastSent: await loadLastBillSentAt(c.env, family),
         messages,
       },
       200,

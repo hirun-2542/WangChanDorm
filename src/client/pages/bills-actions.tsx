@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { chargeFromFlatAmount, chargeFromUnits } from "../../shared/billing";
 import {
   ApiError,
+  announceBillsChanged,
   deleteBill,
   markBillPaid,
   updateBill,
@@ -97,7 +99,7 @@ function computeEdit(bill: Bill, form: BillEditForm): EditCalc {
   const waterUnits =
     water.ok && waterHint === null ? water.value - bill.waterPrevious : null;
   const waterAmount =
-    waterUnits === null ? 0 : Math.round(waterUnits * bill.waterRate);
+    waterUnits === null ? 0 : chargeFromUnits(waterUnits, bill.waterRate);
 
   const electric = parseReading(form.electricCurrent);
   const electricHint = readingHint(
@@ -120,11 +122,11 @@ function computeEdit(bill: Bill, form: BillEditForm): EditCalc {
   const electricRate = isFlat ? null : (bill.electricRate ?? 0);
   const electricAmount = isFlat
     ? flat.ok
-      ? Math.round(flat.value)
+      ? chargeFromFlatAmount(flat.value)
       : 0
     : electricUnits === null
       ? 0
-      : Math.round(electricUnits * (bill.electricRate ?? 0));
+      : chargeFromUnits(electricUnits, bill.electricRate ?? 0);
 
   const resolved = form.charges
     .filter(
@@ -470,6 +472,9 @@ export function MarkPaidDialog({
     void markBillPaid(bill.id, { method, paidAt })
       .then((updated) => {
         onPaid(updated);
+        // เส้นทางนี้ไม่ส่ง WebSocket event กลับมาหาแท็บตัวเอง (กัน toast ซ้ำ)
+        // แดชบอร์ดในแท็บนี้จึงต้องรู้จาก event ภายในแบบเดิม
+        announceBillsChanged();
       })
       .catch((paidError: unknown) => {
         setError(

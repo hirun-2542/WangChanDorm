@@ -10,6 +10,7 @@ import {
 } from "../lib/slips";
 import { pushMessage } from "../line/api";
 import { slipMatchedMessage } from "../line/messages";
+import { type BillPaidEvent, broadcastBillPaid, pushOwnerBillPaid } from "../lib/paid-notify";
 import { errorBody, readJsonObject } from "./shared";
 
 const slipsAdmin = new Hono<AppEnv>();
@@ -221,6 +222,21 @@ async function settleSlip(c: Context<AppEnv>, slip: SlipRow, rawBillId: unknown)
 
   console.log(JSON.stringify({ message: "slip settled by owner", slipId: slip.id, billId: bill.id }));
   await pushMessage(c.env, slip.line_user_id, [slipMatchedMessage(bill.total, bill.period)]);
+
+  const event: BillPaidEvent = {
+    billId: bill.id,
+    roomNumber: bill.room_number,
+    tenantName: bill.tenant_name,
+    period: bill.period,
+    total: bill.total,
+    method: "transfer",
+    source: "owner-settle",
+    paidAt,
+    slipImageKey: slip.image_key,
+  };
+
+  await broadcastBillPaid(c.env, family, event, c.req.header("x-realtime-id") ?? null);
+  c.executionCtx.waitUntil(pushOwnerBillPaid(c.env, family, new URL(c.req.url).origin, event));
 
   return resolvedSlipResponse(c, slip.id);
 }

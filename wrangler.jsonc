@@ -34,6 +34,12 @@
       "bucket_name": "wangchan-dorm-slips"
     }
   ],
+  // หนึ่ง instance ต่อครอบครัว — ใช้ fan-out ความเปลี่ยนแปลงของบิลไปทุกแท็บเว็บ
+  // ที่เปิดค้างอยู่ (ดู src/worker/realtime.ts)
+  "durable_objects": {
+    "bindings": [{ "name": "REALTIME", "class_name": "FamilyRealtime" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FamilyRealtime"] }],
   "rules": [
     {
       "type": "Data",
@@ -80,7 +86,13 @@
           "binding": "SLIPS",
           "bucket_name": "wangchan-demo-slips"
         }
-      ]
+      ],
+      // ต้องประกาศซ้ำที่นี่เสมอ: wrangler env ไม่ inherit binding จาก top-level
+      // ถ้าลืม demo worker จะ 500 ตอนเรียก env.REALTIME (WS ต้องใช้ได้ในเดโมด้วย)
+      "durable_objects": {
+        "bindings": [{ "name": "REALTIME", "class_name": "FamilyRealtime" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FamilyRealtime"] }]
     }
   }
 }

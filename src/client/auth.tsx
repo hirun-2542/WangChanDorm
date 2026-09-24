@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { safeReturnPath } from "../shared/return-path";
 import { fetchDemoStatus, fetchMe, logout, onUnauthorized, type AuthUser } from "./api";
 import { AuthScreen, AuthSplash, InviteAcceptScreen } from "./pages/auth";
 
@@ -36,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * เองและได้เซสชันที่เซิร์ฟเวอร์เพิ่งสร้างให้
    */
   const load = useCallback(async () => {
-    // ตรวจโหมดสาธิตคู่กับการตรวจเซสชัน ไม่ต่อกันเป็นสองรอบ — หน้าเข้าสู่ระบบต้องรู้
+    // ตรวจโหมดสาธิตคู่กับการตรวจสอบเซสชัน ไม่ต่อกันเป็นสองรอบ — หน้าเข้าสู่ระบบต้องรู้
     // ตั้งแต่เฟรมแรกว่าควรเสนอทางเข้าเดโมหรือไม่ ไม่งั้นผู้ชมจะเห็นหน้าแจ้งเข้าสู่ระบบ
     // ด้วย Google แล้วเพิ่งมีปุ่มโผล่มาทีหลัง
     const [me] = await Promise.all([
@@ -48,6 +49,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setUser(me);
     setChecking(false);
+  }, []);
+
+  useEffect(() => {
+    /**
+     * ที่หมายที่เซิร์ฟเวอร์ส่งกลับมาหลังล็อกอินด้วย Google
+     *
+     * เซิร์ฟเวอร์เด้งมาที่ `/?next=%23bills%2Fdetail%2F…` แล้ว ต้องย้ายมาเป็น
+     * fragment ของหน้าเดิม (ไม่ reload) และลบ query ทิ้ง เพื่อให้กด refresh แล้ว
+     * ไม่ได้ที่หมายเดิมซ้ำ และไม่ให้ค้างอยู่ใน history
+     *
+     * ใช้ history.replaceState ไม่ใช่การตั้ง location.hash เพื่อไม่ให้เกิด
+     * การโหลดหน้าใหม่ทั้งหน้า — เซสชันเพิ่งถูกตั้งในคำขอนี้แล้ว
+     */
+    const params = new URLSearchParams(window.location.search);
+    const next = safeReturnPath(params.get("next"));
+
+    if (next === null) {
+      return;
+    }
+
+    params.delete("next");
+
+    const rest = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${rest === "" ? "" : `?${rest}`}${next}`,
+    );
+    // แจ้ง router ให้อ่าน hash ใหม่
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
   }, []);
 
   useEffect(() => {
@@ -131,7 +162,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
    */
   useEffect(() => {
     if (!checking && demoMode && user === null && inviteToken === null) {
-      window.location.replace("/api/demo/enter");
+      // ส่งที่หมายไปด้วย ไม่งั้นคนที่เปิดลิงก์บิลบน Worker เดโมจะตกไปที่แดชบอร์ด
+      const hash = window.location.hash;
+
+      window.location.replace(
+        hash.startsWith("#") && hash.length > 1
+          ? `/api/demo/enter?next=${encodeURIComponent(hash)}`
+          : "/api/demo/enter",
+      );
     }
   }, [checking, demoMode, user, inviteToken]);
 

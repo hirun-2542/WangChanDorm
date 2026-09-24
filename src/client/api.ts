@@ -162,6 +162,8 @@ export interface Settings {
   dormName: string;
   ownerName: string;
   ownerPhone: string;
+  /** LINE ID ที่ผู้เช่าค้นหาเจ้าของหอได้ (คนละค่ากับ userId ที่บอทใช้ push) */
+  ownerLineId: string;
   defaultWaterRate: number;
   defaultElectricRate: number;
   promptpayType: PromptpayType;
@@ -172,6 +174,10 @@ export interface Settings {
   bankAccountName: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
+  /** ชื่อที่แสดงของบัญชี LINE ที่ผูกอยู่ — null เมื่อยังไม่ผูก, "" เมื่อผูกแล้วแต่ไม่รู้ชื่อ */
+  ownerLineDisplayName: string | null;
+  /** OA ของหอ (ชื่อที่แสดง + basic id ที่ค้นหาได้) — null เมื่อดึงจาก LINE ไม่ได้ */
+  lineBot: { displayName: string; basicId: string } | null;
   integrations: SettingsIntegrations;
 }
 
@@ -179,6 +185,7 @@ export interface SettingsUpdate {
   dormName?: string;
   ownerName?: string;
   ownerPhone?: string;
+  ownerLineId?: string;
   defaultWaterRate?: number;
   defaultElectricRate?: number;
   promptpayType?: PromptpayType;
@@ -246,6 +253,13 @@ const requestTimeoutMs = 20_000;
  */
 const selfHandledAuthPaths = ["/api/auth/me"];
 
+let realtimeConnectionId: string | null = null;
+
+/** ให้ชั้น realtime บอกว่าแท็บนี้คือ socket ไหน เซิร์ฟเวอร์จะได้ไม่ส่ง event กลับมาหาตัวเอง */
+export function setRealtimeConnectionId(id: string | null): void {
+  realtimeConnectionId = id;
+}
+
 let unauthorizedHandler: (() => void) | null = null;
 
 /** ให้ AuthProvider ลงทะเบียนผู้รับเหตุ 401 เพื่อพากลับหน้าเข้าสู่ระบบ */
@@ -265,8 +279,18 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   // ไฟล์นี้ถูก import จากทั้งฝั่ง client (lib.dom RequestInit มี credentials)
   // และจากชุดทดสอบฝั่ง worker (workers-types RequestInit ไม่มี credentials)
   // ประกาศชนิดเป็น intersection เอง เพื่อให้คอมไพล์ผ่านทั้งสองฝั่งโดยไม่ใช้ any
+  //
+  // แนบ connectionId ของแท็บนี้ไปกับทุกคำขอที่เปลี่ยนข้อมูล — เซิร์ฟเวอร์ใช้
+  // ค่านี้บอก Durable Object ให้ข้ามแท็บต้นทางเวลากระจาย event (กัน toast ซ้ำ)
+  const headers = new Headers(init.headers);
+
+  if (realtimeConnectionId !== null) {
+    headers.set("x-realtime-id", realtimeConnectionId);
+  }
+
   const requestInit: RequestInit & { credentials?: string } = {
     ...init,
+    headers,
     credentials: "same-origin",
     signal: init.signal ?? AbortSignal.timeout(requestTimeoutMs),
   };
@@ -451,8 +475,16 @@ export interface LineMessageSource {
   tenantName: string;
 }
 
+/** การส่งบิลครั้งล่าสุดของหอ — คนละเรื่องกับ `source` ที่บอกว่าใช้บิลใบไหนเป็นตัวอย่าง */
+export interface LineLastSent {
+  sentAt: string;
+  roomNumber: string;
+  period: string;
+}
+
 export interface LineMessagesResult {
   source: LineMessageSource | null;
+  lastSent: LineLastSent | null;
   messages: LineMessageKind[];
 }
 
@@ -460,9 +492,10 @@ export async function fetchLineMessages(): Promise<LineMessagesResult> {
   const body = await apiGet<{
     ok: true;
     source: LineMessageSource | null;
+    lastSent: LineLastSent | null;
     messages: LineMessageKind[];
   }>("/api/line/messages");
-  return { source: body.source, messages: body.messages };
+  return { source: body.source, lastSent: body.lastSent ?? null, messages: body.messages };
 }
 
 export async function updateSettings(input: SettingsUpdate): Promise<Settings> {
@@ -479,6 +512,37 @@ export async function regenerateOwnerCode(): Promise<string> {
     {},
   );
   return body.ownerLinkCode;
+}
+
+/** เลิกเชื่อม LINE ของเจ้าของ — รหัสค้างถูกยกเลิกไปด้วย ต้องออกรหัสใหม่ถ้าจะเชื่อมอีก */
+export async function unlinkOwnerLine(): Promise<void> {
+  await apiDelete<{ ok: true }>("/api/settings/owner-link");
+}
+
+export interface LineChannelStatus {
+  tokenConfigured: boolean;
+  secretConfigured: boolean;
+  bot: { displayName: string; basicId: string } | null;
+  webhook: { endpoint: string; active: boolean } | null;
+  webhookPointsHere: boolean;
+  expectedWebhookEndpoint: string;
+  liffId: string;
+}
+
+export async function fetchLineChannel(): Promise<LineChannelStatus> {
+  const body = await apiGet<{ ok: true; channel: LineChannelStatus }>(
+    "/api/settings/line-channel",
+  );
+  return body.channel;
+}
+
+/** ตั้ง webhook ของช่อง LINE ให้ชี้กลับมาที่ Worker นี้ (ใช้ตอนเปลี่ยน OA) */
+export async function setLineWebhook(): Promise<string> {
+  const body = await apiPost<{ ok: true; endpoint: string }>(
+    "/api/settings/line-channel/webhook",
+    {},
+  );
+  return body.endpoint;
 }
 
 export async function fetchBills(period: string): Promise<Bill[]> {
@@ -822,6 +886,21 @@ export async function logout(): Promise<void> {
 
 /** ปลายทางเริ่มล็อกอินด้วย Google — พาเบราว์เซอร์ไปทั้งหน้า ไม่ใช่ fetch */
 export const googleSignInPath = "/api/auth/google/start";
+
+/**
+ * ลิงก์เริ่มล็อกอินที่พา "ที่หมาย" ติดไปด้วย
+ *
+ * fragment ไม่ถูกส่งไปเซิร์ฟเวอร์ จึงต้องยัดเป็น query ให้เซิร์ฟเวอร์อ่านแล้วฝาก
+ * ในคุกกี้ข้าม OAuth — ที่หมายที่ปลอดภัยต้องขึ้นต้นด้วย `#` เท่านั้น เบราว์เซอร์
+ * จึงไม่ตีความเป็นอย่างอื่น
+ */
+export function googleSignInUrl(hash: string): string {
+  if (!hash.startsWith("#") || hash.length <= 1) {
+    return googleSignInPath;
+  }
+
+  return `${googleSignInPath}?next=${encodeURIComponent(hash)}`;
+}
 
 export interface InvitePreview {
   /** ชื่อหอที่คำเชิญชวนไปร่วม */

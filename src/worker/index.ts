@@ -8,6 +8,7 @@ import demo from "./routes/demo";
 import family from "./routes/family";
 import health from "./routes/health";
 import line, { lineAdmin } from "./routes/line";
+import { realtimeRoute } from "./routes/realtime";
 import register, { registerPage } from "./routes/register";
 import rooms from "./routes/rooms";
 import api from "./routes/seam-probe";
@@ -53,6 +54,7 @@ app.route("/api/family", family);
 app.route("/api/line", lineAdmin);
 app.route("/api/register", register);
 app.route("/api/rooms", rooms);
+app.route("/api/realtime", realtimeRoute);
 app.route("/api/settings", settings);
 app.route("/api/slips", slipsAdmin);
 app.route("/api/stats", stats);
@@ -91,3 +93,6 @@ app.onError((error, c) => {
 });
 
 export default app;
+
+/** wrangler หา Durable Object class จาก export ของ entry module */
+export { FamilyRealtime } from "./realtime";

@@ -10,6 +10,7 @@ import {
   slipPendingReviewMessage,
 } from "../line/messages";
 import { asRecord } from "../routes/shared";
+import { type BillPaidEvent, broadcastBillPaid, pushOwnerBillPaid } from "./paid-notify";
 
 export type SlipReason = "mismatch" | "not_verified" | "no_unpaid_bill" | "duplicate_slip" | "verify_failed";
 
@@ -375,6 +376,7 @@ function payeeFromBill(bill: UnpaidBillRow | null): SlipPayee | null {
 export async function handleSlipImage(
   env: Env,
   familyId: string,
+  origin: string,
   userId: string,
   replyToken: string,
   messageId: string,
@@ -577,4 +579,20 @@ export async function handleSlipImage(
 
   console.log(JSON.stringify({ message: "slip closed a bill", slipId, lineUserId: userId, billId: bill.id }));
   await pushMessage(env, userId, [slipMatchedMessage(bill.total, bill.period)]);
+
+  const event: BillPaidEvent = {
+    billId: bill.id,
+    roomNumber: sender.room_number,
+    tenantName: sender.full_name,
+    period: bill.period,
+    total: bill.total,
+    method: "transfer",
+    source: "auto-slip",
+    paidAt: canonicalPaidAt(result.date),
+    slipImageKey: imageKey,
+  };
+
+  // ต้นทางเป็น LINE ไม่ใช่แท็บเว็บ จึงไม่มี connectionId ที่ต้องยกเว้น
+  await broadcastBillPaid(env, familyId, event, null);
+  await pushOwnerBillPaid(env, familyId, origin, event);
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AccountButton } from "./account";
 import { useAuth } from "./auth";
-import { fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
+import { announceBillsChanged, announceReviewQueueChanged, fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
 import { ErrorBoundary } from "./error-boundary";
 import { BillsPage } from "./pages/bills";
 import { DashboardPage } from "./pages/dashboard";
@@ -12,7 +12,8 @@ import { RoomsPage } from "./pages/rooms";
 import { SettingsPage } from "./pages/settings";
 import { TenantsPage } from "./pages/tenants";
 import { SearchProvider, useSearch } from "./search";
-import { Monogram, type PageProps } from "./ui";
+import { startRealtime } from "./realtime";
+import { Monogram, Toast, type PageProps } from "./ui";
 
 const routeList = [
   { id: "dashboard", label: "แดชบอร์ด", icon: "space_dashboard" },
@@ -193,6 +194,7 @@ function Shell() {
   const [jumpTenants, setJumpTenants] = useState<Tenant[]>([]);
   const [panelDismissed, setPanelDismissed] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
+  const [realtimeToast, setRealtimeToast] = useState<string | null>(null);
   // โหมดสาธิตมาจาก AuthProvider แล้ว (ตรวจคู่กับการตรวจเซสชันตั้งแต่เฟรมแรก)
   // ไม่ต้องยิง /api/demo/status ซ้ำที่นี่ ซึ่งเดิมทำให้ยิงสองครั้งต่อการโหลดหนึ่งครั้ง
   const { demoMode } = useAuth();
@@ -213,6 +215,42 @@ function Shell() {
   useEffect(() => {
     loadJumpIndex();
   }, [loadJumpIndex]);
+
+  /**
+   * WebSocket กลางของทั้งแอป — ต่อหนึ่งเส้นต่อแท็บ
+   *
+   * ข้อความที่เข้ามาเป็นของ "บิลถูกปิด" เท่านั้น จึงไม่ต้องรู้ว่าผู้ใช้กำลังดู
+   * หน้าไหน: ประกาศ event ให้หน้าที่สนใจโหลดข้อมูลของตัวเองใหม่แล้วเด้ง toast
+   * ตรงนี้ที่เดียว (Toast รายหน้าเดิมยังทำงานเหมือนเดิม)
+   */
+  useEffect(() => {
+    return startRealtime({
+      onBillPaid: (notice) => {
+        setRealtimeToast(
+          `ห้อง ${notice.roomNumber} ชำระแล้ว ${notice.total.toLocaleString("en-US")} บาท`,
+        );
+        announceBillsChanged();
+        announceReviewQueueChanged();
+      },
+      onReconnected: () => {
+        // ข้อความที่หลุดตอน socket ปิดไม่ถูกเก็บไว้ ต้องโหลดใหม่หนึ่งครั้ง
+        announceBillsChanged();
+        announceReviewQueueChanged();
+      },
+    });
+  }, []);
+
+  useEffect(() => {
+    if (realtimeToast === null) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setRealtimeToast(null), 5000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [realtimeToast]);
 
   useEffect(() => {
     let active = true;
@@ -323,6 +361,7 @@ function Shell() {
           โหมดสาธิต — ข้อมูลทั้งหมดในหน้านี้เป็นข้อมูลตัวอย่าง อาจถูกผู้ชมคนอื่นแก้ไขหรือถูกรีเซ็ตได้ตลอดเวลา
         </div>
       )}
+      <Toast message={realtimeToast ?? ""} open={realtimeToast !== null} />
       <div className="min-h-screen bg-canvas-white text-charcoal md:grid md:grid-cols-[72px_1fr] xl:grid-cols-[232px_1fr]">
       <aside className="sticky top-0 hidden h-screen flex-col overflow-y-auto border-r border-ash bg-canvas-white px-3 py-4 md:flex">
         <div className="flex items-center gap-2.5 px-1 pb-5 md:justify-center md:px-0 xl:justify-start xl:px-1">

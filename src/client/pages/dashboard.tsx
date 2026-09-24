@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  billsChangedEvent,
   billsFocusHash,
   fetchBillPeriods,
   fetchDashboardStats,
@@ -153,6 +154,20 @@ export function DashboardPage() {
 
     return () => {
       active = false;
+    };
+  }, []);
+
+  // บิลถูกปิดจากที่อื่นได้ (แท็บอื่น หรือสลิปที่ผู้เช่าส่งเข้ามา) — ตัวเลขบน
+  // แดชบอร์ดต้องตามทันที ไม่ใช่ค้างของเก่าจนผู้ใช้กดรีเฟรชเอง
+  useEffect(() => {
+    const refresh = () => {
+      setReloadKey((value) => value + 1);
+    };
+
+    window.addEventListener(billsChangedEvent, refresh);
+
+    return () => {
+      window.removeEventListener(billsChangedEvent, refresh);
     };
   }, []);
 

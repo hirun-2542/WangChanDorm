@@ -14,7 +14,7 @@
 |------|-----------|
 | Runtime | Cloudflare Workers (Worker เดียวเสิร์ฟทั้ง API และ SPA) |
 | API | Hono 4 + TypeScript |
-| ฐานข้อมูล | Cloudflare D1 (SQLite) — 11 migrations |
+| ฐานข้อมูล | Cloudflare D1 (SQLite) — 12 migrations |
 | ไฟล์ | Cloudflare R2 (เก็บรูปสลิป) |
 | Frontend | React 19 + Vite 8 + Tailwind CSS 4 |
 | LINE | Messaging API + LIFF (ลงทะเบียนผู้เช่า) + Rich menu |
@@ -174,6 +174,7 @@ npm run deploy
 ## เอกสารเพิ่มเติม
 
 - [docs/features.md](docs/features.md) — พฤติกรรมระดับ implementation ของ API ทุกตัว เงื่อนไขการปิดบิล นโยบายการคิดเงิน LINE bot และการยืนยันตัวตน
+- [CHANGELOG.md](CHANGELOG.md) — สิ่งที่เปลี่ยนในแต่ละรุ่น
 - [docs/adr/](docs/adr) — ADR ของการตัดสินใจที่สำคัญ
 - [docs/specs/](docs/specs) — สเปกของแต่ละงาน
 - [CONTEXT.md](CONTEXT.md) — คำศัพท์ของโดเมนนี้

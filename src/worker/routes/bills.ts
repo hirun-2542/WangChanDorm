@@ -10,7 +10,9 @@ import {
 import { ownerSendSummaryMessage } from "../line/messages";
 import { thaiPeriodLabel } from "../lib/invoice";
 import { resolveAllRoomCharges } from "../lib/charges";
+import { chargeFromFlatAmount, chargeFromUnits } from "../../shared/billing";
 import { isForeignKeyViolation } from "../lib/slips";
+import { type BillPaidEvent, broadcastBillPaid, pushOwnerBillPaid } from "../lib/paid-notify";
 import { defaultElectricRate, defaultWaterRate } from "./settings";
 import {
   asRecord,
@@ -975,7 +977,7 @@ bills.post("/generate", async (c) => {
       const mode = toElectricMode(room.electric_mode);
       const waterUnits = entry.waterCurrent - previousWater;
       const waterRate = room.water_rate ?? rates.water;
-      const waterAmount = Math.round(waterUnits * waterRate);
+      const waterAmount = chargeFromUnits(waterUnits, waterRate);
       let electricUnits: number | null = null;
       let electricRate: number | null = null;
       let electricAmount = 0;
@@ -992,11 +994,11 @@ bills.post("/generate", async (c) => {
           );
         }
 
-        electricAmount = Math.round(entry.flatElectricAmount);
+        electricAmount = chargeFromFlatAmount(entry.flatElectricAmount);
       } else {
         electricUnits = entry.electricCurrent - previousElectric;
         electricRate = room.electric_rate ?? rates.electric;
-        electricAmount = Math.round(electricUnits * electricRate);
+        electricAmount = chargeFromUnits(electricUnits, electricRate);
       }
 
       const chargeTotal = entry.charges.reduce(
@@ -1251,7 +1253,7 @@ bills.patch("/:id", async (c) => {
 
       electricUnits = null;
       electricRate = null;
-      electricAmount = Math.round(rawFlat);
+      electricAmount = chargeFromFlatAmount(rawFlat);
     } else {
       if (body.flatElectricAmount !== undefined) {
         return c.json(
@@ -1268,12 +1270,12 @@ bills.patch("/:id", async (c) => {
         const units = electricCurrent - existing.electricPrevious;
         electricUnits = units;
         electricRate = existing.electricRate;
-        electricAmount = Math.round(units * (existing.electricRate ?? 0));
+        electricAmount = chargeFromUnits(units, existing.electricRate ?? 0);
       }
     }
 
     const waterUnits = waterCurrent - existing.waterPrevious;
-    const waterAmount = Math.round(waterUnits * existing.waterRate);
+    const waterAmount = chargeFromUnits(waterUnits, existing.waterRate);
     const chargeTotal = charges.reduce((sum, charge) => sum + charge.amount, 0);
     const total = existing.rent + waterAmount + electricAmount + chargeTotal;
 
@@ -1462,6 +1464,23 @@ bills.post("/:id/mark-paid", async (c) => {
       );
       return c.json(errorBody("INTERNAL", "ปิดบิลไม่สำเร็จ"), 500);
     }
+
+    const event: BillPaidEvent = {
+      billId: bill.id,
+      roomNumber: bill.roomNumber,
+      tenantName: bill.tenantName,
+      period: bill.period,
+      total: bill.total,
+      method,
+      source: "mark-paid",
+      paidAt,
+      slipImageKey: null,
+    };
+
+    // แท็บที่กดปิดเองไม่ต้องรับ event กลับ (มี toast ของหน้าไปแล้ว) จึงส่ง
+    // connectionId ของตัวเองไปให้ DO ข้าม
+    await broadcastBillPaid(c.env, family, event, c.req.header("x-realtime-id") ?? null);
+    c.executionCtx.waitUntil(pushOwnerBillPaid(c.env, family, publicBaseUrl(c.req.url), event));
 
     return c.json({ ok: true, bill }, 200);
   } catch (error) {

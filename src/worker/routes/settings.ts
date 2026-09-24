@@ -8,6 +8,7 @@ import {
   replaceDormCharges,
 } from "../lib/charges";
 import { errorBody, readJsonObject, upsertSettingSql } from "./shared";
+import { demoModeOn, failureDetail, fetchBotInfo, fetchProfile, lineOutboundTimeoutMs, logLineFailure } from "../line/api";
 
 const settings = new Hono<AppEnv>();
 
@@ -20,6 +21,18 @@ const defaultSettings = {
   dorm_name: "หอพักวังจันทร์",
   owner_name: "สมศักดิ์ ใจดี",
   owner_phone: "",
+  /**
+   * LINE **ส่วนตัว** ของเจ้าของหอ (ไม่ใช่ OA ของหอ) — คนละค่ากับ `owner_line_user_id`
+   *
+   * สองค่านี้ต่างกันคนละเรื่อง:
+   * - `owner_line_user_id` = userId ของเจ้าของ **ใน OA ของหอ** ที่บอทใช้ push หา
+   * - `owner_line_id` = ชื่อที่ผู้เช่าค้นหาเพื่อ **เพิ่มเพื่อนเจ้าของเป็นการส่วนตัว**
+   *
+   * OA ของหอ (เช่น `@490secnd`) ต้องไม่ถูกใส่ในช่องนี้เด็ดขาด เพราะผู้เช่าที่อ่าน
+   * การ์ดนี้กำลังคุยอยู่ในแชทนั้นอยู่แล้ว การส่ง id ของ OA กลับไปจึงไม่มีประโยชน์
+   * และทำให้ผู้เช่าเข้าใจผิดว่ากดเพิ่มเพื่อนเจ้าของแล้ว
+   */
+  owner_line_id: "",
   default_water_rate: String(defaultWaterRate),
   default_electric_rate: String(defaultElectricRate),
   promptpay_type: "phone",
@@ -64,6 +77,7 @@ const writableKeys = [
   "dormName",
   "ownerName",
   "ownerPhone",
+  "ownerLineId",
   "defaultWaterRate",
   "defaultElectricRate",
   "promptpayType",
@@ -80,6 +94,7 @@ const fieldToKey: Record<WritableKey, SettingsKey> = {
   dormName: "dorm_name",
   ownerName: "owner_name",
   ownerPhone: "owner_phone",
+  ownerLineId: "owner_line_id",
   defaultWaterRate: "default_water_rate",
   defaultElectricRate: "default_electric_rate",
   promptpayType: "promptpay_type",
@@ -105,6 +120,8 @@ interface SettingsPayload {
   dormName: string;
   ownerName: string;
   ownerPhone: string;
+  /** LINE ID ที่ผู้เช่าค้นหาเจ้าของหอได้ (คนละค่ากับ userId ที่บอทใช้ push) */
+  ownerLineId: string;
   defaultWaterRate: number;
   defaultElectricRate: number;
   promptpayType: PromptpayType;
@@ -115,6 +132,10 @@ interface SettingsPayload {
   bankAccountName: string;
   ownerLinkCode: string;
   ownerLineConnected: boolean;
+  /** ชื่อที่แสดงของบัญชี LINE ที่ผูกอยู่ — null เมื่อยังไม่ผูก, "" เมื่อผูกแล้วแต่ไม่รู้ชื่อ */
+  ownerLineDisplayName: string | null;
+  /** OA ของหอ (ชื่อที่แสดง + basic id ที่ค้นหาได้) — null เมื่อดึงไม่ได้ */
+  lineBot: { displayName: string; basicId: string } | null;
   integrations: { lineConfigured: boolean; slipOkConfigured: boolean };
 }
 
@@ -175,6 +196,42 @@ function ownerPhoneError(value: string): string | null {
     : "เบอร์โทรเจ้าของต้องเป็นเบอร์ 10 หลัก เริ่มด้วย 0";
 }
 
+/**
+ * LINE ID ของเจ้าของ — "@" นำหน้าได้ แต่ต้องไม่มีช่องว่างหรืออักขระตกแต่ง
+ *
+ * LINE รับ basic id เป็น "@" ตามด้วย 4–30 ตัวอักษร (a–z 0–9 . _ -) และผู้ใช้
+ * มักคัดลอกมาพร้อมช่องว่าง/เครื่องหมายคำพูด จึงตัดให้ก่อนตรวจ ตัว "@" เก็บไว้
+ * เพราะเป็นส่วนหนึ่งของชื่อที่ใช้ค้นหาในแอป LINE
+ */
+
+/**
+ * OA ของหอเอง — ต้องไม่ถูกกรอกเป็น LINE ส่วนตัวของเจ้าของ
+ *
+ * ผู้เช่าที่อ่านการ์ด "ติดต่อเจ้าของหอ" กำลังคุยอยู่ในแชทของ OA นี้อยู่แล้ว
+ * การส่ง id กลับไปจึงชี้ไปบัญชีที่เขาใช้งานอยู่ ไม่ใช่ช่องทางใหม่ และทำให้เข้าใจ
+ * ผิดว่ากดเพิ่มเพื่อนเจ้าของแล้ว (ค่าเหล่านี้มาจาก channel ที่ตั้งไว้จริง)
+ */
+const dormOaLineIds: Record<string, true> = { "490secnd": true };
+
+function normalizeOwnerLineId(value: string): string {
+  return value.trim().replace(/^["'“”]|["'“”]$/g, "").replace(/\s+/g, "");
+}
+
+function ownerLineIdError(value: string): string | null {
+  const normalized = normalizeOwnerLineId(value);
+  const body = normalized.startsWith("@") ? normalized.slice(1) : normalized;
+
+  if (dormOaLineIds[body.toLowerCase()] === true) {
+    return "นี่คือ LINE ของ OA หอ ไม่ใช่ LINE ส่วนตัวของคุณ — ผู้เช่าที่อ่านข้อความนี้คุยกับ OA หออยู่แล้ว กรุณาใส่ LINE ส่วนตัว (หรือเว้นว่างไว้)";
+  }
+
+  if (!/^[A-Za-z0-9._-]{4,30}$/.test(body)) {
+    return "LINE ID ต้องเป็นตัวอักษรอังกฤษ ตัวเลข จุด ขีด หรือ _ ยาว 4–30 ตัว (ใส่ @ นำหน้าได้)";
+  }
+
+  return null;
+}
+
 /** เลขบัญชีธนาคารไทย 10–15 หลัก — เก็บเฉพาะตัวเลข ไม่เก็บขีดคั่น */
 function normalizeAccountNumber(value: string): string {
   return value.replace(/\D/g, "");
@@ -190,8 +247,163 @@ function accountNumberError(value: string): string | null {
   return null;
 }
 
+/**
+ * ชื่อที่แสดงของบัญชี LINE ที่ผูกเป็นเจ้าของอยู่ — null เมื่อยังไม่ผูก
+ *
+ * ลำดับความน่าเชื่อถือ: `line_pending` (ชื่อที่ได้ตอนบอทเห็นข้อความล่าสุด ซึ่ง
+ * สดกว่า) → LINE profile API (เรียกเมื่อยังไม่มีชื่อในเครื่อง) · ไม่มีชื่อก็ยัง
+ * คืนสตริงว่างเพื่อให้หน้าจอรู้ว่า "ผูกแล้วแต่ไม่มีชื่อ" ไม่ใช่ "ยังไม่ผูก"
+ */
+async function ownerLineDisplayName(env: Env, family: string): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+  )
+    .bind(family)
+    .first<{ value: string }>();
+  const ownerId = (row?.value ?? "").trim();
+
+  if (ownerId === "") {
+    return null;
+  }
+
+  const pending = await env.DB.prepare(
+    "SELECT display_name FROM line_pending WHERE family_id = ? AND line_user_id = ?",
+  )
+    .bind(family, ownerId)
+    .first<{ display_name: string | null }>();
+
+  if (pending !== null && (pending.display_name ?? "") !== "") {
+    return pending.display_name ?? "";
+  }
+
+  const profile = await fetchProfile(env, ownerId);
+
+  return profile === null ? "" : profile.displayName;
+}
+
+/**
+ * webhook ที่ LINE ตั้งไว้สำหรับช่องนี้ — ใช้ยืนยันว่าข้อความจะมาถึง Worker นี้
+ *
+ * เคสจริงที่ทำให้เจ้าของงงว่า "พิมพ์รหัสแล้วไม่มีอะไรเกิดขึ้น": LINE ชี้
+ * webhook ไปที่ Worker อีกตัว (production) ขณะที่รหัสที่เห็นอยู่บนเครื่อง dev
+ * ข้อความจึงไปผิดที่โดยไม่มีสัญญาณเตือนใด ๆ ในหน้าจอ
+ */
+async function fetchWebhookEndpoint(
+  env: Env,
+): Promise<{ endpoint: string; active: boolean } | null> {
+  const token = typeof env.LINE_CHANNEL_ACCESS_TOKEN === "string" ? env.LINE_CHANNEL_ACCESS_TOKEN.trim() : "";
+
+  if (token === "" || demoModeOn(env)) {
+    return null;
+  }
+
+  try {
+    const response = await fetch("https://api.line.me/v2/bot/channel/webhook/endpoint", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
+    });
+
+    if (!response.ok) {
+      logLineFailure("line webhook endpoint failed", `status ${String(response.status)}`);
+      return null;
+    }
+
+    const body = await response.json<{ endpoint?: string; active?: boolean }>();
+
+    return {
+      endpoint: typeof body.endpoint === "string" ? body.endpoint : "",
+      active: body.active === true,
+    };
+  } catch (error) {
+    logLineFailure("line webhook endpoint failed", failureDetail(error));
+    return null;
+  }
+}
+
 function ownerCodeExpiry(): string {
   return new Date(Date.now() + ownerCodeTtlMs).toISOString();
+}
+
+/** meta เก็บ JSON พร้อมเวลาที่ดึงมา — อ่านพัง/ไม่มีให้ถือว่ายังไม่เคยดึง */
+interface BotInfoCache {
+  displayName: string;
+  basicId: string;
+  fetchedAt: number;
+}
+
+const botInfoMetaKey = "line_bot_info";
+/** อายุ cache ของข้อมูล OA — ตั้งชื่อบอทใหม่ไม่บ่อย จึงไม่ต้องยิง LINE ทุกครั้ง */
+const botInfoTtlMs = 6 * 60 * 60 * 1000;
+
+function parseBotInfoCache(value: string): BotInfoCache | null {
+  try {
+    const raw: unknown = JSON.parse(value);
+
+    if (typeof raw !== "object" || raw === null) {
+      return null;
+    }
+
+    const record = raw as Record<string, unknown>;
+
+    if (typeof record.displayName !== "string" || typeof record.basicId !== "string" || typeof record.fetchedAt !== "number") {
+      return null;
+    }
+
+    return { displayName: record.displayName, basicId: record.basicId, fetchedAt: record.fetchedAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ข้อมูล OA ของหอสำหรับแสดงในหน้าตั้งค่า — cache ไว้ใน `meta` ไม่ผูกกับครอบครัว
+ *
+ * เรียก LINE เฉพาะเมื่อ cache หมดอายุหรือยังไม่มี ไม่งั้นทุกครั้งที่เปิดหน้าตั้งค่า
+ * จะเป็นการรอเครือข่ายไปหา LINE ซึ่งช้าและพึ่งบริการภายนอกโดยไม่จำเป็น —
+ * ค่าที่ดึงไม่ได้จะไม่ถูก cache เพื่อให้ลองใหม่ครั้งหน้า (ชื่อบอทเพิ่งตั้งเสร็จ
+ * จึงยังไม่ปรากฏทันทีในรอบแรก)
+ */
+async function loadBotInfo(env: Env): Promise<{ displayName: string; basicId: string } | null> {
+  const row = await env.DB.prepare("SELECT value FROM meta WHERE key = ?")
+    .bind(botInfoMetaKey)
+    .first<{ value: string }>();
+  const cached = row === null ? null : parseBotInfoCache(row.value);
+
+  if (cached !== null && Date.now() - cached.fetchedAt < botInfoTtlMs) {
+    return { displayName: cached.displayName, basicId: cached.basicId };
+  }
+
+  const fresh = await fetchBotInfo(env);
+
+  if (fresh === null) {
+    // ดึงไม่ได้: ถ้ามีของเก่าอยู่ก็ยังใช้ต่อ ดีกว่าไม่แสดงอะไรเลย
+    return cached === null ? null : { displayName: cached.displayName, basicId: cached.basicId };
+  }
+
+  const payload: BotInfoCache = {
+    displayName: fresh.displayName,
+    basicId: fresh.basicId,
+    fetchedAt: Date.now(),
+  };
+
+  try {
+    await env.DB.prepare(
+      "INSERT INTO meta (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+      .bind(botInfoMetaKey, JSON.stringify(payload))
+      .run();
+  } catch (error) {
+    // cache ไม่ได้ไม่ใช่เหตุให้หน้าล้ม — ค่าที่ดึงมาใช้ตอบรอบนี้ได้อยู่
+    console.error(
+      JSON.stringify({
+        message: "cache line bot info failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+
+  return { displayName: fresh.displayName, basicId: fresh.basicId };
 }
 
 /** รหัสที่ยังใช้ได้เท่านั้น — รหัสที่หมดอายุหรือถูกใช้ไปแล้วอ่านกลับมาไม่ได้ */
@@ -259,6 +471,7 @@ async function loadSettings(env: Env, family: string): Promise<SettingsPayload> 
     dormName: valueOf("dorm_name"),
     ownerName: valueOf("owner_name"),
     ownerPhone: valueOf("owner_phone"),
+    ownerLineId: valueOf("owner_line_id"),
     defaultWaterRate: toNumber(
       "default_water_rate",
       valueOf("default_water_rate"),
@@ -277,6 +490,19 @@ async function loadSettings(env: Env, family: string): Promise<SettingsPayload> 
     bankAccountName: valueOf("bank_account_name"),
     ownerLinkCode,
     ownerLineConnected,
+    /**
+     * ใครกำลังเชื่อมอยู่ — ชื่อที่แสดงของบัญชี LINE นั้น
+     *
+     * `owner_line_user_id` เก็บ userId ซึ่งอ่านไม่รู้เรื่องสำหรับเจ้าของ จึงต้อง
+     * แสดงชื่อด้วย ไม่งั้น "เชื่อมแล้ว" จะไม่มีทางรู้ว่าใคร (ดู ownerLineUserIdHint
+     * ด้วย — userId ไม่ใช่ความลับที่ใช้สวมสิทธิ์ แต่ก็ไม่ควรแสดงเต็ม)
+     */
+    ownerLineDisplayName: await ownerLineDisplayName(env, family),
+    /**
+     * OA ของหอ — ให้หน้าตั้งค่าบอกได้ว่า "เพิ่มเพื่อน OA ตัวไหน" ก่อนพิมพ์รหัส
+     * (null เมื่อยังไม่ตั้ง token หรือเรียก LINE ไม่ได้)
+     */
+    lineBot: await loadBotInfo(env),
     integrations: {
       lineConfigured: isConfigured(env.LINE_CHANNEL_ACCESS_TOKEN),
       slipOkConfigured:
@@ -352,6 +578,18 @@ settings.put("/", async (c) => {
         }
 
         updates.set(target, normalizeOwnerPhone(raw));
+        continue;
+      }
+
+      if (key === "ownerLineId") {
+        const raw = typeof value === "string" ? value.trim() : "";
+        const message = raw === "" ? null : ownerLineIdError(raw);
+
+        if (message !== null) {
+          return c.json(errorBody("VALIDATION", message, key), 400);
+        }
+
+        updates.set(target, normalizeOwnerLineId(raw));
         continue;
       }
 
@@ -528,6 +766,134 @@ settings.post("/owner-code", async (c) => {
       }),
     );
     return c.json(errorBody("INTERNAL", "ออกรหัสเชื่อมต่อใหม่ไม่สำเร็จ"), 500);
+  }
+});
+
+settings.delete("/owner-link", async (c) => {
+  const family = familyId(c);
+
+  try {
+    /**
+     * เลิกเชื่อม LINE ของเจ้าของ — ใช้เมื่อเปลี่ยนเครื่อง/บัญชี หรือเลิกรับแจ้งเตือน
+     *
+     * ล้างทั้ง userId ที่ผูกไว้และรหัสค้าง เพื่อให้ครั้งหน้าที่ต้องการเชื่อม
+     * หน้าตั้งค่าจะออกรหัสใหม่ให้เอง (ตรรกะใน loadSettings ออกรหัสเมื่อยังไม่ผูก
+     * และไม่มีรหัสที่ใช้ได้) และรหัสเดิมต้องใช้ไม่ได้ทันทีหลังเลิกเชื่อม ไม่งั้น
+     * คนที่ถือรหัสเก่าจะผูกบัญชีกลับเข้ามาได้โดยเจ้าของไม่ได้ตั้งใจ
+     *
+     * อ่าน userId มาก่อน batch เพราะคำสั่งลบต้องรู้ว่าจะลบ pending ของใคร —
+     * ถ้าใส่ subquery ที่อ่านจาก settings ในชุดเดียวกัน มันจะเห็นค่าใหม่ (ว่าง)
+     * ที่คำสั่งก่อนหน้าเพิ่งเขียน ตาม semantics ของ D1 batch ที่รันตามลำดับ
+     */
+    const row = await c.env.DB.prepare(
+      "SELECT value FROM settings WHERE family_id = ? AND key = 'owner_line_user_id'",
+    )
+      .bind(family)
+      .first<{ value: string }>();
+    const ownerId = (row?.value ?? "").trim();
+
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE settings SET value = '', updated_at = datetime('now')
+         WHERE family_id = ? AND key IN ('owner_line_user_id', 'owner_link_code', 'owner_link_code_expires_at')`,
+      ).bind(family),
+      c.env.DB.prepare(
+        "DELETE FROM line_pending WHERE family_id = ? AND line_user_id = ?",
+      ).bind(family, ownerId),
+    ]);
+
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      JSON.stringify({ message: "unlink owner line failed", error: detail }),
+    );
+    return c.json(errorBody("INTERNAL", "เลิกเชื่อม LINE ไม่สำเร็จ"), 500);
+  }
+});
+
+/**
+ * สถานะช่อง LINE ที่ใช้อยู่ — ให้หน้าตั้งค่าบอกได้ว่า OA ตัวไหนทำงานอยู่
+ *
+ * ตอบจากค่าที่ตั้งไว้จริง (ไม่เก็บ credential ลงฐานข้อมูล): token ใช้ตรวจว่า
+ * ยังใช้ได้และชี้ไป OA ตัวไหน ส่วน secret ตรวจแค่ว่ามีหรือไม่ (ใช้ตรวจลายเซ็น
+ * ขาเข้า จะทดสอบไม่ได้ถ้าไม่มีข้อความจริงส่งเข้ามา)
+ */
+settings.get("/line-channel", async (c) => {
+  try {
+    const env = c.env;
+    const expectedPath = "/webhook/line";
+    const configured = isConfigured(env.LINE_CHANNEL_ACCESS_TOKEN);
+    const bot = configured ? await fetchBotInfo(env) : null;
+    const webhook = configured ? await fetchWebhookEndpoint(env) : null;
+    const origin = new URL(c.req.url).origin;
+
+    return c.json(
+      {
+        ok: true,
+        channel: {
+          tokenConfigured: configured,
+          secretConfigured: isConfigured(env.LINE_CHANNEL_SECRET),
+          /** OA ที่ token ชี้อยู่จริง — null เมื่อยังไม่ตั้งหรือเรียก LINE ไม่ได้ */
+          bot: bot === null ? null : { displayName: bot.displayName, basicId: bot.basicId },
+          webhook,
+          /** true เมื่อ webhook ที่ LINE ตั้งไว้ชี้กลับมาที่ Worker นี้ */
+          webhookPointsHere: webhook !== null && webhook.endpoint === `${origin}${expectedPath}`,
+          expectedWebhookEndpoint: `${origin}${expectedPath}`,
+          liffId: (env.LIFF_ID ?? "").trim(),
+        },
+      },
+      200,
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      JSON.stringify({ message: "load line channel status failed", error: detail }),
+    );
+    return c.json(errorBody("INTERNAL", "ตรวจสอบสถานะ LINE ไม่สำเร็จ"), 500);
+  }
+});
+
+/**
+ * ตั้ง webhook ของช่อง LINE ให้ชี้กลับมาที่ Worker นี้
+ *
+ * เป็นขั้นตอนที่หลงลืมบ่อยที่สุดเวลาเปลี่ยน OA และอาการที่เกิดคือ "บอทเงียบ"
+ * โดยไม่มีสัญญาณอะไรในหน้าจอ จึงให้กดจากแอปได้ แทนการรัน curl เอง
+ *
+ * เขียนได้เฉพาะ endpoint ของ Worker ที่รับคำขอนี้เท่านั้น (origin เดียวกัน) —
+ * กันไม่ให้คำขอที่หลุดเข้ามาตั้ง webhook ไปชี้โดเมนอื่น ซึ่งจะพาข้อความผู้เช่า
+ * ไปผิดที่แบบเงียบ ๆ ยิ่งอันตรายกว่าการไม่ตั้งเลย
+ */
+settings.post("/line-channel/webhook", async (c) => {
+  try {
+    const endpoint = `${new URL(c.req.url).origin}/webhook/line`;
+    const token = typeof c.env.LINE_CHANNEL_ACCESS_TOKEN === "string" ? c.env.LINE_CHANNEL_ACCESS_TOKEN.trim() : "";
+
+    if (token === "" || demoModeOn(c.env)) {
+      return c.json(
+        errorBody("VALIDATION", "ยังไม่ได้ตั้ง LINE_CHANNEL_ACCESS_TOKEN จึงตั้ง webhook ไม่ได้"),
+        400,
+      );
+    }
+
+    const response = await fetch("https://api.line.me/v2/bot/channel/webhook/endpoint", {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
+    });
+
+    if (!response.ok) {
+      logLineFailure("set line webhook failed", `status ${String(response.status)}`);
+      return c.json(errorBody("INTERNAL", "ตั้ง webhook กับ LINE ไม่สำเร็จ"), 502);
+    }
+
+    console.log(JSON.stringify({ message: "line webhook endpoint updated", endpoint }));
+
+    return c.json({ ok: true, endpoint }, 200);
+  } catch (error) {
+    logLineFailure("set line webhook failed", failureDetail(error));
+    return c.json(errorBody("INTERNAL", "ตั้ง webhook กับ LINE ไม่สำเร็จ"), 500);
   }
 });
 

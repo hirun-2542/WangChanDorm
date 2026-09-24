@@ -628,6 +628,7 @@ function BillList({
                   rows={filtered}
                   getRowKey={(bill) => bill.id}
                   minWidth={1120}
+                  stickyHeader
                   emptyMessage="ไม่พบบิลที่ตรงกับเงื่อนไข"
                 />
               </Card>

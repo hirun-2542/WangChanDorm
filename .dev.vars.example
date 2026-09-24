@@ -25,6 +25,14 @@ LIFF_ID=
 # ด้วยอีเมลและรหัสผ่านยังใช้ได้ตามปกติ
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# ความลับสำหรับเซ็นลิงก์รูปสลิปที่แนบไปกับ LINE Flex Message
+#
+# ใช้สตริงสุ่มยาวอย่างน้อย 32 ตัวอักษร (เช่น `openssl rand -hex 32`) — ถ้าเว้นว่าง
+# การ์ดแจ้งเตือนของเจ้าของจะยังส่งได้แต่ไม่มีปุ่ม "ดูสลิป"
+#
+# production: wrangler secret put SLIP_LINK_SECRET --env=''
+SLIP_LINK_SECRET=
 #
 # หมายเหตุ: OWNER_EMAIL ไม่ใช่ secret จึงตั้งใน `vars` ของ wrangler.jsonc
 # ไม่ต้องใส่ในไฟล์นี้

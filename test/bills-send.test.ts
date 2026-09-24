@@ -1080,9 +1080,14 @@ describe("POST /api/bills/send-all", () => {
     expect(flex.filter((push) => push.to === "U-paid-mixed")).toEqual([]);
     expect(flex.filter((push) => push.to === "U-open-mixed")).toHaveLength(1);
 
-    const summary = flexTexts(
-      first(first(flex.filter((push) => push.to === "U-owner")).messages),
-    ).join(" ");
+    // การปิดบิลด้วยมือยิงการ์ดถึงเจ้าของด้วย จึงต้องเลือกใบสรุปการส่งให้ถูกใบ
+    const ownerPushes = flex.filter((push) => push.to === "U-owner");
+    const summaryPush = first(
+      ownerPushes.filter((push) =>
+        flexTexts(first(push.messages)).join(" ").includes("บิลทั้งหมด"),
+      ),
+    );
+    const summary = flexTexts(first(summaryPush.messages)).join(" ");
     expect(summary).toContain("บิลทั้งหมด");
     expect(summary).toContain("2 ใบ");
     expect(summary).toContain("7,514");

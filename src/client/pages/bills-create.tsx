@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { chargeFromFlatAmount, chargeFromUnits } from "../../shared/billing";
 import {
   ApiError,
   announceBillsChanged,
@@ -117,7 +118,7 @@ function computeRow(row: MeterRow): RowCalc {
       ? waterCurrent - sheet.waterPrevious
       : null;
   const waterAmount =
-    waterUnits === null ? 0 : Math.round(waterUnits * sheet.waterRate);
+    waterUnits === null ? 0 : chargeFromUnits(waterUnits, sheet.waterRate);
 
   const electricCurrent = toNumber(row.electricCurrent);
   const electricInvalid =
@@ -137,10 +138,10 @@ function computeRow(row: MeterRow): RowCalc {
   const electricAmount = isFlat
     ? flatAmount === null || Number.isNaN(flatAmount) || flatAmount < 0
       ? 0
-      : Math.round(flatAmount)
+      : chargeFromFlatAmount(flatAmount)
     : electricUnits === null
       ? 0
-      : Math.round(electricUnits * electricRate);
+      : chargeFromUnits(electricUnits, electricRate);
 
   const resolvedCharges = row.charges
     .filter((charge) => !isEmptyDraft(charge))

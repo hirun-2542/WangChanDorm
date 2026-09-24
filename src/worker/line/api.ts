@@ -283,3 +283,59 @@ export async function fetchProfile(env: Env, userId: string): Promise<LineProfil
     return null;
   }
 }
+
+export interface LineBotInfo {
+  displayName: string;
+  /** ชื่อที่ผู้ใช้ค้นหา/เพิ่มเพื่อนได้ เช่น "@490secnd" (ว่างเมื่อช่องยังไม่ตั้งชื่อ) */
+  basicId: string;
+  /** userId ของ OA เอง — ต่างจาก userId ของผู้ใช้แต่ละคน ใช้ push ไม่ได้ */
+  userId: string;
+}
+
+/**
+ * ข้อมูล OA ของหอ — ใช้บอกเจ้าของว่า "เพิ่มเพื่อน OA ตัวไหน" ก่อนพิมพ์รหัสเชื่อม
+ *
+ * ก่อนหน้านี้หน้าตั้งค่าสั่งให้ "เพิ่มเพื่อน OA ของหอ" โดยไม่มีที่ไหนบอกว่า OA คือ
+ * อะไร เจ้าของจึงทำตามขั้นตอนไม่ได้เมื่อไม่ได้จำชื่อบอทเอง — ค่านี้ดึงจาก LINE
+ * ตรง ๆ ไม่ต้องมีคนกรอก จึงไม่มีทางพิมพ์ผิดและเปลี่ยนตามเมื่อตั้งชื่อบอทใหม่
+ *
+ * fail-soft เหมือน fetchProfile: เรียกไม่ได้/ไม่ตั้ง token → null แล้วผู้เรียก
+ * แสดงแค่คำแนะนำโดยไม่มี id (ไม่ทำให้หน้าตั้งค่าล้ม)
+ */
+export async function fetchBotInfo(env: Env): Promise<LineBotInfo | null> {
+  if (demoModeOn(env)) {
+    logLineFailure("line bot info skipped", "demo mode: outbound disabled");
+    return null;
+  }
+
+  const token = accessToken(env);
+
+  if (token === "") {
+    logLineFailure("line bot info skipped", "LINE_CHANNEL_ACCESS_TOKEN is not configured");
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${lineApiBase}/info`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(lineOutboundTimeoutMs),
+    });
+
+    if (!response.ok) {
+      logLineFailure("line bot info failed", `status ${String(response.status)}`);
+      return null;
+    }
+
+    const body = await response.json<{ displayName?: string; basicId?: string; userId?: string }>();
+
+    return {
+      displayName: typeof body.displayName === "string" ? body.displayName : "",
+      basicId: typeof body.basicId === "string" ? body.basicId : "",
+      userId: typeof body.userId === "string" ? body.userId : "",
+    };
+  } catch (error) {
+    logLineFailure("line bot info failed", failureDetail(error));
+    return null;
+  }
+}

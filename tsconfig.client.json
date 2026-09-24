@@ -16,5 +16,6 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
+  "include": [
+    "src/shared/**/*.ts","src/client/**/*.ts", "src/client/**/*.tsx"]
 }

@@ -16,11 +16,22 @@ interface CardRow {
   bold?: boolean;
 }
 
+/**
+ * โทนสีของหัวการ์ด — ใช้ token สถานะชุดเดียวกับ badge ของแอป
+ *
+ * เดิมใช้ชุดพาสเทลของตัวเอง (success #ECFDF5, info #EFF6FF, warning #FFFBEB)
+ * ซึ่งเป็นเฉดที่สองของสีเดียวกัน ทำให้จอเดียวมีเขียว/อำพันสองเฉดที่ดูคล้ายกัน
+ * แต่ไม่ใช่ค่าเดียวกัน มาอยู่บน token ของระบบแล้วการ์ด LINE กับ badge ในเว็บ
+ * จึงพูดสีเดียวกันจริง — ความหมายยังตรงกับสถานะ (สำเร็จ=paid, รอ=review,
+ * ผิดพลาด=danger) ไม่ใช่การยืม token ข้ามความหมาย
+ *
+ * ตรวจ contrast แล้วทุกคู่ผ่าน WCAG AA (ต่ำสุด paid 4.57:1, review 4.71:1)
+ */
 const tonePalettes: Record<Tone, TonePalette> = {
-  success: { background: "#ECFDF5", title: "#047857" },
-  info: { background: "#EFF6FF", title: "#1D4ED8" },
-  warning: { background: "#FFFBEB", title: "#B45309" },
-  danger: { background: "#FEF2F2", title: "#B91C1C" },
+  success: { background: "#dcfce7", title: "#15803d" },
+  info: { background: "#dbeaff", title: "#1e40af" },
+  warning: { background: "#fff7e6", title: "#b45309" },
+  danger: { background: "#fef2f2", title: "#b91c1c" },
 };
 
 function separator(): FlexContent {
@@ -78,12 +89,44 @@ function note(text: string): FlexContent {
   return { type: "text", text, size: "sm", color: "#525252", wrap: true };
 }
 
+/**
+ * ปุ่มหลักของการ์ดใช้ ink เดียวกับ `.btn-primary` ของแอป
+ *
+ * เดิมเป็นน้ำเงิน #2563eb ซึ่งใน DESIGN.md สงวนไว้เป็น "สีเน้น" ไม่ใช่สีปุ่ม —
+ * การ์ดบิล (ใบแรกในแคตตาล็อก) ใช้ ink อยู่แล้ว การเปลี่ยนมารวมที่ ink จึงทำให้
+ * ปุ่มหลักของผลิตภัณฑ์เหลือค่าเดียว (การ์ดบิล ink, การ์ดอื่น ink, ปุ่มแอป ink)
+ */
 function footerButton(label: string, uri: string): FlexContent {
   return {
     type: "box",
     layout: "vertical",
     paddingAll: "16px",
-    contents: [{ type: "button", style: "primary", color: "#2563eb", action: { type: "uri", label, uri } }],
+    contents: [{ type: "button", style: "primary", color: "#171717", action: { type: "uri", label, uri } }],
+  };
+}
+
+interface CardButton {
+  label: string;
+  uri: string;
+  primary: boolean;
+}
+
+/**
+ * ปุ่มหลายปุ่มใน footer เดียว — ปุ่มแรกที่ primary คือ action หลักของการ์ด
+ * (LINE จัดวางปุ่มซ้อนกันในแนวตั้งให้เอง)
+ */
+function footerButtons(buttons: readonly CardButton[]): FlexContent {
+  return {
+    type: "box",
+    layout: "vertical",
+    spacing: "sm",
+    paddingAll: "16px",
+    contents: buttons.map((button) => ({
+      type: "button",
+      style: button.primary ? "primary" : "secondary",
+      ...(button.primary ? { color: "#171717" } : {}),
+      action: { type: "uri", label: button.label, uri: button.uri },
+    })),
   };
 }
 
@@ -276,6 +319,53 @@ export function ownerSendSummaryMessage(summary: OwnerSendSummary): LineFlexMess
   );
 }
 
+export interface OwnerBillPaidCard {
+  roomNumber: string;
+  tenantName: string;
+  period: string;
+  total: number;
+  /** ข้อความช่องทางที่พร้อมแสดง เช่น "สลิปอัตโนมัติ" */
+  methodLabel: string;
+  /** เวลาที่ชำระแบบไทย เช่น "24 ก.ย. 2569 14:05" */
+  paidAtLabel: string;
+  billUrl: string;
+  /** null เมื่อไม่มีสลิป (ปิดบิลเอง) หรือยังไม่ตั้ง SLIP_LINK_SECRET */
+  slipUrl: string | null;
+}
+
+/**
+ * แจ้งเจ้าของหอว่าบิลถูกปิดแล้ว — การ์ดเดียวที่ยิงทุกเส้นทางปิดบิล
+ *
+ * ปุ่ม "ดูสลิป" มีเฉพาะเมื่อมีลิงก์ที่เซ็นแล้วจริง ถ้าไม่มีสลิป (ปิดเอง) หรือยัง
+ * ไม่ตั้ง SLIP_LINK_SECRET ปุ่มนั้นหายไป แต่แถว "ช่องทาง" ยังบอกอยู่เสมอว่า
+ * เงินเข้ามาทางไหน จึงไม่ต้องมีปุ่มที่กดแล้วพาไปเจอ 404
+ */
+export function ownerBillPaidMessage(input: OwnerBillPaidCard): LineFlexMessage {
+  const periodLabel = thaiPeriodLabel(input.period);
+
+  return card(
+    "success",
+    "รับชำระแล้ว",
+    `ห้อง ${input.roomNumber} ชำระบิล ${periodLabel} แล้ว ยอด ${bahtText(input.total)} บาท`,
+    rows([
+      { label: "ห้อง", value: input.roomNumber },
+      { label: "ผู้เช่า", value: input.tenantName },
+      { label: "รอบบิล", value: periodLabel },
+      { label: "ยอดชำระ", value: `${bahtText(input.total)} บาท`, bold: true },
+      { label: "ช่องทาง", value: input.methodLabel },
+      { label: "เวลาที่ชำระ", value: input.paidAtLabel },
+    ]),
+    footerButtons(
+      input.slipUrl === null
+        ? [{ label: "เปิดบิลในเว็บ", uri: input.billUrl, primary: true }]
+        : [
+            { label: "ดูสลิป", uri: input.slipUrl, primary: true },
+            { label: "เปิดบิลในเว็บ", uri: input.billUrl, primary: false },
+          ],
+    ),
+  );
+}
+
 export interface TenantBillSummary {
   period: string;
   total: number;
@@ -353,15 +443,67 @@ export function registerLinkMessage(registerUrl: string): LineFlexMessage {
   ], footerButton("เปิดหน้าลงทะเบียน", registerUrl));
 }
 
-export function contactOwnerMessage(ownerName: string, ownerPhone: string): LineFlexMessage {
+export function contactOwnerMessage(
+  ownerName: string,
+  ownerPhone: string,
+  ownerLineId = "",
+): LineFlexMessage {
   const name = ownerName.trim();
   const phone = ownerPhone.trim();
+  const lineId = ownerLineId.trim();
+  const who = name === "" ? "เจ้าของหอ" : `เจ้าของหอ ${name}`;
 
-  if (phone === "") {
-    const who = name === "" ? "เจ้าของหอ" : `เจ้าของหอ ${name}`;
+  /**
+   * แถว LINE **ส่วนตัว** ของเจ้าของ พร้อมปุ่มคัดลอก — โครงเดียวกับแถวพร้อมเพย์
+   *
+   * ต้องเป็น LINE ส่วนตัวเท่านั้น ห้ามใช้ id ของ OA หอ (เช่น @490secnd) เพราะ
+   * ผู้เช่าอ่านการ์ดนี้อยู่ในแชทของ OA นั้นแล้ว — ส่ง id กลับไปเท่ากับบอกให้เขา
+   * เพิ่มเพื่อนบัญชีที่เขากำลังคุยด้วยอยู่แล้ว
+   */
+  const lineRow: FlexContent[] =
+    lineId === ""
+      ? []
+      : [
+          separator(),
+          {
+            type: "box",
+            layout: "horizontal",
+            spacing: "md",
+            contents: [
+              {
+                type: "box",
+                layout: "vertical",
+                flex: 1,
+                contents: [
+                  note("LINE ส่วนตัวของเจ้าของ"),
+                  {
+                    type: "text",
+                    text: lineId,
+                    wrap: true,
+                    size: "md",
+                    weight: "bold",
+                    color: "#171717",
+                  },
+                ],
+              },
+              {
+                type: "button",
+                style: "secondary",
+                height: "sm",
+                flex: 0,
+                action: {
+                  type: "clipboard",
+                  label: "คัดลอก",
+                  clipboardText: lineId,
+                },
+              },
+            ],
+          },
+        ];
 
-    return card("info", "ติดต่อเจ้าของหอ", `${who} ยังไม่ได้บันทึกเบอร์โทรไว้`, [
-      note(`${who} ยังไม่ได้บันทึกเบอร์โทรไว้`),
+  if (phone === "" && lineId === "") {
+    return card("info", "ติดต่อเจ้าของหอ", `${who} ยังไม่ได้บันทึกช่องทางติดต่อไว้`, [
+      note(`${who} ยังไม่ได้บันทึกช่องทางติดต่อไว้`),
       note("กรุณาฝากคำถามไว้ในแชทนี้แล้วรอการติดต่อกลับ"),
     ]);
   }
@@ -372,7 +514,16 @@ export function contactOwnerMessage(ownerName: string, ownerPhone: string): Line
     list.push({ label: "เจ้าของหอ", value: name });
   }
 
-  list.push({ label: "เบอร์โทร", value: phone, bold: true });
+  if (phone !== "") {
+    list.push({ label: "เบอร์โทร", value: phone, bold: true });
+  }
 
-  return card("info", "ติดต่อเจ้าของหอ", `ติดต่อเจ้าของหอ เบอร์โทร ${phone}`, rows(list));
+  return card(
+    "info",
+    "ติดต่อเจ้าของหอ",
+    phone === ""
+      ? `ติดต่อเจ้าของหอ LINE ส่วนตัว ${lineId}`
+      : `ติดต่อเจ้าของหอ เบอร์โทร ${phone}`,
+    [...rows(list), ...lineRow],
+  );
 }
