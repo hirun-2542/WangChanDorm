@@ -356,15 +356,51 @@ describe("rooms crud", () => {
     expect(missingBody.error.code).toBe("VALIDATION");
     expect(missingBody.error.field).toBe("roomNumber");
 
-    const zeroRent = await createRoom({ roomNumber: "E501", rent: 0 });
-    expect(zeroRent.status).toBe(400);
-    const zeroRentBody = await zeroRent.json<ErrorBody>();
-    expect(zeroRentBody.error.field).toBe("rent");
+    // ค่าเช่า 0 ใช้ได้ (ห้องที่บวกรวมในค่าอื่น) แต่ค่าติดลบและเศษสตางค์ต้องไม่ผ่าน
+    const negativeRent = await createRoom({ roomNumber: "E501", rent: -1 });
+    expect(negativeRent.status).toBe(400);
+    expect((await negativeRent.json<ErrorBody>()).error.field).toBe("rent");
+
+    const fractionalRent = await createRoom({ roomNumber: "E503", rent: 3500.5 });
+    expect(fractionalRent.status).toBe(400);
+    expect((await fractionalRent.json<ErrorBody>()).error.field).toBe("rent");
 
     const bogusMode = await createRoom({ roomNumber: "E502", rent: 3000, electricMode: "bogus" });
     expect(bogusMode.status).toBe(400);
     const bogusModeBody = await bogusMode.json<ErrorBody>();
     expect(bogusModeBody.error.field).toBe("electricMode");
+  });
+
+  it("accepts a room at zero rent and still bills its other charges", async () => {
+    const created = await createRoom({ roomNumber: "E601", rent: 0, electricMode: "flat" });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json<{ room: { id: string; rent: number } }>();
+    expect(createdBody.room.rent).toBe(0);
+
+    // 0 ต้องไม่ถูกอ่านเป็น "ไม่ได้ส่งมา" — PATCH ผ่านไปแล้วค่าต้องยังเป็น 0
+    const patched = await patchRoom(createdBody.room.id, { rent: 0 });
+    expect(patched.status).toBe(200);
+    expect((await patched.json<{ room: { rent: number } }>()).room.rent).toBe(0);
+
+    const saved = (await listRooms()).rooms.find((room) => room.roomNumber === "E601");
+    expect(saved?.rent).toBe(0);
+
+    // บิลของห้องค่าเช่า 0 ต้องคิดจากค่าไฟและค่าใช้จ่ายอื่นล้วน ไม่ใช่ยอด 0
+    // เพราะค่าเช่าหาย — rent = 0 ต้องไม่ทำให้ยอดรวมกลายเป็น 0 หรือหายทั้งก้อน
+    await occupyRoom(createdBody.room.id, "ผู้เช่าห้องฟรีค่าเช่า");
+    const bill = await generateFlatBill(createdBody.room.id, "2026-05", 10, 40, 1200);
+
+    const listed = await SELF.fetch(`${billsUrl}?period=2026-05`, withAuth(session));
+    expect(listed.status).toBe(200);
+    const listedBody = await listed.json<{
+      bills: { id: string; rent: number; electricAmount: number; total: number }[];
+    }>();
+    const billBody = listedBody.bills.find((row) => row.id === bill.id);
+
+    expect(billBody?.rent).toBe(0);
+    expect(billBody?.electricAmount).toBe(1200);
+    // ค่าไฟ 1200 บวกค่าใช้จ่ายประจำของหอ (180) — ต้องมากกว่าค่าไฟเสมอ และไม่มีค่าเช่าอยู่ในนั้น
+    expect(billBody?.total).toBe(1380);
   });
 
   it("lists rooms in ascending room-number order", async () => {

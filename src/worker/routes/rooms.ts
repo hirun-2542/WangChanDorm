@@ -81,8 +81,8 @@ function toRoom(row: RoomRow, resolved: ResolvedRoomCharges): RoomPayload {
   };
 }
 
-function parsePositiveInt(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+function parseNonNegativeInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function parseNonNegative(value: unknown): number | null {
@@ -149,10 +149,10 @@ rooms.post("/", async (c) => {
     return c.json(errorBody("VALIDATION", "กรุณากรอกเลขห้อง", "roomNumber"), 400);
   }
 
-  const rent = parsePositiveInt(body.rent);
+  const rent = parseNonNegativeInt(body.rent);
 
   if (rent === null) {
-    return c.json(errorBody("VALIDATION", "ค่าเช่าต้องเป็นจำนวนเต็มมากกว่า 0", "rent"), 400);
+    return c.json(errorBody("VALIDATION", "ค่าเช่าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป", "rent"), 400);
   }
 
   const waterRate = parseOptionalPositive(body.waterRate);
@@ -300,10 +300,10 @@ rooms.patch("/:id", async (c) => {
     let rent = existing.rent;
 
     if (body.rent !== undefined) {
-      const parsed = parsePositiveInt(body.rent);
+      const parsed = parseNonNegativeInt(body.rent);
 
       if (parsed === null) {
-        return c.json(errorBody("VALIDATION", "ค่าเช่าต้องเป็นจำนวนเต็มมากกว่า 0", "rent"), 400);
+        return c.json(errorBody("VALIDATION", "ค่าเช่าต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป", "rent"), 400);
       }
 
       rent = parsed;

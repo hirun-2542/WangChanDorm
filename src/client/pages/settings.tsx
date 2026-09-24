@@ -733,8 +733,10 @@ export function SettingsPage() {
     ownerPhoneDigits === "" || /^0\d{9}$/.test(ownerPhoneDigits);
   // LINE ID: "@" นำหน้าได้ ตัวที่เหลือ a–z 0–9 . _ - ยาว 4–30 (ตรงกับด่านฝั่ง server)
   // และห้ามเป็น id ของ OA หอเอง — ผู้เช่าคุยกับ OA นั้นอยู่แล้ว
-  const ownerLineIdBody = ownerLineId.trim().replace(/^@/, "");
-  const ownerLineIdIsDormOa = ownerLineIdBody.toLowerCase() === "490secnd";
+  // OA ที่ใช้อยู่มาจาก settings.lineBot (ดึงจาก LINE) ไม่ใช่ค่าคงที่ในโค้ด
+  const ownerLineIdBody = ownerLineId.trim().replace(/^@/, "").toLowerCase();
+  const dormOaBody = (settings?.lineBot?.basicId ?? "").trim().replace(/^@/, "").toLowerCase();
+  const ownerLineIdIsDormOa = dormOaBody !== "" && ownerLineIdBody === dormOaBody;
   const ownerLineIdValid =
     ownerLineIdBody === "" ||
     (!ownerLineIdIsDormOa && /^[A-Za-z0-9._-]{4,30}$/.test(ownerLineIdBody));

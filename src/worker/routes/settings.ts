@@ -203,25 +203,31 @@ function ownerPhoneError(value: string): string | null {
  * มักคัดลอกมาพร้อมช่องว่าง/เครื่องหมายคำพูด จึงตัดให้ก่อนตรวจ ตัว "@" เก็บไว้
  * เพราะเป็นส่วนหนึ่งของชื่อที่ใช้ค้นหาในแอป LINE
  */
+function normalizeOwnerLineId(value: string): string {
+  return value.trim().replace(/^["'“”]|["'“”]$/g, "").replace(/\s+/g, "");
+}
 
 /**
  * OA ของหอเอง — ต้องไม่ถูกกรอกเป็น LINE ส่วนตัวของเจ้าของ
  *
  * ผู้เช่าที่อ่านการ์ด "ติดต่อเจ้าของหอ" กำลังคุยอยู่ในแชทของ OA นี้อยู่แล้ว
  * การส่ง id กลับไปจึงชี้ไปบัญชีที่เขาใช้งานอยู่ ไม่ใช่ช่องทางใหม่ และทำให้เข้าใจ
- * ผิดว่ากดเพิ่มเพื่อนเจ้าของแล้ว (ค่าเหล่านี้มาจาก channel ที่ตั้งไว้จริง)
+ * ผิดว่ากดเพิ่มเพื่อนเจ้าของแล้ว
+ *
+ * ค่าที่ใช้เทียบมาจาก LINE เอง (`loadBotInfo`) ไม่ใช่ค่าคงที่ในโค้ด — เปลี่ยน OA
+ * แล้วด่านนี้ตามไปเอง จึงไม่มีทางค้างชี้ OA ตัวเก่าเหมือนที่เคยเป็น
+ *
+ * ดึง LINE ไม่ได้ (ไม่มี token, เครือข่ายล่ม, โหมดสาธิต) = ไม่บล็อก (fail-open)
+ * เพราะด่านนี้กันความเข้าใจผิด ไม่ได้กันความเสียหาย — การปิดกั้นการบันทึกค่า
+ * ทั้งหมดเพียงเพราะตรวจ OA ไม่ได้ จะทำให้เจ้าของหอตั้งค่าอื่นไม่ได้ไปด้วย
  */
-const dormOaLineIds: Record<string, true> = { "490secnd": true };
-
-function normalizeOwnerLineId(value: string): string {
-  return value.trim().replace(/^["'“”]|["'“”]$/g, "").replace(/\s+/g, "");
-}
-
-function ownerLineIdError(value: string): string | null {
+function ownerLineIdError(value: string, dormBasicId: string): string | null {
   const normalized = normalizeOwnerLineId(value);
   const body = normalized.startsWith("@") ? normalized.slice(1) : normalized;
+  const bare = (id: string): string => id.trim().replace(/^@/, "").toLowerCase();
+  const dorm = bare(dormBasicId);
 
-  if (dormOaLineIds[body.toLowerCase()] === true) {
+  if (dorm !== "" && dorm === bare(normalized)) {
     return "นี่คือ LINE ของ OA หอ ไม่ใช่ LINE ส่วนตัวของคุณ — ผู้เช่าที่อ่านข้อความนี้คุยกับ OA หออยู่แล้ว กรุณาใส่ LINE ส่วนตัว (หรือเว้นว่างไว้)";
   }
 
@@ -583,7 +589,11 @@ settings.put("/", async (c) => {
 
       if (key === "ownerLineId") {
         const raw = typeof value === "string" ? value.trim() : "";
-        const message = raw === "" ? null : ownerLineIdError(raw);
+        // ดึง OA ที่ใช้อยู่จาก LINE เฉพาะเมื่อมีค่าที่ต้องตรวจ — คำขอที่ไม่ได้แตะ
+        // ฟิลด์นี้ (เกือบทั้งหมด) จึงไม่ต้องรอเครือข่ายเพิ่ม
+        const dormBasicId =
+          raw === "" ? "" : ((await loadBotInfo(c.env))?.basicId ?? "");
+        const message = raw === "" ? null : ownerLineIdError(raw, dormBasicId);
 
         if (message !== null) {
           return c.json(errorBody("VALIDATION", message, key), 400);

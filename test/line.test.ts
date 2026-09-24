@@ -1087,6 +1087,34 @@ describe("LINE rich menu keywords", () => {
     expect((await readSettings()).ownerLineId).toBe("@somchai_owner");
   });
 
+  it("follows the OA that the token actually points at, not a value baked into the code", async () => {
+    // เปลี่ยน OA: LINE ตอบ basic id ของช่องใหม่
+    await env.DB.prepare("DELETE FROM meta WHERE key = 'line_bot_info'").run();
+    botInfoBasicId = "@newdorm";
+
+    // id ของ OA ใหม่ต้องถูกปฏิเสธ — ด่านต้องอ่านค่าจาก LINE ไม่ใช่ค่าคงที่
+    const fromLine = await putSettings({ ownerLineId: "@newdorm" });
+    expect(fromLine.status).toBe(400);
+    expect(
+      (await fromLine.json<{ error: { field: string } }>()).error.field,
+    ).toBe("ownerLineId");
+
+    // id ของ OA ตัวเก่าไม่ใช่ OA ที่ใช้อยู่แล้ว จึงกรอกได้ตามปกติ
+    const oldOa = await putSettings({ ownerLineId: "@490secnd" });
+    expect(oldOa.status).toBe(200);
+  });
+
+  it("does not block saving when the OA cannot be read from LINE", async () => {
+    // ด่านนี้กันความเข้าใจผิด ไม่ได้กันความเสียหาย — ดึง LINE ไม่ได้จึงต้องไม่ปิดกั้น
+    // ไม่งั้น token หมดอายุแล้วเจ้าของหอจะตั้งค่าอื่นไม่ได้ไปด้วย
+    await env.DB.prepare("DELETE FROM meta WHERE key = 'line_bot_info'").run();
+    botInfoFails = true;
+
+    const saved = await putSettings({ ownerLineId: "@somchai_owner" });
+    expect(saved.status).toBe(200);
+    expect((await readSettings()).ownerLineId).toBe("@somchai_owner");
+  });
+
   it("answers ลงทะเบียน with the registration link for a linked tenant", async () => {
     const room = await newRoom("K306");
     await newTenant(room.id, "เอ LINE");

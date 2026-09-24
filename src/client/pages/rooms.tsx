@@ -430,7 +430,7 @@ function RoomDrawer({
   };
 
   const rent = numericValue(form.rent);
-  const rentInvalid = rent === null || !Number.isInteger(rent) || rent <= 0;
+  const rentInvalid = rent === null || !Number.isInteger(rent) || rent < 0;
   const waterMeterValue = numericValue(form.waterMeterInit);
   const waterMeterInvalid = waterMeterValue === null || waterMeterValue < 0;
   const electricMeterValue = numericValue(form.electricMeterInit);
