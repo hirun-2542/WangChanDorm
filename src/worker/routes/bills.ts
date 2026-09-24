@@ -418,15 +418,20 @@ async function loadLatestReadings(
   return new Map(result.results.map((row) => [row.room_id, row]));
 }
 
+/**
+ * โหลดค่าใช้จ่ายเพิ่มเติมของบิลทุกเดือนในช่วง from..to ครบทั้งสองปลาย
+ * from === to คือเดือนเดียว จึงใช้ตัวโหลดนี้ได้ทั้งรายการรายเดือนและรายช่วง
+ */
 async function loadCharges(
   env: Env,
   family: string,
-  period: string,
+  from: string,
+  to: string,
 ): Promise<Map<string, ChargePayload[]>> {
   const result = await env.DB.prepare(
-    "SELECT bc.bill_id, bc.name, bc.amount FROM bill_charges bc JOIN bills b ON b.id = bc.bill_id AND b.family_id = bc.family_id WHERE b.family_id = ? AND b.period = ? ORDER BY bc.bill_id ASC, bc.position ASC",
+    "SELECT bc.bill_id, bc.name, bc.amount FROM bill_charges bc JOIN bills b ON b.id = bc.bill_id AND b.family_id = bc.family_id WHERE b.family_id = ? AND b.period >= ? AND b.period <= ? ORDER BY bc.bill_id ASC, bc.position ASC",
   )
-    .bind(family, period)
+    .bind(family, from, to)
     .all<{ bill_id: string; name: string; amount: number }>();
 
   const grouped = new Map<string, ChargePayload[]>();
@@ -484,17 +489,22 @@ function toBill(row: BillRow, charges: ChargePayload[]): BillPayload {
   };
 }
 
+/**
+ * โหลดบิลทุกเดือนในช่วง from..to เรียงเดือนเก่าไปใหม่แล้วตามเลขห้อง
+ * from === to ให้ผลเหมือนเดิมทุกประการกับการโหลดเดือนเดียว
+ */
 async function loadBills(
   env: Env,
   family: string,
-  period: string,
+  from: string,
+  to: string,
 ): Promise<BillPayload[]> {
   const result = await env.DB.prepare(
-    `SELECT ${billColumns} ${billFrom} WHERE b.family_id = ? AND b.period = ? ORDER BY ${roomNumberOrder("b.room_number")}`,
+    `SELECT ${billColumns} ${billFrom} WHERE b.family_id = ? AND b.period >= ? AND b.period <= ? ORDER BY b.period ASC, ${roomNumberOrder("b.room_number")}`,
   )
-    .bind(family, period)
+    .bind(family, from, to)
     .all<BillRow>();
-  const charges = await loadCharges(env, family, period);
+  const charges = await loadCharges(env, family, from, to);
 
   return result.results.map((row) => toBill(row, charges.get(row.id) ?? []));
 }
@@ -693,7 +703,7 @@ bills.get("/", async (c) => {
   }
 
   try {
-    const list = await loadBills(c.env, family, period);
+    const list = await loadBills(c.env, family, period, period);
     return c.json({ ok: true, period, bills: list }, 200);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -784,6 +794,47 @@ bills.get("/periods", async (c) => {
       JSON.stringify({ message: "list bill periods failed", error: detail }),
     );
     return c.json(errorBody("INTERNAL", "โหลดรายการเดือนของบิลไม่สำเร็จ"), 500);
+  }
+});
+
+// อ่านอย่างเดียว ครอบทุกบิลในช่วง from..to ครบทั้งสองปลาย ไม่จำกัดความยาวช่วง
+// เพราะหอหนึ่งมีบิลไม่เกินหลักร้อยต่อปี และไม่ผูกกับตัวกรองบนจอ
+bills.get("/export", async (c) => {
+  const family = familyId(c);
+  const from = c.req.query("from") ?? "";
+  const to = c.req.query("to") ?? "";
+
+  if (!isPeriod(from)) {
+    return c.json(
+      errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "from"),
+      400,
+    );
+  }
+
+  if (!isPeriod(to)) {
+    return c.json(
+      errorBody("VALIDATION", "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "to"),
+      400,
+    );
+  }
+
+  // รูปแบบ YYYY-MM เทียบสตริงตรง ๆ ได้ เพราะเติมศูนย์หน้าจนความยาวเท่ากันเสมอ
+  if (from > to) {
+    return c.json(
+      errorBody("VALIDATION", "เดือนเริ่มต้องไม่เกินเดือนสุดท้าย", "from"),
+      400,
+    );
+  }
+
+  try {
+    const list = await loadBills(c.env, family, from, to);
+    return c.json({ ok: true, from, to, bills: list }, 200);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      JSON.stringify({ message: "export bills failed", from, to, error: detail }),
+    );
+    return c.json(errorBody("INTERNAL", "โหลดข้อมูลบิลไม่สำเร็จ"), 500);
   }
 });
 
@@ -1059,7 +1110,7 @@ bills.post("/generate", async (c) => {
     await c.env.DB.batch(statements);
 
     const createdIdSet = new Set(createdIds);
-    const created = (await loadBills(c.env, family, period)).filter((bill) =>
+    const created = (await loadBills(c.env, family, period, period)).filter((bill) =>
       createdIdSet.has(bill.id),
     );
 
@@ -1514,7 +1565,7 @@ bills.post("/send-all", async (c) => {
   }
 
   try {
-    const list = await loadBills(c.env, family, period);
+    const list = await loadBills(c.env, family, period, period);
 
     if (list.length === 0) {
       return c.json(

@@ -1665,3 +1665,173 @@ describe("family isolation", () => {
     expect(await findBill("2026-09", bill.id)).toEqual(bill);
   });
 });
+
+describe("bills export range", () => {
+  interface ExportBody {
+    ok: boolean;
+    from: string;
+    to: string;
+    bills: BillPayload[];
+  }
+
+  function exportBills(from: string, to: string): Promise<Response> {
+    return api(`${billsUrl}/export?from=${from}&to=${to}`);
+  }
+
+  /**
+   * เก็บเฉพาะบิลของห้องที่เทสต์นี้สร้าง เพราะทุกเทสต์ในไฟล์ใช้ครอบครัวเดียวกัน
+   * และคลังข้อมูลไม่ได้ถูกล้างระหว่างเทสต์ บิลของเทสต์ก่อนหน้าจึงยังอยู่ในผลลัพธ์
+   */
+  function forRooms(bills: BillPayload[], roomIds: string[]): BillPayload[] {
+    return bills.filter((bill) => roomIds.includes(bill.roomId));
+  }
+
+  /**
+   * ออกบิลให้ห้องหนึ่งตามเดือนที่กำหนด โดยเลขมิเตอร์เพิ่มขึ้นทุกเดือนเสมอ
+   * เพราะการออกบิลเดือนถัดไปบังคับว่าเลขมิเตอร์ต้องไม่น้อยกว่าครั้งก่อน
+   */
+  async function billMonths(
+    room: RoomPayload,
+    months: Array<{ period: string; water: number; electric: number; charges?: ChargePayload[] }>,
+  ): Promise<void> {
+    for (const month of months) {
+      const response = await generate({
+        period: month.period,
+        entries: [
+          {
+            roomId: room.id,
+            waterCurrent: month.water,
+            electricCurrent: month.electric,
+            charges: month.charges ?? [],
+          },
+        ],
+      });
+      expect(response.status).toBe(201);
+    }
+  }
+
+  it("returns every bill across the range in ascending period order with charges attached", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("E901", { waterMeterInit: 100, electricMeterInit: 200 });
+    await billMonths(room, [
+      { period: "2026-07", water: 110, electric: 215 },
+      { period: "2026-08", water: 120, electric: 230, charges: [{ name: "ค่าซ่อม", amount: 200 }] },
+      { period: "2026-09", water: 130, electric: 245 },
+    ]);
+
+    const response = await exportBills("2026-07", "2026-08");
+    expect(response.status).toBe(200);
+    const body = await response.json<ExportBody>();
+    expect(body.from).toBe("2026-07");
+    expect(body.to).toBe("2026-08");
+
+    const range = forRooms(body.bills, [room.id]);
+    expect(range.map((bill) => bill.period)).toEqual(["2026-07", "2026-08"]);
+
+    const middle = pick(range, (bill) => bill.period === "2026-08");
+    expect(middle.charges).toEqual([{ name: "ค่าซ่อม", amount: 200 }]);
+    expect(middle.total).toBe(3500 + 10 * 18 + 15 * 7 + 200);
+    expect(middle).toEqual(await findBill("2026-08", middle.id));
+
+    // ปลายทั้งสองข้างครอบเสมอ
+    const full = await exportBills("2026-07", "2026-09");
+    expect(forRooms((await full.json<ExportBody>()).bills, [room.id]).map((bill) => bill.period)).toEqual([
+      "2026-07",
+      "2026-08",
+      "2026-09",
+    ]);
+
+    const tail = await exportBills("2026-08", "2026-09");
+    expect(forRooms((await tail.json<ExportBody>()).bills, [room.id]).map((bill) => bill.period)).toEqual([
+      "2026-08",
+      "2026-09",
+    ]);
+  });
+
+  it("orders by period then by room number the way the screen does", async () => {
+    await putRates(18, 7);
+    const short = await occupiedRoom("A9", { waterMeterInit: 10, electricMeterInit: 20 });
+    const long = await occupiedRoom("A10", { waterMeterInit: 30, electricMeterInit: 40 });
+    await billMonths(short, [
+      { period: "2026-08", water: 15, electric: 30 },
+      { period: "2026-09", water: 20, electric: 40 },
+    ]);
+    await billMonths(long, [
+      { period: "2026-08", water: 35, electric: 50 },
+      { period: "2026-09", water: 40, electric: 60 },
+    ]);
+
+    const response = await exportBills("2026-08", "2026-09");
+    expect(response.status).toBe(200);
+    const body = await response.json<ExportBody>();
+    expect(forRooms(body.bills, [short.id, long.id]).map((bill) => `${bill.period}/${bill.roomNumber}`)).toEqual([
+      "2026-08/A9",
+      "2026-08/A10",
+      "2026-09/A9",
+      "2026-09/A10",
+    ]);
+  });
+
+  it("refuses a range whose start is after its end", async () => {
+    const response = await exportBills("2026-09", "2026-08");
+    expect(response.status).toBe(400);
+    const body = await response.json<ErrorBody>();
+    expect(body.error.code).toBe("VALIDATION");
+    expect(body.error.field).toBe("from");
+  });
+
+  it("refuses malformed or missing months and names the offending field", async () => {
+    const malformedFrom = await exportBills("2026-8", "2026-09");
+    expect(malformedFrom.status).toBe(400);
+    const malformedFromBody = await malformedFrom.json<ErrorBody>();
+    expect(malformedFromBody.error.code).toBe("VALIDATION");
+    expect(malformedFromBody.error.field).toBe("from");
+
+    const badMonth = await exportBills("2026-13", "2026-13");
+    expect(badMonth.status).toBe(400);
+    expect((await badMonth.json<ErrorBody>()).error.field).toBe("from");
+
+    const missingTo = await api(`${billsUrl}/export?from=2026-08`);
+    expect(missingTo.status).toBe(400);
+    expect((await missingTo.json<ErrorBody>()).error.field).toBe("to");
+
+    const missingBoth = await api(`${billsUrl}/export`);
+    expect(missingBoth.status).toBe(400);
+    expect((await missingBoth.json<ErrorBody>()).error.field).toBe("from");
+  });
+
+  it("returns an empty list, not an error, for a range with no bills", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("E902", { waterMeterInit: 100, electricMeterInit: 200 });
+    await billMonths(room, [{ period: "2026-09", water: 110, electric: 215 }]);
+
+    const before = await exportBills("2025-01", "2025-12");
+    expect(before.status).toBe(200);
+    const body = await before.json<ExportBody>();
+    expect(body.from).toBe("2025-01");
+    expect(body.to).toBe("2025-12");
+    expect(body.bills).toEqual([]);
+
+    const gap = await exportBills("2026-10", "2026-12");
+    expect(gap.status).toBe(200);
+    expect(forRooms((await gap.json<ExportBody>()).bills, [room.id])).toEqual([]);
+  });
+
+  it("gives another family an empty list for the same range", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("E903", { waterMeterInit: 100, electricMeterInit: 200 });
+    await billMonths(room, [{ period: "2026-08", water: 110, electric: 215 }]);
+
+    expect((await exportBills("2026-08", "2026-08")).status).toBe(200);
+
+    const other = await signIn("owner", await createFamily("หอของอีกครอบครัว"));
+    const response = await SELF.fetch(
+      `${billsUrl}/export?from=2026-08&to=2026-08`,
+      withAuth(other),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<ExportBody>();
+    expect(body.from).toBe("2026-08");
+    expect(body.bills).toEqual([]);
+  });
+});
