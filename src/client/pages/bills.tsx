@@ -45,6 +45,7 @@ import {
 } from "./bills-actions";
 import { BillDetail } from "./bills-detail";
 import { CreateWizard } from "./bills-create";
+import { electricUnitsOf } from "../../shared/billing";
 
 const statusOptions = [
   { value: "all", label: "ทั้งหมด" },
@@ -75,11 +76,6 @@ function MeterReading({
       </span>
     </span>
   );
-}
-
-/** บิลไฟเหมาไม่ได้เก็บจำนวนหน่วยไว้ คิดจากเลขมิเตอร์ที่บันทึกไว้ทั้งสองครั้ง */
-function electricUnitsOf(bill: Bill): number {
-  return bill.electricUnits ?? bill.electricCurrent - bill.electricPrevious;
 }
 
 interface BillsRouteTarget {

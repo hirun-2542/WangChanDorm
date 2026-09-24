@@ -25,3 +25,20 @@ export function chargeFromFlatAmount(amount: number): number {
 export function isFiniteAmount(value: number): boolean {
   return Number.isFinite(value) && value >= 0;
 }
+
+/**
+ * บิลไฟเหมาไม่ได้เก็บจำนวนหน่วยไว้ คิดจากเลขมิเตอร์ที่บันทึกไว้ทั้งสองครั้ง
+ *
+ * ทำไมต้องอยู่ไฟล์กลาง: หน้ารายการบิลกับไฟล์ส่งออกต้องแสดงหน่วยไฟของบิลเหมา
+ * จ่ายเป็นตัวเลขเดียวกัน ถ้าต่างฝ่ายคิดเอง ไฟล์ที่เจ้าของเอาไปทำบัญชีจะไม่ตรงกับ
+ * ที่เห็นบนจอ ซึ่งเป็นความผิดพลาดที่ตรวจย้อนได้ยาก
+ *
+ * รับแบบ structural ไม่ผูกกับชนิด Bill เพราะโมดูลนี้ต้องไม่พึ่งชนิดฝั่ง client
+ */
+export function electricUnitsOf(bill: {
+  electricUnits: number | null;
+  electricCurrent: number;
+  electricPrevious: number;
+}): number {
+  return bill.electricUnits ?? bill.electricCurrent - bill.electricPrevious;
+}
