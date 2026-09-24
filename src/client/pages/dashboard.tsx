@@ -5,6 +5,7 @@ import {
   billsFocusHash,
   fetchBillPeriods,
   fetchDashboardStats,
+  tenantsChangedEvent,
   type DashboardRoom,
   type DashboardRoomStatus,
   type DashboardStats,
@@ -165,9 +166,12 @@ export function DashboardPage() {
     };
 
     window.addEventListener(billsChangedEvent, refresh);
+    // ผู้เช่าใหม่เปลี่ยนจำนวนผู้เช่า/ห้องว่างบนแดชบอร์ด ด้วยเหตุผลเดียวกัน
+    window.addEventListener(tenantsChangedEvent, refresh);
 
     return () => {
       window.removeEventListener(billsChangedEvent, refresh);
+      window.removeEventListener(tenantsChangedEvent, refresh);
     };
   }, []);
 

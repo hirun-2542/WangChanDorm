@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { failureDetail, lineFamilyId, lineOutboundTimeoutMs, logLineFailure, pushMessage } from "../line/api";
+import { broadcastTenantJoined } from "../lib/paid-notify";
 import { errorBody, readJsonObject, roomNumberOrder } from "./shared";
 
 const registerApi = new Hono<{ Bindings: Env }>();
@@ -248,6 +249,18 @@ registerApi.post("/", async (c) => {
     ]);
 
     console.log(JSON.stringify({ message: "tenant self-registered", tenantId: id, roomNumber: room.room_number }));
+
+    /**
+     * ลงทะเบียนสำเร็จไปแล้วใน D1 — การแจ้งเตือนต้องไม่ทำให้คำขอล้มเหลว
+     * จึง await ก่อนตอบ (ให้แท็บที่เปิดอยู่รู้ทันที) แต่ห่อความผิดพลาดไว้ข้างใน
+     */
+    await broadcastTenantJoined(c.env, family, {
+      tenantId: id,
+      roomNumber: room.room_number,
+      tenantName: name,
+      source: "self",
+      joinedAt: new Date().toISOString(),
+    });
 
     await alertRegistration(c.env, family, name, room.room_number, phone, identity.userId);
 

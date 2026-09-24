@@ -8,6 +8,7 @@ import {
   fetchPendingLinks,
   fetchRooms,
   fetchTenants,
+  tenantsChangedEvent,
   updateTenant,
   type Bill,
   type PendingLink,
@@ -400,6 +401,22 @@ export function TenantsPage() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  /**
+   * ผู้เช่าใหม่มาจากอุปกรณ์ของเขาเอง (LIFF) ไม่ใช่แท็บนี้ — ถ้าไม่ฟังเหตุการณ์นี้
+   * เจ้าของที่เปิดหน้ารายชื่อค้างไว้จะไม่เห็นคนใหม่จนกว่าจะรีเฟรชเอง
+   */
+  useEffect(() => {
+    const refresh = () => {
+      void load();
+    };
+
+    window.addEventListener(tenantsChangedEvent, refresh);
+
+    return () => {
+      window.removeEventListener(tenantsChangedEvent, refresh);
+    };
   }, [load]);
 
   useEffect(() => {

@@ -1,10 +1,27 @@
 import { logLineFailure, failureDetail, pushMessage } from "../line/api";
 import { ownerBillPaidMessage } from "../line/messages";
-import type { RealtimeBillPaid } from "../realtime";
+import type { RealtimeBillPaid, RealtimeTenantJoined } from "../realtime";
 import { billDetailUrl } from "./line-link";
 import { signedSlipUrl } from "./slip-link";
 
 export type BillPaidSource = "auto-slip" | "owner-settle" | "mark-paid";
+
+/**
+ * ทางที่ผู้เช่าใหม่เข้าระบบ
+ *
+ * `self` = ลงทะเบียนเองผ่านฟอร์ม LIFF (เจ้าของยังไม่รู้จัก)
+ * `owner` = เจ้าของกดเชื่อม LINE ให้ผู้เช่าที่มีอยู่แล้วในระบบ
+ */
+export type TenantJoinedSource = "self" | "owner";
+
+export interface TenantJoinedEvent {
+  tenantId: string;
+  roomNumber: string;
+  tenantName: string;
+  source: TenantJoinedSource;
+  /** ISO string */
+  joinedAt: string;
+}
 
 export interface BillPaidEvent {
   billId: string;
@@ -83,6 +100,47 @@ export async function broadcastBillPaid(
       JSON.stringify({
         message: "bill paid broadcast failed",
         billId: event.billId,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+/**
+ * บอกทุกแท็บเว็บว่ามีผู้เช่าใหม่ — ผู้เรียกใช้ waitUntil ได้
+ *
+ * แยกจาก `broadcastBillPaid` เพราะไม่มี "ต้นทางที่เป็นแท็บ" ให้ยกเว้น: การ
+ * ลงทะเบียนเกิดจาก LINE (คนละอุปกรณ์) และการเชื่อม LINE เป็นการกระทำของเจ้าของ
+ * ที่ควรเห็นผลในทุกแท็บรวมทั้งแท็บที่กด จึงไม่รับ `excludeConnectionId` เลย
+ *
+ * ห้ามให้ขั้นนี้ทำให้คำขอที่ทำงานสำเร็จแล้วล้มเหลว (การลงทะเบียนเขียน D1 ไปแล้ว)
+ * ความผิดพลาดจึงเป็นแค่ log
+ */
+export async function broadcastTenantJoined(
+  env: Env,
+  familyId: string,
+  event: TenantJoinedEvent,
+): Promise<void> {
+  const payload: RealtimeTenantJoined = {
+    v: 1,
+    type: "tenant-joined",
+    tenantId: event.tenantId,
+    roomNumber: event.roomNumber,
+    tenantName: event.tenantName,
+    source: event.source,
+    joinedAt: event.joinedAt,
+  };
+
+  try {
+    await env.REALTIME.get(env.REALTIME.idFromName(familyId)).broadcast(
+      JSON.stringify(payload),
+      null,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        message: "tenant joined broadcast failed",
+        tenantId: event.tenantId,
         error: error instanceof Error ? error.message : String(error),
       }),
     );

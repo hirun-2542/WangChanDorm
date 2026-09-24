@@ -1,11 +1,12 @@
 import { setRealtimeConnectionId } from "./api";
-import type { BillPaidNotice } from "./notifications";
+import type { BillPaidNotice, TenantJoinedNotice } from "./notifications";
 
 // ชนิดข้อมูลอยู่ที่ notifications.ts (โมดูลข้อมูลล้วน) แล้ว re-export ให้ผู้เรียกเดิม
-export type { BillPaidNotice } from "./notifications";
+export type { BillPaidNotice, TenantJoinedNotice } from "./notifications";
 
 export interface RealtimeHandlers {
   onBillPaid: (notice: BillPaidNotice) => void;
+  onTenantJoined: (notice: TenantJoinedNotice) => void;
   /** ต่อกลับมาได้หลังหลุด — ข้อมูลหน้าจออาจค้าง ต้องโหลดใหม่หนึ่งครั้ง */
   onReconnected: () => void;
 }
@@ -54,6 +55,38 @@ function billPaidNoticeOf(value: unknown): BillPaidNotice | null {
     total: record.total,
     methodLabel: record.methodLabel,
     paidAt: record.paidAt,
+  };
+}
+
+/**
+ * ผู้เช่าใหม่ — ตรวจชนิดให้ครบก่อนใช้ ไม่เชื่อ payload ตรง ๆ
+ *
+ * `source` ต้องเป็นค่าที่รู้จักเท่านั้น ถ้าไม่ใช่ให้ปฏิเสธทั้งข้อความ ดีกว่าจะ
+ * เดาเป็น "self" แล้วขึ้นข้อความผิดความหมายให้เจ้าของอ่าน
+ */
+function tenantJoinedNoticeOf(value: unknown): TenantJoinedNotice | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  if (
+    typeof record.tenantId !== "string" ||
+    typeof record.roomNumber !== "string" ||
+    typeof record.tenantName !== "string" ||
+    typeof record.joinedAt !== "string" ||
+    (record.source !== "self" && record.source !== "owner")
+  ) {
+    return null;
+  }
+
+  return {
+    tenantId: record.tenantId,
+    roomNumber: record.roomNumber,
+    tenantName: record.tenantName,
+    source: record.source,
+    joinedAt: record.joinedAt,
   };
 }
 
@@ -145,6 +178,16 @@ export function startRealtime(handlers: RealtimeHandlers): () => void {
 
         if (notice !== null) {
           handlers.onBillPaid(notice);
+        }
+
+        return;
+      }
+
+      if (record.type === "tenant-joined") {
+        const notice = tenantJoinedNoticeOf(record);
+
+        if (notice !== null) {
+          handlers.onTenantJoined(notice);
         }
       }
     });

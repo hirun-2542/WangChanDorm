@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AccountButton } from "./account";
 import { useAuth } from "./auth";
-import { announceBillsChanged, announceReviewQueueChanged, fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
+import { announceBillsChanged, announceReviewQueueChanged, announceTenantsChanged, fetchRooms, fetchSlips, fetchTenants, reviewQueueChangedEvent, type Room, type Tenant } from "./api";
 import { ErrorBoundary } from "./error-boundary";
 import { NotificationButton } from "./notification-button";
 import {
   markAllRead,
   notificationOf,
   notificationText,
+  tenantJoinedNotificationOf,
   unreadCount,
   withNotification,
   type AppNotification,
@@ -242,12 +243,20 @@ function Shell() {
   useEffect(() => {
     return startRealtime({
       onBillPaid: (notice) => {
-        setRealtimeToast(notificationText(notice));
+        setRealtimeToast(notificationText(notificationOf(notice)));
         setNotifications((previous) =>
           withNotification(previous, notificationOf(notice)),
         );
         announceBillsChanged();
         announceReviewQueueChanged();
+      },
+      onTenantJoined: (notice) => {
+        const item = tenantJoinedNotificationOf(notice);
+
+        setRealtimeToast(notificationText(item));
+        setNotifications((previous) => withNotification(previous, item));
+        // รายชื่อผู้เช่าเปลี่ยน — หน้าที่เปิดอยู่ต้องโหลดใหม่ (แดชบอร์ดนับห้องว่างด้วย)
+        announceTenantsChanged();
       },
       onReconnected: () => {
         // ข้อความที่หลุดตอน socket ปิดไม่ถูกเก็บไว้ ต้องโหลดใหม่หนึ่งครั้ง

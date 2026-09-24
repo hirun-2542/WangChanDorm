@@ -788,6 +788,20 @@ export function announceBillsChanged(): void {
   target.dispatchEvent(new Event(billsChangedEvent));
 }
 
+export const tenantsChangedEvent = "wangchan:tenants-changed";
+
+/**
+ * บอกว่าชุดผู้เช่าเปลี่ยนแล้ว (ลงทะเบียนใหม่/เชื่อม LINE ให้)
+ *
+ * ต้องมีเพราะการลงทะเบียนเกิดบนอุปกรณ์ของ **ผู้เช่า** (LIFF) ไม่ใช่ในแท็บนี้
+ * หน้าผู้เช่าจึงไม่มีทางรู้ถ้าไม่มีสัญญาณ — และแดชบอร์ดนับจำนวนห้องว่างกับ
+ * จำนวนผู้เช่าจากข้อมูลชุดเดียวกัน
+ */
+export function announceTenantsChanged(): void {
+  const target = globalThis as unknown as EventTarget;
+  target.dispatchEvent(new Event(tenantsChangedEvent));
+}
+
 export interface DashboardKpis {
   bills: number;
   dueAmount: number;

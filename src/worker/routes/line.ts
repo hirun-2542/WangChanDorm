@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { type AppEnv, familyId } from "../lib/auth";
 import { billDetailUrl } from "../lib/line-link";
+import { broadcastTenantJoined } from "../lib/paid-notify";
 import { handleSlipImage } from "../lib/slips";
 import { bankThaiName } from "../lib/banks";
 import { failureDetail, fetchProfile, lineFamilyId, replyMessage } from "../line/api";
@@ -686,6 +687,26 @@ lineAdmin.post("/pending/:lineUserId/link", async (c) => {
         family,
       ),
     ]);
+
+    /**
+     * ต้องดึงชื่อ/ห้องเพิ่มเพราะ `tenant` ที่อ่านมาตรวจเงื่อนไขมีแค่ id/status/line_user_id
+     * (ไม่ได้ select ชื่อมา) และแท็บอื่นต้องรู้ว่าใครเพิ่งถูกเชื่อม
+     */
+    const joined = await c.env.DB.prepare(
+      "SELECT t.full_name, r.room_number FROM tenants t JOIN rooms r ON r.id = t.room_id WHERE t.id = ? AND t.family_id = ?",
+    )
+      .bind(tenantId, family)
+      .first<{ full_name: string; room_number: string }>();
+
+    if (joined !== null) {
+      await broadcastTenantJoined(c.env, family, {
+        tenantId,
+        roomNumber: joined.room_number,
+        tenantName: joined.full_name,
+        source: "owner",
+        joinedAt: new Date().toISOString(),
+      });
+    }
 
     return c.json({ ok: true }, 200);
   } catch (error) {

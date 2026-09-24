@@ -514,3 +514,136 @@ describe("GET /register composition", () => {
     expect(contrastRatio(steel, canvas)).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe("register fan-out to open tabs", () => {
+  /**
+   * การลงทะเบียนเกิดบนอุปกรณ์ของผู้เช่า ไม่ใช่ในแท็บของเจ้าของ — แท็บที่เปิดค้าง
+   * จึงต้องได้สัญญาณทาง WebSocket ไม่งั้นเจ้าของจะไม่เห็นคนใหม่จนกว่าจะรีเฟรช
+   */
+  async function openSocket(cookie: string): Promise<{
+    envelope: () => Promise<Record<string, unknown>>;
+    send: (data: string) => void;
+    nextMessage: () => Promise<string>;
+    close: () => void;
+  }> {
+    const { createExecutionContext, waitOnExecutionContext } = await import("cloudflare:test");
+    const { default: app } = await import("../src/worker/index");
+    const ctx = createExecutionContext();
+
+    const response = await app.fetch(
+      new Request("https://dorm.test/api/realtime", {
+        headers: {
+          cookie,
+          upgrade: "websocket",
+          connection: "upgrade",
+          origin: "https://dorm.test",
+        },
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    const socket = response.webSocket;
+
+    if (socket === null) {
+      throw new Error("expected a WebSocket upgrade response");
+    }
+
+    socket.accept();
+
+    const messages: string[] = [];
+    const waiters: ((value: string) => void)[] = [];
+
+    socket.addEventListener("message", (event: MessageEvent) => {
+      const data = typeof event.data === "string" ? event.data : "<binary>";
+      const waiter = waiters.shift();
+
+      if (waiter === undefined) {
+        messages.push(data);
+        return;
+      }
+
+      waiter(data);
+    });
+
+    const nextMessage = (): Promise<string> => {
+      const buffered = messages.shift();
+
+      if (buffered !== undefined) {
+        return Promise.resolve(buffered);
+      }
+
+      const { promise, resolve } = Promise.withResolvers<string>();
+      waiters.push(resolve);
+      return promise;
+    };
+
+    return {
+      envelope: async () => JSON.parse(await nextMessage()) as Record<string, unknown>,
+      send: (data) => {
+        socket.send(data);
+      },
+      nextMessage,
+      close: () => {
+        socket.close();
+      },
+    };
+  }
+
+  it("tells open tabs that someone registered, with the room and the name", async () => {
+    const token = liffToken("fanout");
+    await linkOwner("U-owner-fanout");
+    const room = await newRoom({ roomNumber: "RG901", rent: 3500, waterMeterInit: 5, electricMeterInit: 5 });
+    await seedPending(token);
+
+    const socket = await openSocket(session.cookie);
+    // hello มาก่อนเสมอ
+    expect((await socket.envelope()).type).toBe("hello");
+
+    const response = await post(registerUrl, {
+      name: "สมหญิง ลงทะเบียน",
+      phone: "089-999-8888",
+      roomId: room.id,
+      accessToken: token,
+    });
+    expect(response.status).toBe(200);
+
+    const envelope = await Promise.race([
+      socket.envelope(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("no tenant-joined envelope arrived")), 4000),
+      ),
+    ]);
+
+    expect(envelope.type).toBe("tenant-joined");
+    expect(envelope.roomNumber).toBe("RG901");
+    expect(envelope.tenantName).toBe("สมหญิง ลงทะเบียน");
+    // ลงทะเบียนเอง ไม่ใช่เจ้าของกดเชื่อม
+    expect(envelope.source).toBe("self");
+
+    socket.close();
+  });
+
+  it("sends nothing when the registration is rejected", async () => {
+    const socket = await openSocket(session.cookie);
+    expect((await socket.envelope()).type).toBe("hello");
+
+    // ห้องมีผู้เช่าอยู่แล้ว → 409 และต้องไม่มี event
+    const occupied = await newRoom({ roomNumber: "RG902", rent: 3500, waterMeterInit: 1, electricMeterInit: 1 });
+    await newTenant(occupied.id, "ผู้เช่าเดิม");
+
+    const rejected = await post(registerUrl, {
+      name: "คนที่มาทีหลัง",
+      phone: "081-000-0000",
+      roomId: occupied.id,
+      accessToken: liffToken("rejected"),
+    });
+    expect(rejected.status).toBe(409);
+
+    socket.send("ping");
+    expect(await socket.nextMessage()).toBe("pong");
+
+    socket.close();
+  });
+});

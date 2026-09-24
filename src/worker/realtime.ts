@@ -19,7 +19,24 @@ export interface RealtimeBillPaid {
   paidAt: string;
 }
 
-export type RealtimeEnvelope = RealtimeHello | RealtimeBillPaid;
+/**
+ * ผู้เช่าใหม่เข้าระบบ — ลงทะเบียนเองผ่าน LIFF หรือเจ้าของกดเชื่อม LINE ให้
+ *
+ * `source` แยกสองทางนี้เพราะความหมายต่อเจ้าของต่างกัน: "ลงทะเบียน" คือคนที่
+ * เจ้าของยังไม่รู้จัก (`self`) ส่วน "เชื่อม LINE" คือคนที่เจ้าของเพิ่มเข้าไปเอง
+ * แล้ว (`owner`) การขึ้นข้อความเหมือนกันทั้งสองทางจะชวนให้สับสน
+ */
+export interface RealtimeTenantJoined {
+  v: 1;
+  type: "tenant-joined";
+  tenantId: string;
+  roomNumber: string;
+  tenantName: string;
+  source: "self" | "owner";
+  joinedAt: string;
+}
+
+export type RealtimeEnvelope = RealtimeHello | RealtimeBillPaid | RealtimeTenantJoined;
 
 interface ConnectionState {
   connectionId: string;

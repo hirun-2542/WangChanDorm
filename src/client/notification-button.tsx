@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState, type FocusEvent } from "react";
 import {
+  notificationDetail,
+  notificationHref,
+  notificationIcon,
   notificationText,
-  notificationTime,
   type AppNotification,
 } from "./notifications";
 
@@ -172,26 +174,31 @@ export function NotificationButton({
               {items.map((item) => (
                 <li key={item.id}>
                   <a
-                    href={`#bills/detail/${encodeURIComponent(item.billId)}?period=${encodeURIComponent(item.period)}`}
+                    href={notificationHref(item)}
                     onClick={() => {
-                      // ปิดแผงเมื่อออกไปดูบิล ไม่งั้นมันค้างทับหน้าที่เพิ่งเปิดมา
+                      // ปิดแผงเมื่อออกไปดู ไม่งั้นมันค้างทับหน้าที่เพิ่งเปิดมา
                       setOpen(false);
                     }}
                     className="flex items-start gap-2.5 rounded-lg px-3 py-2.5 no-underline transition-colors hover:bg-paper-mist"
                   >
                     <span
-                      className={`ms mt-0.5 text-[18px] ${item.read ? "text-silver" : "text-status-paid-fg"}`}
+                      className={`ms mt-0.5 text-[18px] ${
+                        item.read
+                          ? "text-silver"
+                          : item.kind === "tenant-joined"
+                            ? "text-electric-blue"
+                            : "text-status-paid-fg"
+                      }`}
                       aria-hidden="true"
                     >
-                      check_circle
+                      {notificationIcon(item)}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[13px] text-charcoal">
                         {notificationText(item)}
                       </span>
                       <span className="mt-0.5 block truncate text-[11px] text-fog">
-                        {item.tenantName} · {item.methodLabel} ·{" "}
-                        {notificationTime(item.paidAt)}
+                        {notificationDetail(item)}
                       </span>
                     </span>
                     {!item.read && (

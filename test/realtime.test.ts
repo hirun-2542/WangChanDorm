@@ -7,6 +7,7 @@ const roomsUrl = "https://dorm.test/api/rooms";
 const tenantsUrl = "https://dorm.test/api/tenants";
 const billsUrl = "https://dorm.test/api/bills";
 const realtimeUrl = "https://dorm.test/api/realtime";
+const lineUrl = "https://dorm.test/api/line";
 const originHeader = "https://dorm.test";
 
 interface Envelope {
@@ -20,6 +21,9 @@ interface Envelope {
   total?: number;
   methodLabel?: string;
   paidAt?: string;
+  tenantId?: string;
+  source?: string;
+  joinedAt?: string;
 }
 
 /**
@@ -320,5 +324,99 @@ describe("bill paid fan-out", () => {
 
     mine.close();
     theirs.close();
+  });
+});
+
+describe("tenant joined fan-out", () => {
+  /** เพดานการรอแบบเดียวกับ describe ข้างบน — ไม่มี replay จึงต้องรอข้อความจริง */
+  const envelopeWithin = async (socket: TestSocket): Promise<Envelope> =>
+    Promise.race([
+      socket.envelope(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("no tenant-joined envelope arrived")), 4000),
+      ),
+    ]);
+
+  async function createRoomFor(roomNumber: string): Promise<string> {
+    const response = await SELF.fetch(roomsUrl, {
+      ...withAuth(session),
+      method: "POST",
+      headers: { ...(withAuth(session).headers as Record<string, string>), "content-type": "application/json" },
+      body: JSON.stringify({ roomNumber, rent: 3500 }),
+    });
+    expect(response.status).toBe(201);
+
+    return (await response.json<{ room: { id: string } }>()).room.id;
+  }
+
+  async function createTenantFor(roomId: string, fullName: string): Promise<string> {
+    const response = await SELF.fetch(tenantsUrl, {
+      ...withAuth(session),
+      method: "POST",
+      headers: { ...(withAuth(session).headers as Record<string, string>), "content-type": "application/json" },
+      body: JSON.stringify({ fullName, phone: "081-234-5678", roomId, checkInDate: "2025-03-01" }),
+    });
+    expect(response.status).toBe(201);
+
+    return (await response.json<{ tenant: { id: string } }>()).tenant.id;
+  }
+
+  it("tells every open tab when the owner links a tenant's LINE", async () => {
+    const roomId = await createRoomFor("J901");
+    const tenantId = await createTenantFor(roomId, "สมชาย เชื่อมใหม่");
+
+    // ผู้ใช้ LINE ที่รอเชื่อมอยู่ (มาจากการที่เขาทักบอทเข้ามา)
+    await env.DB.prepare(
+      "INSERT INTO line_pending (line_user_id, family_id, display_name, last_message, last_seen_at) VALUES (?, ?, ?, NULL, datetime('now'))",
+    )
+      .bind("U-join-1", session.familyId, "สมชาย")
+      .run();
+
+    const socket = await openSocket(session.cookie);
+    await socket.envelope();
+
+    const response = await SELF.fetch(
+      `${lineUrl}/pending/U-join-1/link`,
+      {
+        ...withAuth(session),
+        method: "POST",
+        headers: { ...(withAuth(session).headers as Record<string, string>), "content-type": "application/json" },
+        body: JSON.stringify({ tenantId }),
+      },
+    );
+    expect(response.status).toBe(200);
+
+    const envelope = await envelopeWithin(socket);
+    expect(envelope.type).toBe("tenant-joined");
+    expect(envelope.roomNumber).toBe("J901");
+    expect(envelope.tenantName).toBe("สมชาย เชื่อมใหม่");
+    expect(envelope.source).toBe("owner");
+    // ต้องมี joinedAt ที่ parse ได้ เพื่อให้ฝั่งเว็บแสดงเวลาได้
+    expect(Number.isNaN(Date.parse(String(envelope.joinedAt)))).toBe(false);
+
+    socket.close();
+  });
+
+  it("sends nothing when the link request is rejected", async () => {
+    // ไม่มี pending แถวนี้ → 404 และต้องไม่มี event หลุดออกไป
+    const socket = await openSocket(session.cookie);
+    await socket.envelope();
+
+    const rejected = await SELF.fetch(
+      `${lineUrl}/pending/U-does-not-exist/link`,
+      {
+        ...withAuth(session),
+        method: "POST",
+        headers: { ...(withAuth(session).headers as Record<string, string>), "content-type": "application/json" },
+        body: JSON.stringify({ tenantId: "00000000-0000-4000-8000-000000000009" }),
+      },
+    );
+    expect(rejected.status).toBe(404);
+
+    // ping แล้วได้ pong เป็นข้อความถัดไป = ไม่มี event คั่นกลาง
+    socket.send("ping");
+    expect(await socket.nextMessage()).toBe("pong");
+
+    socket.close();
   });
 });
