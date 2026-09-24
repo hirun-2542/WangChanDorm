@@ -35,15 +35,15 @@ import {
   LineStateBadge,
   baht,
   chargesTotal,
-  periodLabel,
-  periodOptions,
 } from "./bills-shared";
+import { periodLabel, periodOptions } from "../period";
 import {
   BillEditDrawer,
   DeleteBillDialog,
   MarkPaidDialog,
 } from "./bills-actions";
 import { BillDetail } from "./bills-detail";
+import { ExportBillsDialog } from "./bills-export";
 import { CreateWizard } from "./bills-create";
 import { electricUnitsOf } from "../../shared/billing";
 
@@ -169,6 +169,7 @@ interface BillListProps {
   bulkSending: boolean;
   sendResult: SendAllResult | null;
   onCreate: () => void;
+  onExport: () => void;
   onRetry: () => void;
 }
 
@@ -206,6 +207,7 @@ function BillList({
   bulkSending,
   sendResult,
   onCreate,
+  onExport,
   onRetry,
 }: BillListProps) {
   const { query, setQuery } = useSearch();
@@ -428,6 +430,21 @@ function BillList({
               aria-label="ส่งบิลทาง LINE"
               disabled={scoped.length === 0 || bulkSending}
               onClick={onSendAll}
+            />
+            <Button
+              variant="secondary"
+              icon="download"
+              className="hidden sm:inline-flex"
+              onClick={onExport}
+            >
+              ส่งออก Excel
+            </Button>
+            <Button
+              variant="secondary"
+              icon="download"
+              className="px-3 sm:hidden"
+              aria-label="ส่งออก Excel"
+              onClick={onExport}
             />
           </div>
         }
@@ -801,6 +818,7 @@ export function BillsPage({ view }: PageProps) {
   const [bulkResend, setBulkResend] = useState(false);
   const [bulkSending, setBulkSending] = useState(false);
   const [sendResult, setSendResult] = useState<SendAllResult | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -1215,7 +1233,19 @@ export function BillsPage({ view }: PageProps) {
         onCreate={() => {
           go("#bills/create");
         }}
+        onExport={() => {
+          setExportOpen(true);
+        }}
         onRetry={refresh}
+      />
+
+      <ExportBillsDialog
+        open={exportOpen}
+        onClose={() => {
+          setExportOpen(false);
+        }}
+        currentPeriod={period}
+        onDone={setToast}
       />
 
       <Dialog

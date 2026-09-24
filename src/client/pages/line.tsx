@@ -15,7 +15,7 @@ import {
   PageHeader,
   Skeleton,
 } from "../ui";
-import { periodLabel } from "./bills-shared";
+import { periodLabel } from "../period";
 
 function isArrowKey(key: string): boolean {
   return (

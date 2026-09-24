@@ -8,11 +8,11 @@ import {
   billNumber,
   dateLabel,
   paidMethodLabel,
-  periodLabel,
   stampLabel,
   toInvoice,
   type PaymentRecord,
 } from "./bills-shared";
+import { periodLabel } from "../period";
 import {
   BillEditDrawer,
   DeleteBillDialog,

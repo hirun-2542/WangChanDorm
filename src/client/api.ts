@@ -559,6 +559,13 @@ export async function fetchBillPeriods(): Promise<string[]> {
   return body.periods;
 }
 
+export async function fetchBillsRange(from: string, to: string): Promise<Bill[]> {
+  const body = await apiGet<{ ok: true; from: string; to: string; bills: Bill[] }>(
+    `/api/bills/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  );
+  return body.bills;
+}
+
 export interface BillsFocus {
   roomNumber: string;
   period: string;

@@ -5,22 +5,8 @@ import {
   type ElectricMode,
   type PromptpayType,
 } from "../api";
+import { buddhistYearOffset, periodLabel } from "../period";
 import { Badge, IconButton } from "../ui";
-
-const thaiMonths = [
-  "มกราคม",
-  "กุมภาพันธ์",
-  "มีนาคม",
-  "เมษายน",
-  "พฤษภาคม",
-  "มิถุนายน",
-  "กรกฎาคม",
-  "สิงหาคม",
-  "กันยายน",
-  "ตุลาคม",
-  "พฤศจิกายน",
-  "ธันวาคม",
-];
 
 const thaiMonthsShort = [
   "ม.ค.",
@@ -36,8 +22,6 @@ const thaiMonthsShort = [
   "พ.ย.",
   "ธ.ค.",
 ];
-
-const buddhistYearOffset = 543;
 
 export function baht(value: number): string {
   return Math.round(value).toLocaleString("en-US");
@@ -93,50 +77,6 @@ export function toBillCharge(charge: ChargeDraft): BillCharge | null {
   const amount = parseChargeAmount(charge.amount);
 
   return name === "" || amount === null ? null : { name, amount };
-}
-
-export function periodLabel(period: string): string {
-  const [yearPart, monthPart] = period.split("-");
-  const year = Number(yearPart);
-  const month = Number(monthPart);
-  const monthName = thaiMonths[month - 1];
-
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    monthName === undefined
-  ) {
-    return period;
-  }
-
-  return `${monthName} ${year + buddhistYearOffset}`;
-}
-
-export function periodCode(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-}
-
-export function periodAt(monthOffset: number): string {
-  const now = new Date();
-  return periodCode(
-    new Date(now.getFullYear(), now.getMonth() + monthOffset, 1),
-  );
-}
-
-export function recentPeriods(count: number): string[] {
-  const list: string[] = [];
-
-  for (let index = 0; index < count; index += 1) {
-    list.push(periodAt(-index));
-  }
-
-  return list;
-}
-
-export function periodOptions(billed: string[], months = 6): string[] {
-  return Array.from(new Set([...recentPeriods(months), ...billed]))
-    .sort()
-    .reverse();
 }
 
 interface ThaiDate {

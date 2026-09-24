@@ -44,11 +44,9 @@ import {
   isEmptyDraft,
   newChargeDraft,
   parseChargeAmount,
-  periodAt,
-  periodLabel,
-  recentPeriods,
   type ChargeDraft,
 } from "./bills-shared";
+import { periodAt, periodLabel, recentPeriods } from "../period";
 import { ChoiceRow, numericValue } from "./dorm-shared";
 
 type StatusFilter = "all" | "occupied" | "vacant";

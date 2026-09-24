@@ -19,10 +19,10 @@ import {
   isEmptyDraft,
   newChargeDraft,
   parseChargeAmount,
-  periodLabel,
   todayIso,
   type ChargeDraft,
 } from "./bills-shared";
+import { periodLabel } from "../period";
 
 type Reading =
   { ok: true; value: number } | { ok: false; reason: "empty" | "invalid" };

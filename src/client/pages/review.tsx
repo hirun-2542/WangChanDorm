@@ -21,7 +21,8 @@ import {
   Toast,
   type BadgeTone,
 } from "../ui";
-import { baht, billNumber, periodLabel, stampLabel } from "./bills-shared";
+import { baht, billNumber, stampLabel } from "./bills-shared";
+import { periodLabel } from "../period";
 
 type FilterId = "all" | "mismatch" | "not_verified" | "verify_failed" | "duplicate_slip";
 

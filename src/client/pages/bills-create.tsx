@@ -42,11 +42,10 @@ import {
   chargeDrafts,
   parseChargeAmount,
   toBillCharge,
-  periodLabel,
-  periodOptions,
   type ChargeDraft,
   type InvoiceData,
 } from "./bills-shared";
+import { periodLabel, periodOptions } from "../period";
 
 export interface CreateWizardProps {
   settings: Settings | null;
