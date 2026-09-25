@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { familyId, type AppEnv } from "../lib/auth";
+import { loadEffectiveRates, recalcRoomUnsentBills } from "../lib/bill-rates";
 import {
   loadDormCharges,
   maxRoomCharges,
@@ -436,6 +437,28 @@ rooms.patch("/:id", async (c) => {
     }
 
     await c.env.DB.batch(statements);
+
+    // อัตราที่ใช้จริงของห้องเปลี่ยน (ตั้งเอง/เคลียร์กลับไปใช้ค่าเริ่มต้น) — คำนวณ
+    // บิลที่ยังไม่จ่ายและยังไม่ได้ส่งของห้องนี้ใหม่ บิลที่ส่งไปแล้วคงยอดเดิมไว้
+    // เสมอ (ดู src/worker/lib/bill-rates.ts) ฝั่งไฟเช็คเฉพาะตอนที่ยังเป็นโหมด
+    // มิเตอร์ทั้งก่อนและหลัง — สลับโหมด (มิเตอร์↔เหมาจ่าย) ไม่มีอัตราให้เทียบ
+    // อีกต่อไปในฝั่งที่เปลี่ยนไป จึงไม่ถือเป็นการ "เปลี่ยนอัตรา" ที่ต้องคำนวณใหม่
+    const waterRateChanged = existing.water_rate !== waterRate;
+    const electricRateChanged =
+      electricMode === "meter" &&
+      existing.electric_mode === "meter" &&
+      existing.electric_rate !== storedElectricRate;
+
+    if (waterRateChanged || electricRateChanged) {
+      const dormRates = await loadEffectiveRates(c.env, family);
+      await recalcRoomUnsentBills(
+        c.env,
+        family,
+        id,
+        waterRate ?? dormRates.water,
+        storedElectricRate ?? dormRates.electric,
+      );
+    }
 
     const row = await c.env.DB.prepare(`SELECT ${roomColumns} ${roomFrom} WHERE r.id = ? AND r.family_id = ?`)
       .bind(id, family)

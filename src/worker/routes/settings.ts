@@ -2,6 +2,12 @@ import { Hono } from "hono";
 import type { AppEnv } from "../lib/auth";
 import { familyId } from "../lib/auth";
 import {
+  defaultElectricRate,
+  defaultWaterRate,
+  loadEffectiveRates,
+  recalcRoomsUsingDormDefaults,
+} from "../lib/bill-rates";
+import {
   loadDormCharges,
   maxDormCharges,
   parseChargeList,
@@ -13,9 +19,6 @@ import { demoModeOn, failureDetail, fetchBotInfo, fetchProfile, lineOutboundTime
 const settings = new Hono<AppEnv>();
 
 type PromptpayType = "phone" | "citizen-id";
-
-export const defaultWaterRate = 18;
-export const defaultElectricRate = 7;
 
 const defaultSettings = {
   dorm_name: "หอพักวังจันทร์",
@@ -706,6 +709,26 @@ settings.put("/", async (c) => {
 
         try {
           await c.env.DB.batch(statements);
+
+          // อัตราเริ่มต้นของหอเปลี่ยน — คำนวณบิลที่ยังไม่จ่ายและยังไม่ได้ส่งของ
+          // ห้องที่ "ไม่ได้ตั้งอัตราของตัวเอง" ใหม่ (ห้องที่ตั้งอัตราของตัวเอง
+          // ไว้แล้วไม่ขึ้นกับค่าเริ่มต้นนี้ ไม่ต้องแตะ) ดู src/worker/lib/bill-rates.ts
+          const waterChanged =
+            updates.has("default_water_rate") &&
+            updates.get("default_water_rate") !== stored.get("default_water_rate");
+          const electricChanged =
+            updates.has("default_electric_rate") &&
+            updates.get("default_electric_rate") !== stored.get("default_electric_rate");
+
+          if (waterChanged || electricChanged) {
+            const freshRates = await loadEffectiveRates(c.env, family);
+            await recalcRoomsUsingDormDefaults(
+              c.env,
+              family,
+              { water: waterChanged, electric: electricChanged },
+              freshRates,
+            );
+          }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
 

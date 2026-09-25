@@ -571,21 +571,74 @@ describe("monthly bill generation", () => {
     expect(bill.electricUnits).toBeCloseTo(30);
   });
 
-  it("keeps a stored bill unchanged after the dorm defaults and the room's mode and rate change", async () => {
+  it("recalculates water and electric for an unpaid, unsent bill when the dorm's default rates change", async () => {
     await putRates(18, 7);
-    const room = await occupiedRoom("B222", { rent: 3500, waterMeterInit: 100, electricMeterInit: 200 });
-
-    const created = await generate({
-      period: "2026-09",
-      entries: [{ roomId: room.id, waterCurrent: 118, electricCurrent: 240 }],
-    });
-    expect(created.status).toBe(201);
-    const bill = first((await created.json<{ ok: boolean; bills: BillPayload[] }>()).bills);
+    const room = await occupiedRoom("C401", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
     expect(bill.waterRate).toBe(18);
     expect(bill.electricRate).toBe(7);
-    expect(bill.electricMode).toBe("meter");
+    expect(bill.waterAmount).toBe(180);
+    expect(bill.electricAmount).toBe(210);
+    expect(bill.total).toBe(3890);
 
     await putRates(25, 9);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.waterRate).toBe(25);
+    expect(updated.electricRate).toBe(9);
+    expect(updated.waterAmount).toBe(250);
+    expect(updated.electricAmount).toBe(270);
+    expect(updated.total).toBe(4020);
+    // หน่วยที่บันทึกไว้ต้องไม่เปลี่ยน มีแต่อัตราและยอดที่เปลี่ยน
+    expect(updated.waterUnits).toBe(bill.waterUnits);
+    expect(updated.electricUnits).toBe(bill.electricUnits);
+  });
+
+  it("leaves a room's bill unchanged when the dorm default changes but the room has its own rate", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("C402", {
+      waterRate: 30,
+      electricRate: 12,
+      waterMeterInit: 100,
+      electricMeterInit: 200,
+    });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
+    expect(bill.waterRate).toBe(30);
+    expect(bill.electricRate).toBe(12);
+
+    await putRates(25, 9);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated).toEqual(bill);
+  });
+
+  it("recalculates both water and electric for a room's unpaid, unsent bill when only the room's own rates change", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("C403", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
+
+    const patched = await api(`${roomsUrl}/${room.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ waterRate: 40, electricRate: 11 }),
+    });
+    expect(patched.status).toBe(200);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.electricMode).toBe("meter");
+    expect(updated.waterRate).toBe(40);
+    expect(updated.electricRate).toBe(11);
+    expect(updated.waterAmount).toBe(400);
+    expect(updated.electricAmount).toBe(330);
+  });
+
+  it("does not retroactively price a bill's electric when the room's mode switches to flat, only its water", async () => {
+    // สลับโหมดแล้วห้องไม่มี "อัตรา" ไฟเหลืออยู่เลย (ฝั่งไฟเก็บ NULL) จึงไม่มีอัตรา
+    // ใหม่ให้เอาไปคิดย้อนหลังกับบิลที่ยังเป็นโหมดมิเตอร์เดิม ส่วนน้ำยังคำนวณใหม่ปกติ
+    await putRates(18, 7);
+    const room = await occupiedRoom("C408", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
+    expect(bill.electricMode).toBe("meter");
 
     const patched = await api(`${roomsUrl}/${room.id}`, {
       method: "PATCH",
@@ -594,14 +647,90 @@ describe("monthly bill generation", () => {
     });
     expect(patched.status).toBe(200);
 
-    const listed = first((await listBills("2026-09")).filter((item) => item.id === bill.id));
-    expect(listed.waterRate).toBe(18);
-    expect(listed.electricRate).toBe(7);
-    expect(listed.electricMode).toBe("meter");
-    expect(listed.waterAmount).toBe(bill.waterAmount);
-    expect(listed.electricAmount).toBe(bill.electricAmount);
-    expect(listed.total).toBe(bill.total);
-    expect(listed).toEqual(bill);
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.electricMode).toBe("meter");
+    expect(updated.waterRate).toBe(40);
+    expect(updated.waterAmount).toBe(400);
+    expect(updated.electricRate).toBe(bill.electricRate);
+    expect(updated.electricAmount).toBe(bill.electricAmount);
+  });
+
+  it("recalculates using the dorm default when a room's rate override is cleared back to null", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("C404", { waterRate: 40, waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
+    expect(bill.waterRate).toBe(40);
+
+    const patched = await api(`${roomsUrl}/${room.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ waterRate: null }),
+    });
+    expect(patched.status).toBe(200);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.waterRate).toBe(18);
+    expect(updated.waterAmount).toBe(180);
+  });
+
+  it("leaves a bill unchanged once it has been sent, even if the rate changes afterward", async () => {
+    // ผู้เช่าอาจเห็นยอด/QR เดิมไปแล้ว และระบบปิดบิลอัตโนมัติเทียบยอดสลิปตรงเป๊ะ
+    // (ADR 0001) — เปลี่ยนยอดหลังส่งจะทำให้สลิปที่จ่ายตามยอดเดิมไม่ตรงยอดใหม่
+    await putRates(18, 7);
+    const room = await occupiedRoom("C405", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
+
+    await env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?")
+      .bind("2026-09-05 03:00:00", bill.id)
+      .run();
+
+    await putRates(25, 9);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.waterRate).toBe(bill.waterRate);
+    expect(updated.electricRate).toBe(bill.electricRate);
+    expect(updated.waterAmount).toBe(bill.waterAmount);
+    expect(updated.electricAmount).toBe(bill.electricAmount);
+    expect(updated.total).toBe(bill.total);
+  });
+
+  it("leaves a paid bill unchanged even if the rate changes afterward", async () => {
+    await putRates(18, 7);
+    const room = await occupiedRoom("C406", { waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, { waterCurrent: 110, electricCurrent: 230 });
+
+    const paid = await markPaid(bill.id, { method: "cash" });
+    expect(paid.status).toBe(200);
+
+    await putRates(25, 9);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.status).toBe("paid");
+    expect(updated.waterAmount).toBe(bill.waterAmount);
+    expect(updated.electricAmount).toBe(bill.electricAmount);
+    expect(updated.total).toBe(bill.total);
+  });
+
+  it("leaves a flat-electric bill's electric amount unaffected by a rate change, but still recalculates its water", async () => {
+    // ค่าไฟเหมาจ่ายไม่ขึ้นกับอัตราต่อหน่วยเลย จึงไม่มีอะไรให้คำนวณใหม่ฝั่งไฟ —
+    // แต่ค่าน้ำของห้องเดียวกันยังต้องคำนวณใหม่ตามปกติ
+    await putRates(18, 7);
+    const room = await occupiedRoom("C407", { electricMode: "flat", waterMeterInit: 100, electricMeterInit: 200 });
+    const bill = await generatedBill(room.id, {
+      waterCurrent: 110,
+      electricCurrent: 220,
+      flatElectricAmount: 600,
+    });
+    expect(bill.electricRate).toBeNull();
+    expect(bill.electricAmount).toBe(600);
+
+    await putRates(25, 9);
+
+    const updated = await findBill("2026-09", bill.id);
+    expect(updated.electricRate).toBeNull();
+    expect(updated.electricAmount).toBe(600);
+    expect(updated.waterRate).toBe(25);
+    expect(updated.waterAmount).toBe(250);
   });
 
   it("rejects a vacant or unknown room and writes nothing", async () => {

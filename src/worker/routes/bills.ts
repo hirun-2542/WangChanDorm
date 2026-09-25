@@ -13,7 +13,7 @@ import { resolveAllRoomCharges } from "../lib/charges";
 import { chargeFromFlatAmount, chargeFromUnits } from "../../shared/billing";
 import { isForeignKeyViolation } from "../lib/slips";
 import { type BillPaidEvent, broadcastBillPaid, pushOwnerBillPaid } from "../lib/paid-notify";
-import { defaultElectricRate, defaultWaterRate } from "./settings";
+import { loadEffectiveRates } from "../lib/bill-rates";
 import {
   asRecord,
   errorBody,
@@ -294,52 +294,6 @@ function parseEntry(raw: unknown): EntryParse {
       flatElectricAmount,
       charges,
     },
-  };
-}
-
-function parseRate(
-  key: string,
-  value: string | undefined,
-  fallback: number,
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed;
-  }
-
-  console.error(
-    JSON.stringify({ message: "invalid stored setting", key, value }),
-  );
-  return fallback;
-}
-
-async function loadEffectiveRates(
-  env: Env,
-  family: string,
-): Promise<{ water: number; electric: number }> {
-  const result = await env.DB.prepare(
-    "SELECT key, value FROM settings WHERE family_id = ? AND key IN ('default_water_rate', 'default_electric_rate')",
-  )
-    .bind(family)
-    .all<{ key: string; value: string }>();
-  const stored = new Map(result.results.map((row) => [row.key, row.value]));
-
-  return {
-    water: parseRate(
-      "default_water_rate",
-      stored.get("default_water_rate"),
-      defaultWaterRate,
-    ),
-    electric: parseRate(
-      "default_electric_rate",
-      stored.get("default_electric_rate"),
-      defaultElectricRate,
-    ),
   };
 }
 
