@@ -14,6 +14,7 @@ import { chargeFromFlatAmount, chargeFromUnits } from "../../shared/billing";
 import { isForeignKeyViolation } from "../lib/slips";
 import { type BillPaidEvent, broadcastBillPaid, pushOwnerBillPaid } from "../lib/paid-notify";
 import { loadEffectiveRates } from "../lib/bill-rates";
+import { loadPayeeSnapshot } from "../lib/bill-payee";
 import {
   asRecord,
   errorBody,
@@ -294,55 +295,6 @@ function parseEntry(raw: unknown): EntryParse {
       flatElectricAmount,
       charges,
     },
-  };
-}
-
-interface PayeeSnapshot {
-  dormName: string;
-  ownerName: string;
-  promptpayId: string;
-  promptpayType: "phone" | "citizen-id";
-  promptpayName: string;
-  bankName: string;
-  bankAccountNumber: string;
-  bankAccountName: string;
-}
-
-const payeeSettingKeys = [
-  "dorm_name",
-  "owner_name",
-  "promptpay_id",
-  "promptpay_type",
-  "promptpay_name",
-  "bank_name",
-  "bank_account_number",
-  "bank_account_name",
-];
-
-/**
- * อ่านผู้รับเงินปัจจุบันของครอบครัว เพื่อ snapshot ลงบิลที่กำลังจะออก ณ ตอนนี้
- *
- * เรียกครั้งเดียวตอนออกบิล ไม่ใช่ตอนแสดงผลบิลที่ออกไปแล้ว — ค่าที่ snapshot
- * ไว้ในบิลต้องไม่เปลี่ยนตามการแก้ตั้งค่าภายหลัง (ดู migration 0011)
- */
-async function loadPayeeSnapshot(env: Env, family: string): Promise<PayeeSnapshot> {
-  const placeholders = payeeSettingKeys.map(() => "?").join(", ");
-  const result = await env.DB.prepare(
-    `SELECT key, value FROM settings WHERE family_id = ? AND key IN (${placeholders})`,
-  )
-    .bind(family, ...payeeSettingKeys)
-    .all<{ key: string; value: string }>();
-  const stored = new Map(result.results.map((row) => [row.key, row.value]));
-
-  return {
-    dormName: stored.get("dorm_name") ?? "",
-    ownerName: stored.get("owner_name") ?? "",
-    promptpayId: stored.get("promptpay_id") ?? "",
-    promptpayType: stored.get("promptpay_type") === "citizen-id" ? "citizen-id" : "phone",
-    promptpayName: stored.get("promptpay_name") ?? "",
-    bankName: stored.get("bank_name") ?? "",
-    bankAccountNumber: stored.get("bank_account_number") ?? "",
-    bankAccountName: stored.get("bank_account_name") ?? "",
   };
 }
 

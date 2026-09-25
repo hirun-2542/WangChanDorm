@@ -7,6 +7,7 @@ import {
   loadEffectiveRates,
   recalcRoomsUsingDormDefaults,
 } from "../lib/bill-rates";
+import { payeeSettingKeys, recalcUnsentBillsPayee } from "../lib/bill-payee";
 import {
   loadDormCharges,
   maxDormCharges,
@@ -728,6 +729,17 @@ settings.put("/", async (c) => {
               { water: waterChanged, electric: electricChanged },
               freshRates,
             );
+          }
+
+          // ผู้รับเงิน (ชื่อหอ/เจ้าของ/พร้อมเพย์/บัญชีธนาคาร) เปลี่ยน — คำนวณ
+          // บิลที่ยังไม่จ่ายและยังไม่ได้ส่งของทั้งครอบครัวใหม่ ไม่แยกตามห้อง
+          // เพราะผู้รับเงินเป็นค่าเดียวของทั้งหอ ดู src/worker/lib/bill-payee.ts
+          const payeeChanged = payeeSettingKeys.some(
+            (key) => updates.has(key) && updates.get(key) !== stored.get(key),
+          );
+
+          if (payeeChanged) {
+            await recalcUnsentBillsPayee(c.env, family);
           }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);

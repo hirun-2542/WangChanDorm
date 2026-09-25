@@ -533,3 +533,102 @@ describe("promptpay settings per family", () => {
     expect(new TextDecoder("latin1").decode(newInvoice)).toContain("/Subtype /Image");
   });
 });
+
+describe("recalculates payee for unpaid, unsent bills when payout settings change", () => {
+  // ไม่มี endpoint ไหนคืนคอลัมน์ payee_* ของบิลตรง ๆ (invoice/QR อ่านจากบิลเอง
+  // แต่ไม่ได้คืนค่าดิบกลับมาเป็น JSON) จึงอ่านจากฐานข้อมูลตรงเพื่อยืนยันผล
+  async function payeeOf(billId: string) {
+    return env.DB.prepare(
+      "SELECT payee_dorm_name, payee_promptpay_id, payee_promptpay_name, payee_bank_name, payee_bank_account_number FROM bills WHERE id = ?",
+    )
+      .bind(billId)
+      .first<{
+        payee_dorm_name: string;
+        payee_promptpay_id: string;
+        payee_promptpay_name: string;
+        payee_bank_name: string;
+        payee_bank_account_number: string;
+      }>();
+  }
+
+  it("updates an unpaid, unsent bill's payee when promptpay changes through the real settings API", async () => {
+    await putIssuer();
+    const room = await occupiedRoom("D501", { waterMeterInit: 10, electricMeterInit: 20 });
+    const bill = await generatedBill(room.id, { waterCurrent: 18, electricCurrent: 40 });
+
+    const before = await payeeOf(bill.id);
+    expect(before?.payee_promptpay_id).toBe("081-234-5678");
+
+    const response = await api(settingsUrl, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promptpayId: "089-999-1234" }),
+    });
+    expect(response.status).toBe(200);
+
+    const after = await payeeOf(bill.id);
+    expect(after?.payee_promptpay_id).toBe("089-999-1234");
+  });
+
+  it("updates an unpaid, unsent bill's payee when the bank account changes", async () => {
+    await putIssuer();
+    const room = await occupiedRoom("D502", { waterMeterInit: 10, electricMeterInit: 20 });
+    const bill = await generatedBill(room.id, { waterCurrent: 18, electricCurrent: 40 });
+
+    const response = await api(settingsUrl, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bankName: "kbank", bankAccountNumber: "111-2-33333-4" }),
+    });
+    expect(response.status).toBe(200);
+
+    const after = await payeeOf(bill.id);
+    expect(after?.payee_bank_name).toBe("kbank");
+    expect(after?.payee_bank_account_number).toBe("1112333334");
+  });
+
+  it("leaves a sent bill's payee unchanged even after the payout settings change", async () => {
+    // ผู้เช่าอาจเห็น QR/เลขบัญชีเดิมไปแล้ว เปลี่ยนย้อนหลังจะจ่ายผิดช่องทางหรือ
+    // สับสน — เหตุผลเดียวกับที่บิลที่ส่งแล้วไม่คำนวณอัตราน้ำ/ไฟใหม่
+    await putIssuer();
+    const room = await occupiedRoom("D503", { waterMeterInit: 10, electricMeterInit: 20 });
+    const bill = await generatedBill(room.id, { waterCurrent: 18, electricCurrent: 40 });
+
+    await env.DB.prepare("UPDATE bills SET sent_at = ? WHERE id = ?")
+      .bind("2026-09-05 03:00:00", bill.id)
+      .run();
+
+    const before = await payeeOf(bill.id);
+
+    const response = await api(settingsUrl, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promptpayId: "089-999-1234" }),
+    });
+    expect(response.status).toBe(200);
+
+    const after = await payeeOf(bill.id);
+    expect(after).toEqual(before);
+  });
+
+  it("leaves a paid bill's payee unchanged even after the payout settings change", async () => {
+    await putIssuer();
+    const room = await occupiedRoom("D504", { waterMeterInit: 10, electricMeterInit: 20 });
+    const bill = await generatedBill(room.id, { waterCurrent: 18, electricCurrent: 40 });
+
+    const paid = await post(`${billsUrl}/${bill.id}/mark-paid`, { method: "cash" });
+    expect(paid.status).toBe(200);
+
+    const before = await payeeOf(bill.id);
+
+    const response = await api(settingsUrl, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promptpayId: "089-999-1234" }),
+    });
+    expect(response.status).toBe(200);
+
+    const after = await payeeOf(bill.id);
+    expect(after).toEqual(before);
+  });
+});
