@@ -296,7 +296,7 @@ export function BillEditDrawer({
               {baht(calc.total)} บาท
             </p>
             <p className="mt-1 text-[11px] text-fog">
-              {`ค่าเช่า ${baht(bill.rent)} · ค่าน้ำ ${baht(calc.waterAmount)} · ค่าไฟ ${baht(calc.electricAmount)} · ค่าใช้จ่ายเพิ่มเติม ${baht(calc.chargesTotal)}`}
+              {`ค่าเช่า ${baht(bill.rent)} · ค่าน้ำ ${baht(calc.waterAmount)}${calc.waterUnits === null ? "" : ` (${calc.waterUnits} หน่วย)`} · ค่าไฟ ${baht(calc.electricAmount)}${!isFlat && calc.electricUnits !== null ? ` (${calc.electricUnits} หน่วย)` : ""} · ค่าใช้จ่ายเพิ่มเติม ${baht(calc.chargesTotal)}`}
             </p>
           </div>
 
@@ -305,7 +305,7 @@ export function BillEditDrawer({
               label="เลขมิเตอร์น้ำครั้งนี้"
               value={form.waterCurrent}
               inputMode="numeric"
-              helper={`ครั้งก่อน ${bill.waterPrevious} · ${bill.waterRate} บาท/หน่วย`}
+              helper={`ครั้งก่อน ${bill.waterPrevious} · ${bill.waterRate} บาท/หน่วย${calc.waterUnits === null ? "" : ` · ใช้ ${calc.waterUnits} หน่วย`}`}
               error={calc.waterHint ?? fieldError("waterCurrent")}
               onChange={(value) => {
                 update({ waterCurrent: value });
@@ -318,7 +318,7 @@ export function BillEditDrawer({
               helper={
                 isFlat
                   ? `ครั้งก่อน ${bill.electricPrevious}`
-                  : `ครั้งก่อน ${bill.electricPrevious} · ${bill.electricRate ?? 0} บาท/หน่วย`
+                  : `ครั้งก่อน ${bill.electricPrevious} · ${bill.electricRate ?? 0} บาท/หน่วย${calc.electricUnits === null ? "" : ` · ใช้ ${calc.electricUnits} หน่วย`}`
               }
               error={calc.electricHint ?? fieldError("electricCurrent")}
               onChange={(value) => {
