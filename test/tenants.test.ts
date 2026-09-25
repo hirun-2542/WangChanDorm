@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createFamily, signIn, withAuth, type TestSession } from "./auth-helper";
 
@@ -193,6 +193,28 @@ describe("tenants check-in and check-out", () => {
     const kept = (await tenantsList()).find((item) => item.id === tenant.id);
     expect(kept?.status).toBe("moved-out");
     expect(kept?.checkOutDate).toBe("2025-08-30");
+  });
+
+  it("clears the LINE link when a tenant checks out, keeping only name and phone", async () => {
+    // line_user_id ผูกกับคนเดียวเท่านั้น (UNIQUE) — คนที่ออกแล้วไม่ต้องคงไว้
+    // เพราะทั้งเป็นข้อมูลส่วนตัวที่ไม่จำเป็นต้องเก็บต่อ และถ้าคนเดิมย้ายเข้าห้อง
+    // ใหม่ในอนาคตด้วย LINE เดิม จะผูกไม่ได้เพราะแถวเก่ายังจองไอดีนั้นค้างไว้
+    const room = await newRoom("T119");
+    const tenant = await newTenant(room.id, "ธีรพงศ์ ใจงาม", "2025-05-20");
+    await env.DB.prepare("UPDATE tenants SET line_user_id = ? WHERE id = ?")
+      .bind("U-t119-old", tenant.id)
+      .run();
+
+    const response = await checkoutTenant(tenant.id, { checkOutDate: "2025-08-30" });
+    expect(response.status).toBe(200);
+
+    const checkedOut = await response.json<TenantBody>();
+    expect(checkedOut.tenant.lineUserId).toBeNull();
+    expect(checkedOut.tenant.fullName).toBe("ธีรพงศ์ ใจงาม");
+    expect(checkedOut.tenant.phone).toBe("081-234-5678");
+
+    const kept = (await tenantsList()).find((item) => item.id === tenant.id);
+    expect(kept?.lineUserId).toBeNull();
   });
 
   it("rejects checking out a tenant that already moved out", async () => {

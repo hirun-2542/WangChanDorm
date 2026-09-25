@@ -281,7 +281,10 @@ tenants.post("/:id/checkout", async (c) => {
     }
 
     await c.env.DB.batch([
-      c.env.DB.prepare("UPDATE tenants SET status = 'moved-out', check_out_date = ? WHERE id = ? AND family_id = ?").bind(checkOutRaw, id, family),
+      // เคลียร์ line_user_id ตอนออก — เก็บไว้แค่ชื่อกับเบอร์โทรพอ ไม่จำเป็นต้อง
+      // ผูก LINE ของคนที่ย้ายออกแล้วต่อ และ line_user_id เป็น UNIQUE ถ้าคนเดิม
+      // ย้ายเข้าห้องใหม่ทีหลังด้วย LINE เดิม แถวเก่าที่ยังจองไอดีไว้จะผูกไม่ได้
+      c.env.DB.prepare("UPDATE tenants SET status = 'moved-out', check_out_date = ?, line_user_id = NULL WHERE id = ? AND family_id = ?").bind(checkOutRaw, id, family),
       c.env.DB.prepare("UPDATE rooms SET status = 'vacant' WHERE id = ? AND family_id = ?").bind(existing.room_id, family),
     ]);
 
